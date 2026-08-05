@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.0 - 2026-08-05
+## 0.1.1 - 2026-08-05
 
 - Add optional per-provider `api` selection for Anthropic Messages, Codex Responses, OpenAI Responses, and OpenAI Chat Completions.
 - Route Claude models through pi's built-in Anthropic implementation without custom stream forwarding.

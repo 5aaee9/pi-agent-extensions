@@ -138,7 +138,7 @@ For each release:
 1. Update the child package version and `CHANGELOG.md`.
 2. Run `npm run check` and inspect `npm run pack:sub2api`.
 3. Commit and push the release commit to `main`.
-4. Create and push a matching `v<version>` tag, such as `v0.2.0`.
+4. Create and push a matching `v<version>` tag, such as `v0.1.1`.
 5. Confirm the **Publish Package** workflow completed, then create the matching GitHub release.
 
 The workflow requires the tag to exactly match the package version and publishes from a GitHub-hosted runner using npm's short-lived OIDC credentials.
