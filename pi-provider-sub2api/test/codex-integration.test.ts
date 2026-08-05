@@ -20,7 +20,7 @@ afterEach(() => {
 });
 
 describe("real Codex adapter integration", () => {
-  it("keeps the Codex URL and account header while injecting the relay token", async () => {
+  it("rewrites the Codex request to the Responses endpoint and injects the relay token", async () => {
     writeFileSync(
       join(stateDir, "sub2api.json"),
       JSON.stringify({
@@ -70,9 +70,9 @@ describe("real Codex adapter integration", () => {
 
     expect(events.at(-1)).toMatchObject({ type: "error" });
     expect(transportCalls).toHaveLength(1);
-    expect(transportCalls[0]!.url).toBe("https://codex-integration.example/v1/codex/responses");
+    expect(transportCalls[0]!.url).toBe("https://codex-integration.example/v1/responses");
     expect(transportCalls[0]!.headers.get("authorization")).toBe("Bearer integration-relay-token");
-    expect(transportCalls[0]!.headers.get("chatgpt-account-id")).toMatch(/^sub2api-/);
+    expect(transportCalls[0]!.headers.get("chatgpt-account-id")).toBeNull();
     expect(transportCalls[0]!.redirect).toBe("error");
   });
 });

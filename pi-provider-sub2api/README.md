@@ -65,7 +65,9 @@ When a provider does not set `api`, model IDs select an API as follows:
 
 Anthropic models are registered directly with pi's built-in Anthropic Messages implementation and a model-level base URL without `/v1`. Claude 4.6+ models receive `compat.forceAdaptiveThinking`.
 
-Codex models keep the configured `/v1` base URL and call `/v1/codex/responses`. The extension supplies the fake JWT required by pi's Codex adapter, forces SSE so request authentication can remain request-scoped, and replaces only that fake bearer credential with the relay token. The generated `chatgpt-account-id` header and request URL are left intact.
+Codex models use pi's Codex Responses adapter so requests keep the Codex shape (instructions, `store: false`, encrypted reasoning, forced SSE). Sub2API relays do not expose ChatGPT's `/v1/codex/responses` passthrough route, so at the request boundary the extension rewrites the request URL to the relay's standard `/v1/responses` endpoint, drops the generated `chatgpt-account-id` header, and replaces only the fake JWT bearer credential with the relay token.
+
+Reasoning models map thinking levels so relayed Codex backends accept them: `minimal` clamps to `low` and `xhigh` passes through, because the backends reject the `minimal` and `none` efforts. The Codex adapter omits the `reasoning` field when thinking is off; for plain OpenAI Responses models, `off` is not selectable, which makes that adapter omit the field as well.
 
 OpenAI Responses and Chat Completions models use pi's built-in implementations and call `/v1/responses` and `/v1/chat/completions`, respectively.
 
@@ -104,7 +106,7 @@ Use HTTPS for remote relays. Plain HTTP is accepted for trusted local developmen
 
 - **Provider does not appear:** inspect stderr for `[sub2api] failed to load ...`; verify that the JSON is valid and every entry has non-empty `baseURL` and `token` strings.
 - **No models appear:** verify that `<baseURL>/v1/models` is reachable with `Authorization: Bearer <token>`. Discovery failures are logged as `[sub2api:<provider>] failed to fetch models`.
-- **Requests fail:** confirm the configured API is supported by the relay: Anthropic Messages uses `/v1/messages`, Codex uses `/v1/codex/responses`, OpenAI Responses uses `/v1/responses`, and Chat Completions uses `/v1/chat/completions`.
+- **Requests fail:** confirm the configured API is supported by the relay: Anthropic Messages uses `/v1/messages`, Codex models are rewritten to `/v1/responses`, OpenAI Responses uses `/v1/responses`, and Chat Completions uses `/v1/chat/completions`.
 - **No quota status:** run `/quota` and verify that either `<baseURL>/usage` or the relay's `/v1/usage` endpoint returns JSON with `rate_limits`, `daily_usage`, or `usage` data for the configured bearer token.
 - **Custom agent directory:** ensure `sub2api.json` is directly inside the directory named by `PI_CODING_AGENT_DIR`.
 

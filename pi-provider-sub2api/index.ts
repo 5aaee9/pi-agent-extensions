@@ -44,6 +44,7 @@ interface RelayConfig {
   anthropicBaseUrl: string;
   apiKey: string;
   api?: SupportedApi;
+  responsesUrl: string;
   codexResponsesUrl: string;
   codexAuthToken: string;
 }
@@ -240,6 +241,7 @@ function parseRelayConfig(provider: string, value: unknown): RelayConfig {
     anthropicBaseUrl,
     apiKey: entry.token,
     api: entry.api as SupportedApi | undefined,
+    responsesUrl: `${baseUrl}/responses`,
     codexResponsesUrl: `${baseUrl}/codex/responses`,
     codexAuthToken: createCodexAuthToken(accountId),
   };
@@ -370,16 +372,20 @@ function createRelayFetch(
       headers.get("chatgpt-account-id") === relay.accountId;
     if (!hasRelayIdentity) return upstreamFetch(input, init);
 
-    // Keep the Codex URL and account header intact; only replace the fake JWT
-    // with the real Sub2API credential at the request boundary.
+    // Sub2API relays do not expose ChatGPT's Codex passthrough route; rewrite
+    // the request to the standard Responses endpoint, drop the fake account
+    // identity, and replace only the fake JWT with the real relay credential.
     headers.set("Authorization", `Bearer ${relay.apiKey}`);
-    return upstreamFetch(input, { ...init, headers, redirect: "error" });
+    headers.delete("chatgpt-account-id");
+    return upstreamFetch(relay.responsesUrl, { ...init, headers, redirect: "error" });
   };
 }
 
 function getModelApi(modelId: string, configuredApi?: SupportedApi): SupportedApi {
   if (configuredApi) return configuredApi;
   if (CLAUDE.test(modelId)) return "anthropic-messages";
+  // OpenAI models use pi's Codex adapter for its Codex-shaped requests; the
+  // relay fetch rewrites them to the standard /v1/responses endpoint.
   if (OPENAI.test(modelId)) return "openai-codex-responses";
   return "openai-responses";
 }
@@ -390,7 +396,14 @@ function getApiBaseUrl(relay: RelayConfig, api: SupportedApi) {
 
 function getThinkingLevelMap(modelId: string, api: SupportedApi) {
   if (!REASONING.test(modelId)) return undefined;
-  return api === "anthropic-messages" ? { xhigh: "max" } : { off: "none", xhigh: "xhigh" };
+  if (api === "anthropic-messages") return { xhigh: "max" };
+  // Relayed Codex backends reject the "none" and "minimal" efforts with
+  // upstream 5xx errors, so clamp minimal to low. The Codex adapter omits the
+  // reasoning field entirely when thinking is off, while the plain Responses
+  // adapter requires off to be unselectable (null) to do the same.
+  return api === "openai-codex-responses"
+    ? { off: "none", minimal: "low", xhigh: "xhigh" }
+    : { off: null, minimal: "low", xhigh: "xhigh" };
 }
 
 function getModelCompat(modelId: string, api: SupportedApi) {

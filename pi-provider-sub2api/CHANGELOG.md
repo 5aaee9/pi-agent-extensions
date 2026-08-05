@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.2 - 2026-08-06
+
+- Rewrite Codex adapter requests from `/v1/codex/responses` to the relay's standard `/v1/responses` endpoint at the request boundary, and drop the fake `chatgpt-account-id` header. Sub2API relays do not expose ChatGPT's Codex passthrough route, so Codex models previously failed with `404 page not found`.
+- Clamp the `minimal` thinking level to `low`; relayed Codex backends reject the `minimal` and `none` efforts with upstream 5xx errors. For plain OpenAI Responses models, `off` is no longer a selectable thinking level so the adapter omits the `reasoning` field instead of sending the unsupported `none` effort.
+
 ## 0.1.1 - 2026-08-05
 
 - Add optional per-provider `api` selection for Anthropic Messages, Codex Responses, OpenAI Responses, and OpenAI Chat Completions.

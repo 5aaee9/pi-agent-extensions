@@ -292,7 +292,7 @@ describe("sub2api provider extension", () => {
     expect(fallbackModels[2]!.headers).toBeUndefined();
     expect(fallbackModels[0]).toMatchObject({
       reasoning: true,
-      thinkingLevelMap: { off: "none", xhigh: "xhigh" },
+      thinkingLevelMap: { off: "none", minimal: "low", xhigh: "xhigh" },
       contextWindow: 250000,
       maxTokens: 32000,
     });
@@ -318,7 +318,7 @@ describe("sub2api provider extension", () => {
     expect(forcedCodexModel).toMatchObject({
       api: "openai-codex-responses",
       baseUrl: "http://codex.example/v1",
-      thinkingLevelMap: { off: "none", xhigh: "xhigh" },
+      thinkingLevelMap: { off: "none", minimal: "low", xhigh: "xhigh" },
     });
     expect(forcedCodexModel.compat).toBeUndefined();
     expect(resolveConfigValue(forcedCodexModel.headers!.Authorization, {})).toBe(
@@ -443,24 +443,21 @@ describe("sub2api provider extension", () => {
       expect(call.options.transport).toBe("sse");
     }
 
+    // Codex requests are rewritten from /v1/codex/responses to /v1/responses.
     expect(transportFetchCalls.map((call) => call.url)).toEqual([
-      "https://fallback.example/v1/codex/responses",
+      "https://fallback.example/v1/responses",
     ]);
-    expect(customFetchCalls.map((call) => call.url)).toEqual([
-      "http://codex.example/v1/codex/responses",
-    ]);
+    expect(customFetchCalls.map((call) => call.url)).toEqual(["http://codex.example/v1/responses"]);
     expect(new Headers(transportFetchCalls[0]!.init?.headers).get("authorization")).toBe(
       "Bearer sk-fallback",
     );
     expect(new Headers(customFetchCalls[0]!.init?.headers).get("authorization")).toBe(
       `Bearer ${specialToken}`,
     );
-    for (const [index, call] of [transportFetchCalls[0]!, customFetchCalls[0]!].entries()) {
+    for (const call of [transportFetchCalls[0]!, customFetchCalls[0]!]) {
       const headers = new Headers(call.init?.headers);
       expect(call.init?.redirect).toBe("error");
-      expect(headers.get("chatgpt-account-id")).toBe(
-        decodeCodexAccountId(codexCalls[index]!.options.apiKey),
-      );
+      expect(headers.get("chatgpt-account-id")).toBeNull();
       expect(headers.get("openai-beta")).toBe("responses=experimental");
     }
 
