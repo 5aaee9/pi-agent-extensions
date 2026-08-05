@@ -1,6 +1,6 @@
 # @indexyz/pi-provider-sub2api
 
-A [pi](https://github.com/earendil-works/pi-mono) provider extension for Sub2API-compatible relays. It discovers models dynamically and registers every configured relay as a separate pi provider.
+A [pi](https://github.com/earendil-works/pi-mono) provider extension for Sub2API-compatible relays. It discovers models dynamically, registers every configured relay as a separate pi provider, and reports relay quota usage in pi.
 
 ## Requirements
 
@@ -69,11 +69,24 @@ Codex models keep the configured `/v1` base URL and call `/v1/codex/responses`. 
 
 OpenAI Responses and Chat Completions models use pi's built-in implementations and call `/v1/responses` and `/v1/chat/completions`, respectively.
 
+## Quota reporting
+
+For the active Sub2API provider, the extension automatically probes the relay's `/usage` and `/v1/usage` endpoints. A recognized response may contain `rate_limits`, `daily_usage`, and `usage.today`/`usage.total` data; camelCase aliases are accepted as well.
+
+Quota refreshes run in the background on `session_start`, `model_select`, and `turn_end`. The built-in footer then shows a compact status such as:
+
+```text
+● my-relay 5h 24% · d 11% · w 7%
+```
+
+Run `/quota` for the current provider's detailed status, billing mode, daily request/token totals, costs, rate-limit usage, remaining quota, and reset times. Providers without a compatible usage endpoint continue to work normally and simply omit the quota status.
+
 Additional behavior:
 
-- Model discovery times out after 10 seconds per relay so an unreachable endpoint cannot block startup indefinitely.
+- Model discovery and quota requests use a 5-second timeout per attempt. Transient network errors plus HTTP 408, 425, 429, 500, 502, 503, and 504 responses are retried up to twice with one- and two-second exponential backoff.
 - Models whose IDs start with `gpt-image` are excluded.
 - IDs containing `claude`, `codex`, or `gpt-5` are exposed as reasoning models.
+- Remote model metadata accepts `context_window`, `contextWindow`, `context_length`, `max_context_tokens`, `limit.context`, and `limits.context` for context size. Output limits accept `max_tokens`, `maxTokens`, `max_output_tokens`, `max_completion_tokens`, `limit.output`, and `limits.output`; positive numeric strings are normalized.
 - Missing model metadata falls back to a 200,000-token context window and a model-family-specific output limit.
 - Network interception is request-scoped; process-wide transports are never patched.
 
@@ -85,13 +98,14 @@ The configuration contains plaintext API tokens. Keep it outside repositories an
 chmod 600 ~/.pi/agent/sub2api.json
 ```
 
-Use HTTPS for remote relays. Plain HTTP is accepted for trusted local development endpoints only. Base URLs containing query strings or fragments are rejected.
+Use HTTPS for remote relays. Plain HTTP is accepted for trusted local development endpoints only. Base URLs containing embedded credentials, query strings, or fragments are rejected. Authenticated discovery, quota, and wrapped Codex requests reject redirects, and discovery/quota JSON responses are capped at 1 MiB.
 
 ## Troubleshooting
 
 - **Provider does not appear:** inspect stderr for `[sub2api] failed to load ...`; verify that the JSON is valid and every entry has non-empty `baseURL` and `token` strings.
 - **No models appear:** verify that `<baseURL>/v1/models` is reachable with `Authorization: Bearer <token>`. Discovery failures are logged as `[sub2api:<provider>] failed to fetch models`.
 - **Requests fail:** confirm the configured API is supported by the relay: Anthropic Messages uses `/v1/messages`, Codex uses `/v1/codex/responses`, OpenAI Responses uses `/v1/responses`, and Chat Completions uses `/v1/chat/completions`.
+- **No quota status:** run `/quota` and verify that either `<baseURL>/usage` or the relay's `/v1/usage` endpoint returns JSON with `rate_limits`, `daily_usage`, or `usage` data for the configured bearer token.
 - **Custom agent directory:** ensure `sub2api.json` is directly inside the directory named by `PI_CODING_AGENT_DIR`.
 
 ## Development
@@ -128,6 +142,10 @@ For each release:
 5. Confirm the **Publish Package** workflow completed, then create the matching GitHub release.
 
 The workflow requires the tag to exactly match the package version and publishes from a GitHub-hosted runner using npm's short-lived OIDC credentials.
+
+## Acknowledgements
+
+The quota workflow is informed by the MIT-licensed [`dereknex/pi-sub2api-provider`](https://github.com/dereknex/pi-sub2api-provider) project and adapted to this package's `sub2api.json` configuration and native Pi provider routing.
 
 ## License
 

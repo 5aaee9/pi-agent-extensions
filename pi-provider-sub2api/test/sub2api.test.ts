@@ -77,7 +77,12 @@ const discovery = {
         max_tokens: 32000,
       },
       { id: "claude-opus-4-6", display_name: "Claude Opus 4.6" },
-      { id: "grok-4-fast", display_name: "Grok 4 Fast" },
+      {
+        id: "grok-4-fast",
+        name: "Grok 4 Fast",
+        context_length: "131072",
+        max_output_tokens: "24576",
+      },
       { id: "gpt-image-1", display_name: "GPT Image" },
     ],
   },
@@ -94,7 +99,22 @@ const discovery = {
   },
   "https://responses.example/v1/models": {
     token: "sk-responses",
-    models: [{ id: "gpt-5.5-forced-responses", display_name: "Forced Responses" }],
+    models: [
+      { id: "gpt-5.5-forced-responses", display_name: "Forced Responses" },
+      {
+        id: "grok-invalid-metadata",
+        display_name: "Invalid Metadata",
+        context_window: 0.5,
+        max_tokens: 99_999_999,
+      },
+      { id: "grok-camel", contextWindow: "111000", maxTokens: "11000" },
+      {
+        id: "grok-max-aliases",
+        max_context_tokens: 122000,
+        max_completion_tokens: 12000,
+      },
+      { id: "grok-limit", limit: { context: "133000", output: "13000" } },
+    ],
   },
   "http://v1/v1/models": {
     token: "sk-completions",
@@ -110,6 +130,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
@@ -128,6 +149,8 @@ async function registerProviders() {
     registerProvider(name: string, config: ProviderConfig) {
       registrations.push({ name, config });
     },
+    on() {},
+    registerCommand() {},
   } as unknown as ExtensionAPI);
   return registrations;
 }
@@ -245,6 +268,7 @@ describe("sub2api provider extension", () => {
       );
       expect(call.init?.signal).toBeInstanceOf(AbortSignal);
       expect(call.init?.signal?.aborted).toBe(false);
+      expect(call.init?.redirect).toBe("error");
     }
     expect(registrations.map((registration) => registration.name)).toEqual(
       Object.keys(relayDefinitions),
@@ -274,7 +298,12 @@ describe("sub2api provider extension", () => {
     });
     expect(fallbackModels[1]!.compat).toEqual({ forceAdaptiveThinking: true });
     expect(fallbackModels[1]!.thinkingLevelMap).toEqual({ xhigh: "max" });
-    expect(fallbackModels[2]!.reasoning).toBe(false);
+    expect(fallbackModels[2]).toMatchObject({
+      name: "Grok 4 Fast",
+      reasoning: false,
+      contextWindow: 131072,
+      maxTokens: 24576,
+    });
 
     const forcedCodex = registrations[1]!;
     const forcedCodexModel = modelConfigs(forcedCodex)[0]!;
@@ -312,7 +341,8 @@ describe("sub2api provider extension", () => {
     expect(anthropicModels[1]!.maxTokens).toBe(8192);
 
     const responses = registrations[3]!;
-    const responsesModel = modelConfigs(responses)[0]!;
+    const responsesModels = modelConfigs(responses);
+    const responsesModel = responsesModels[0]!;
     expect(responses.config).toMatchObject({
       baseUrl: "https://responses.example/v1",
       api: "openai-responses",
@@ -323,6 +353,14 @@ describe("sub2api provider extension", () => {
       baseUrl: "https://responses.example/v1",
     });
     expect(responsesModel.compat).toBeUndefined();
+    expect(responsesModels.slice(1).map((model) => [model.contextWindow, model.maxTokens])).toEqual(
+      [
+        [200000, 16384],
+        [111000, 11000],
+        [122000, 12000],
+        [133000, 13000],
+      ],
+    );
 
     const completions = registrations[4]!;
     const completionsModel = modelConfigs(completions)[0]!;
@@ -419,6 +457,7 @@ describe("sub2api provider extension", () => {
     );
     for (const [index, call] of [transportFetchCalls[0]!, customFetchCalls[0]!].entries()) {
       const headers = new Headers(call.init?.headers);
+      expect(call.init?.redirect).toBe("error");
       expect(headers.get("chatgpt-account-id")).toBe(
         decodeCodexAccountId(codexCalls[index]!.options.apiKey),
       );
@@ -489,6 +528,290 @@ describe("sub2api provider extension", () => {
     ]);
   });
 
+  it("refreshes quota across lifecycle events and reports details through /quota", async () => {
+    writeFileSync(
+      join(stateDir, "sub2api.json"),
+      JSON.stringify({
+        "quota-relay": { baseURL: "https://quota.example", token: "sk-quota" },
+      }),
+    );
+
+    let quotaVersion = 0;
+    const fetchCalls: FetchCall[] = [];
+    vi.stubGlobal("fetch", async (input: URL | RequestInfo, init?: RequestInit) => {
+      const url = input instanceof Request ? input.url : String(input);
+      fetchCalls.push({ url, init });
+      if (url === "https://quota.example/v1/models") {
+        return Response.json({
+          data: [{ id: "grok-quota", limits: { context: 64000, output: 8000 } }],
+        });
+      }
+      if (url === "https://quota.example/usage") {
+        return new Response("<!doctype html><p>not an API</p>", {
+          headers: { "content-type": "text/html" },
+        });
+      }
+      if (url === "https://quota.example/v1/usage") {
+        quotaVersion += 1;
+        return Response.json({
+          rateLimits: [
+            {
+              limit: "20",
+              remaining: String(20 - quotaVersion * 2),
+              used: String(quotaVersion * 2),
+              window: "5h",
+              resetAt: "2030-01-01T00:00:00Z",
+            },
+            { limit: 100, remaining: 90, used: 10, window: "1d" },
+          ],
+          dailyUsage: [
+            {
+              date: "2026-08-05",
+              requests: "7",
+              inputTokens: "1000",
+              outputTokens: 500,
+              cacheReadTokens: 250,
+              cacheWriteTokens: 50,
+              totalTokens: "1800",
+              cost: "0.5",
+              actualCost: "0.4",
+            },
+            { date: "2026-08-04", requests: 1, totalTokens: 25, cost: 99, actualCost: 0 },
+          ],
+          usage: {
+            today: { actualCost: String(quotaVersion / 10) },
+          },
+          status: "valid",
+          mode: "subscription",
+        });
+      }
+      return new Response(null, { status: 404 });
+    });
+
+    const registrations: Registration[] = [];
+    const handlers = new Map<string, (event: any, context: any) => unknown>();
+    const commands = new Map<
+      string,
+      { handler: (args: string, context: any) => Promise<void> | void }
+    >();
+    await extension({
+      registerProvider(name: string, config: ProviderConfig) {
+        registrations.push({ name, config });
+      },
+      on(name: string, handler: (event: any, context: any) => unknown) {
+        handlers.set(name, handler);
+      },
+      registerCommand(
+        name: string,
+        options: { handler: (args: string, context: any) => Promise<void> | void },
+      ) {
+        commands.set(name, options);
+      },
+    } as unknown as ExtensionAPI);
+
+    expect(registrations).toHaveLength(1);
+    expect(modelConfigs(registrations[0]!)[0]).toMatchObject({
+      contextWindow: 64000,
+      maxTokens: 8000,
+    });
+    expect([...handlers.keys()]).toEqual([
+      "session_start",
+      "model_select",
+      "turn_end",
+      "session_shutdown",
+    ]);
+    expect(commands.has("quota")).toBe(true);
+
+    const statuses: Array<[string, string | undefined]> = [];
+    const notifications: Array<[string, string | undefined]> = [];
+    const activeModel = { provider: "quota-relay", id: "grok-quota" };
+    const context = {
+      hasUI: true,
+      model: activeModel,
+      ui: {
+        theme: { fg: (_color: string, text: string) => text },
+        setStatus: (key: string, text: string | undefined) => statuses.push([key, text]),
+        notify: (message: string, type?: string) => notifications.push([message, type]),
+      },
+    };
+
+    handlers.get("session_start")!({}, context);
+    await vi.waitFor(() => expect(quotaVersion).toBe(1));
+    expect(statuses.at(-1)?.[1]).toContain("● quota-relay 5h 10% · d 10%");
+
+    handlers.get("model_select")!({ model: activeModel }, context);
+    await vi.waitFor(() => expect(statuses.at(-1)?.[1]).toContain("5h 20%"));
+    expect(quotaVersion).toBe(2);
+
+    handlers.get("turn_end")!({}, context);
+    await vi.waitFor(() => expect(statuses.at(-1)?.[1]).toContain("5h 30%"));
+    expect(quotaVersion).toBe(3);
+
+    await commands.get("quota")!.handler("", context);
+    expect(quotaVersion).toBe(4);
+    expect(statuses.at(-1)?.[1]).toContain("5h 40%");
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0]?.[1]).toBe("info");
+    expect(notifications[0]?.[0]).toContain("Sub2API quota — quota-relay");
+    expect(notifications[0]?.[0]).toContain("Today cost: $0.4000");
+    expect(notifications[0]?.[0]).toContain("Total cost: $0.4000");
+    expect(notifications[0]?.[0]).toContain("1,800 tokens");
+    expect(notifications[0]?.[0]).toContain("5h: $8.00/$20.00");
+
+    const usageCalls = fetchCalls.filter((call) => call.url.endsWith("/usage"));
+    expect(usageCalls.map((call) => call.url)).toEqual([
+      "https://quota.example/usage",
+      "https://quota.example/v1/usage",
+      "https://quota.example/v1/usage",
+      "https://quota.example/v1/usage",
+      "https://quota.example/v1/usage",
+    ]);
+    for (const call of usageCalls) {
+      expect(new Headers(call.init?.headers).get("authorization")).toBe("Bearer sk-quota");
+      expect(call.init?.redirect).toBe("error");
+    }
+
+    const callsBeforeNoUiCommand = fetchCalls.length;
+    await commands.get("quota")!.handler("", { ...context, hasUI: false });
+    expect(fetchCalls).toHaveLength(callsBeforeNoUiCommand);
+
+    context.model = { provider: "other", id: "other-model" };
+    handlers.get("model_select")!({ model: context.model }, context);
+    expect(statuses.at(-1)).toEqual(["sub2api-quota", undefined]);
+
+    context.model = { provider: "evil\u001b[31m\n", id: "other-model" };
+    await commands.get("quota")!.handler("", context);
+    expect(notifications.at(-1)).toEqual(["Provider 'evil' is not managed by Sub2API.", "warning"]);
+  });
+
+  it("does not publish an in-flight quota result after session shutdown", async () => {
+    writeFileSync(
+      join(stateDir, "sub2api.json"),
+      JSON.stringify({ stale: { baseURL: "https://stale.example", token: "sk-stale" } }),
+    );
+
+    let resolveUsage: ((response: Response) => void) | undefined;
+    let usageSignal: AbortSignal | undefined;
+    let markUsageStarted: (() => void) | undefined;
+    const usageStarted = new Promise<void>((resolveStarted) => {
+      markUsageStarted = resolveStarted;
+    });
+    vi.stubGlobal("fetch", async (input: URL | RequestInfo, init?: RequestInit) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (url.endsWith("/models")) return Response.json({ data: [{ id: "grok-stale" }] });
+      if (url === "https://stale.example/usage") return new Response(null, { status: 404 });
+      if (url === "https://stale.example/v1/usage") {
+        usageSignal = init?.signal ?? undefined;
+        markUsageStarted?.();
+        return new Promise<Response>((resolveResponse) => {
+          resolveUsage = resolveResponse;
+        });
+      }
+      return new Response(null, { status: 404 });
+    });
+
+    const handlers = new Map<string, (event: any, context: any) => unknown>();
+    await extension({
+      registerProvider() {},
+      on(name: string, handler: (event: any, context: any) => unknown) {
+        handlers.set(name, handler);
+      },
+      registerCommand() {},
+    } as unknown as ExtensionAPI);
+
+    const statuses: Array<string | undefined> = [];
+    const context = {
+      hasUI: true,
+      model: { provider: "stale", id: "grok-stale" },
+      ui: {
+        theme: { fg: (_color: string, text: string) => text },
+        setStatus: (_key: string, text: string | undefined) => statuses.push(text),
+      },
+    };
+    handlers.get("session_start")!({}, context);
+    await usageStarted;
+    handlers.get("session_shutdown")!({}, context);
+    expect(usageSignal?.aborted).toBe(true);
+    resolveUsage?.(
+      Response.json({
+        rate_limits: [{ limit: 10, used: 1, remaining: 9, window: "5h" }],
+      }),
+    );
+    await new Promise((resolveTurn) => setTimeout(resolveTurn, 0));
+
+    expect(statuses.at(-1)).toBeUndefined();
+    expect(statuses.filter((status): status is string => typeof status === "string")).toEqual([]);
+  });
+
+  it("retries model discovery with exponential backoff and a five-second timeout", async () => {
+    writeFileSync(
+      join(stateDir, "sub2api.json"),
+      JSON.stringify({ retry: { baseURL: "https://retry.example", token: "sk-retry" } }),
+    );
+    const timeoutSpy = vi
+      .spyOn(AbortSignal, "timeout")
+      .mockImplementation(() => new AbortController().signal);
+    const retryDelays: number[] = [];
+    const realSetTimeout = globalThis.setTimeout;
+    vi.spyOn(globalThis, "setTimeout").mockImplementation(((
+      callback: () => void,
+      delay?: number,
+    ) => {
+      retryDelays.push(delay ?? 0);
+      return realSetTimeout(callback, 0);
+    }) as typeof setTimeout);
+    let attempts = 0;
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => {
+      attempts += 1;
+      if (attempts === 1) {
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.error(new TypeError("terminated"));
+            },
+          }),
+        );
+      }
+      if (attempts === 2) return new Response(null, { status: 503 });
+      return Response.json({ data: [{ id: "grok-retry" }] });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const registrations = await registerProviders();
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(timeoutSpy.mock.calls).toEqual([[5_000], [5_000], [5_000]]);
+    expect(retryDelays).toEqual([1_000, 2_000]);
+    expect(registrations).toHaveLength(1);
+  });
+
+  it("bounds remote JSON responses to one MiB", async () => {
+    writeFileSync(
+      join(stateDir, "sub2api.json"),
+      JSON.stringify({ bounded: { baseURL: "https://bounded.example", token: "sk-bounded" } }),
+    );
+    vi.stubGlobal("fetch", async () => {
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(new Uint8Array(1024 * 1024 + 1));
+            controller.close();
+          },
+        }),
+      );
+    });
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    const registrations = await registerProviders();
+
+    expect(registrations).toHaveLength(1);
+    expect(modelConfigs(registrations[0]!)).toEqual([]);
+    expect(consoleError).toHaveBeenCalledWith(
+      expect.stringContaining("failed to fetch models"),
+      expect.objectContaining({ message: expect.stringContaining("response exceeds") }),
+    );
+  });
+
   it("rejects an unsupported configured API before registering providers", async () => {
     writeFileSync(
       join(stateDir, "sub2api.json"),
@@ -504,6 +827,46 @@ describe("sub2api provider extension", () => {
     expect(consoleError).toHaveBeenCalledWith(
       expect.stringContaining("failed to load"),
       expect.objectContaining({ message: expect.stringContaining("unsupported api") }),
+    );
+  });
+
+  it.each([
+    {
+      label: "base URL",
+      entry: { baseURL: "https://example.com\n", token: "sk" },
+      message: "baseURL must not include control characters",
+    },
+    {
+      label: "token",
+      entry: { baseURL: "https://example.com", token: "sk\nsecret" },
+      message: "token must not include control characters",
+    },
+  ])("rejects control characters in the $label", async ({ entry, message }) => {
+    writeFileSync(join(stateDir, "sub2api.json"), JSON.stringify({ invalid: entry }));
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    const registrations = await registerProviders();
+
+    expect(registrations).toHaveLength(0);
+    const error = consoleError.mock.calls[0]?.[1];
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain(message);
+    expect((error as Error).message).not.toContain("\n");
+  });
+
+  it("rejects credentials embedded in a base URL", async () => {
+    writeFileSync(
+      join(stateDir, "sub2api.json"),
+      JSON.stringify({ invalid: { baseURL: "https://user:pass@example.com", token: "sk" } }),
+    );
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    const registrations = await registerProviders();
+
+    expect(registrations).toHaveLength(0);
+    expect(consoleError).toHaveBeenCalledWith(
+      expect.stringContaining("failed to load"),
+      expect.objectContaining({ message: expect.stringContaining("must not include credentials") }),
     );
   });
 

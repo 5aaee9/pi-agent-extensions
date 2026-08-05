@@ -4,7 +4,7 @@ A collection of extensions for the [pi coding agent](https://github.com/earendil
 
 ## Packages
 
-- [`@indexyz/pi-provider-sub2api`](./pi-provider-sub2api) — dynamic provider support for Sub2API-compatible relays.
+- [`@indexyz/pi-provider-sub2api`](./pi-provider-sub2api) — dynamic provider support, model metadata discovery, and quota reporting for Sub2API-compatible relays.
 
 The repository root is a private npm workspace. Install the provider from npm with:
 
