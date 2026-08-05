@@ -5,6 +5,9 @@ node_modules/
 # Agent artifacts
 .pi-subagents/
 
+# Test output
+coverage/
+
 # Temporary files
 *.log
 *.tmp

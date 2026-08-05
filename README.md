@@ -16,6 +16,8 @@ For local development:
 
 ```bash
 npm install
+npm run format
+npm run lint
 npm run check
 pi -e ./pi-provider-sub2api/index.ts
 ```

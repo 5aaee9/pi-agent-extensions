@@ -1,21 +1,25 @@
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import {
-  anthropicMessagesApi,
-  createAssistantMessageEventStream,
-  openAICodexResponsesApi,
-} from "@earendil-works/pi-ai/compat";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { openAICodexResponsesApi } from "@earendil-works/pi-ai/compat";
+import type { ExtensionAPI, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
 
 const CONFIG_FILENAME = "sub2api.json";
 const MODEL_DISCOVERY_TIMEOUT_MS = 10_000;
-const ANTHROPIC_API = anthropicMessagesApi();
 const CODEX_API = openAICodexResponsesApi();
 
 // Models that are not chat / reasoning models (e.g. image generators).
 const EXCLUDED = /^gpt-image/i;
 const CLAUDE = /^claude-/i;
+const OPENAI = /^(?:chatgpt(?:-|$)|codex(?:-|$)|gpt(?:-|$)|o\d(?:-|$))/i;
+
+const SUPPORTED_APIS = [
+  "anthropic-messages",
+  "openai-codex-responses",
+  "openai-responses",
+  "openai-completions",
+] as const;
+type SupportedApi = (typeof SUPPORTED_APIS)[number];
 
 // Models that support extended thinking / reasoning.
 const REASONING = /(claude|codex|gpt-5)/i;
@@ -29,7 +33,7 @@ interface RelayConfig {
   baseUrl: string;
   anthropicBaseUrl: string;
   apiKey: string;
-  responsesUrl: string;
+  api?: SupportedApi;
   codexResponsesUrl: string;
   codexAuthToken: string;
 }
@@ -80,20 +84,28 @@ function createCodexAuthToken(accountId: string) {
 }
 
 function normalizeBaseUrls(value: string) {
-  const configured = value.trim().replace(/\/+$/, "");
+  const configured = value.trim();
+  if (configured.includes("?") || configured.includes("#")) {
+    throw new Error(`baseURL must not include a query or fragment: ${value}`);
+  }
+
   const parsed = new URL(configured);
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     throw new Error(`baseURL must use http or https: ${value}`);
   }
-  if (parsed.search || parsed.hash) {
-    throw new Error(`baseURL must not include a query or fragment: ${value}`);
-  }
 
-  const hasV1Suffix = configured.endsWith("/v1");
+  const pathname = parsed.pathname.replace(/\/+$/, "");
+  const hasV1Suffix = pathname.endsWith("/v1");
+  const createBaseUrl = (nextPathname: string) => {
+    const url = new URL(parsed);
+    url.pathname = nextPathname || "/";
+    return url.toString().replace(/\/$/, "");
+  };
+
   return {
-    baseUrl: hasV1Suffix ? configured : `${configured}/v1`,
+    baseUrl: createBaseUrl(hasV1Suffix ? pathname : `${pathname}/v1`),
     // anthropicMessagesApi appends /v1/messages itself.
-    anthropicBaseUrl: hasV1Suffix ? configured.slice(0, -3) : configured,
+    anthropicBaseUrl: createBaseUrl(hasV1Suffix ? pathname.slice(0, -3) : pathname),
   };
 }
 
@@ -105,12 +117,20 @@ function parseRelayConfig(provider: string, value: unknown): RelayConfig {
     throw new Error(`provider ${provider} must be an object`);
   }
 
-  const entry = value as { baseURL?: unknown; token?: unknown };
+  const entry = value as { baseURL?: unknown; token?: unknown; api?: unknown };
   if (typeof entry.baseURL !== "string" || !entry.baseURL.trim()) {
     throw new Error(`provider ${provider} is missing baseURL`);
   }
   if (typeof entry.token !== "string" || !entry.token.trim()) {
     throw new Error(`provider ${provider} is missing token`);
+  }
+  if (
+    entry.api !== undefined &&
+    (typeof entry.api !== "string" || !SUPPORTED_APIS.includes(entry.api as SupportedApi))
+  ) {
+    throw new Error(
+      `provider ${provider} has unsupported api ${JSON.stringify(entry.api)}; expected one of ${SUPPORTED_APIS.join(", ")}`,
+    );
   }
 
   const { baseUrl, anthropicBaseUrl } = normalizeBaseUrls(entry.baseURL);
@@ -121,7 +141,7 @@ function parseRelayConfig(provider: string, value: unknown): RelayConfig {
     baseUrl,
     anthropicBaseUrl,
     apiKey: entry.token,
-    responsesUrl: `${baseUrl}/responses`,
+    api: entry.api as SupportedApi | undefined,
     codexResponsesUrl: `${baseUrl}/codex/responses`,
     codexAuthToken: createCodexAuthToken(accountId),
   };
@@ -140,103 +160,65 @@ function escapeConfigLiteral(value: string) {
   return escapedDollars.startsWith("!") ? `$!${escapedDollars.slice(1)}` : escapedDollars;
 }
 
-function createRelayFetch(relay: RelayConfig, upstreamFetch: typeof globalThis.fetch): typeof globalThis.fetch {
+function createRelayFetch(
+  relay: RelayConfig,
+  upstreamFetch: typeof globalThis.fetch,
+): typeof globalThis.fetch {
   return (input, init) => {
-    const url = typeof Request !== "undefined" && input instanceof Request ? input.url : String(input);
+    const request = typeof Request !== "undefined" && input instanceof Request ? input : undefined;
+    const url = request?.url ?? String(input);
     if (url !== relay.codexResponsesUrl) return upstreamFetch(input, init);
 
-    const headers = new Headers(init?.headers);
+    const headers = new Headers(init?.headers ?? request?.headers);
     const hasRelayIdentity =
       headers.get("Authorization") === `Bearer ${relay.codexAuthToken}` &&
       headers.get("chatgpt-account-id") === relay.accountId;
     if (!hasRelayIdentity) return upstreamFetch(input, init);
 
+    // Keep the Codex URL and account header intact; only replace the fake JWT
+    // with the real Sub2API credential at the request boundary.
     headers.set("Authorization", `Bearer ${relay.apiKey}`);
-    headers.delete("chatgpt-account-id");
-    return upstreamFetch(relay.responsesUrl, { ...init, headers });
+    return upstreamFetch(input, { ...init, headers });
   };
 }
 
-function getModelApi(modelId: string) {
-  return CLAUDE.test(modelId) ? "anthropic-messages" : "openai-codex-responses";
+function getModelApi(modelId: string, configuredApi?: SupportedApi): SupportedApi {
+  if (configuredApi) return configuredApi;
+  if (CLAUDE.test(modelId)) return "anthropic-messages";
+  if (OPENAI.test(modelId)) return "openai-codex-responses";
+  return "openai-responses";
 }
 
-function getThinkingLevelMap(modelId: string) {
+function getApiBaseUrl(relay: RelayConfig, api: SupportedApi) {
+  return api === "anthropic-messages" ? relay.anthropicBaseUrl : relay.baseUrl;
+}
+
+function getThinkingLevelMap(modelId: string, api: SupportedApi) {
   if (!REASONING.test(modelId)) return undefined;
-  return CLAUDE.test(modelId) ? { xhigh: "max" } : { off: "none", xhigh: "xhigh" };
+  return api === "anthropic-messages" ? { xhigh: "max" } : { off: "none", xhigh: "xhigh" };
 }
 
-function getModelCompat(modelId: string) {
-  return ADAPTIVE_CLAUDE.test(modelId) ? { forceAdaptiveThinking: true } : undefined;
+function getModelCompat(modelId: string, api: SupportedApi) {
+  return api === "anthropic-messages" && ADAPTIVE_CLAUDE.test(modelId)
+    ? { forceAdaptiveThinking: true }
+    : undefined;
 }
 
 function getDefaultMaxTokens(modelId: string) {
   return /^claude-haiku-4-5(?:-|$)/i.test(modelId) ? 8192 : 16384;
 }
 
-function createStreamErrorMessage(model: { api: string; provider: string; id: string }, error: unknown) {
-  return {
-    role: "assistant" as const,
-    content: [],
-    api: model.api,
-    provider: model.provider,
-    model: model.id,
-    usage: {
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      cacheWrite: 0,
-      totalTokens: 0,
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-    },
-    stopReason: "error" as const,
-    errorMessage: error instanceof Error ? error.message : String(error),
-    timestamp: Date.now(),
-  };
-}
-
-function streamSub2Api(model: any, context: any, options: any) {
+function streamCodex(model: any, context: any, options: any) {
   const relay = relaysByProvider.get(model.provider);
-  if (!relay) {
-    return model.api === "anthropic-messages"
-      ? ANTHROPIC_API.streamSimple(model, context, options)
-      : CODEX_API.streamSimple(model, context, options);
-  }
+  if (!relay) return CODEX_API.streamSimple(model, context, options);
 
-  if (CLAUDE.test(model.id)) {
-    return ANTHROPIC_API.streamSimple(
-      {
-        ...model,
-        api: "anthropic-messages",
-        baseUrl: relay.anthropicBaseUrl,
-        compat: { ...model.compat, ...getModelCompat(model.id) },
-      },
-      context,
-      { ...options, apiKey: relay.apiKey },
-    );
-  }
-
-  const stream = createAssistantMessageEventStream();
   const upstreamFetch = options?.fetch ?? globalThis.fetch;
-
-  (async () => {
-    try {
-      const innerStream = CODEX_API.streamSimple(model, context, {
-        ...options,
-        apiKey: relay.codexAuthToken,
-        transport: "sse",
-        fetch: createRelayFetch(relay, upstreamFetch),
-      });
-      for await (const event of innerStream) stream.push(event);
-      stream.end();
-    } catch (error) {
-      const message = createStreamErrorMessage(model, error);
-      stream.push({ type: "error", reason: "error", error: message });
-      stream.end(message);
-    }
-  })();
-
-  return stream;
+  return CODEX_API.streamSimple(model, context, {
+    ...options,
+    apiKey: relay.codexAuthToken,
+    transport: "sse",
+    fetch: createRelayFetch(relay, upstreamFetch),
+  });
 }
 
 async function fetchModels(relay: RelayConfig): Promise<DiscoveredModel[]> {
@@ -260,7 +242,10 @@ async function fetchModels(relay: RelayConfig): Promise<DiscoveredModel[]> {
     if (!Array.isArray(payload.data)) return [];
 
     return payload.data
-      .filter((model): model is typeof model & { id: string } => typeof model.id === "string" && !!model.id)
+      .filter(
+        (model): model is typeof model & { id: string } =>
+          typeof model.id === "string" && !!model.id,
+      )
       .map((model) => ({
         id: model.id,
         name: typeof model.display_name === "string" ? model.display_name : model.id,
@@ -291,27 +276,42 @@ export default async function (pi: ExtensionAPI) {
   );
 
   for (const { relay, models } of providers) {
-    pi.registerProvider(relay.provider, {
-      name: relay.provider,
-      baseUrl: relay.baseUrl,
-      apiKey: escapeConfigLiteral(relay.apiKey),
-      api: "openai-codex-responses",
-      streamSimple: streamSub2Api,
-      models: models
-        .filter((model) => !EXCLUDED.test(model.id))
-        .map((model) => ({
+    const registeredModels: ProviderModelConfig[] = models
+      .filter((model) => !EXCLUDED.test(model.id))
+      .map((model) => {
+        const api = getModelApi(model.id, relay.api);
+        return {
           id: model.id,
           name: model.name,
-          api: getModelApi(model.id),
-          baseUrl: CLAUDE.test(model.id) ? relay.anthropicBaseUrl : undefined,
+          api,
+          baseUrl: getApiBaseUrl(relay, api),
           reasoning: REASONING.test(model.id),
-          thinkingLevelMap: getThinkingLevelMap(model.id),
+          thinkingLevelMap: getThinkingLevelMap(model.id, api),
           input: ["text", "image"],
           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
           contextWindow: model.contextWindow ?? 200000,
           maxTokens: model.maxTokens ?? getDefaultMaxTokens(model.id),
-          compat: getModelCompat(model.id),
-        })),
+          headers:
+            api === "openai-codex-responses"
+              ? { Authorization: escapeConfigLiteral(`Bearer ${relay.apiKey}`) }
+              : undefined,
+          compat: getModelCompat(model.id, api),
+        };
+      });
+    const usesCodex = registeredModels.some((model) => model.api === "openai-codex-responses");
+    const defaultApi: SupportedApi =
+      relay.api ??
+      (usesCodex
+        ? "openai-codex-responses"
+        : ((registeredModels[0]?.api as SupportedApi | undefined) ?? "openai-responses"));
+
+    pi.registerProvider(relay.provider, {
+      name: relay.provider,
+      baseUrl: getApiBaseUrl(relay, defaultApi),
+      apiKey: escapeConfigLiteral(relay.apiKey),
+      api: defaultApi,
+      ...(usesCodex ? { streamSimple: streamCodex } : {}),
+      models: registeredModels,
     });
   }
 }

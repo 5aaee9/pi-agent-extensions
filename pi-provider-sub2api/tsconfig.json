@@ -3,20 +3,13 @@
     "target": "ES2023",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
-    "lib": [
-      "ES2023",
-      "DOM",
-      "DOM.Iterable"
-    ],
-    "types": [
-      "node"
-    ],
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": ["node"],
     "strict": true,
     "noEmit": true,
     "verbatimModuleSyntax": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "allowImportingTsExtensions": true
   },
-  "include": [
-    "index.ts"
-  ]
+  "include": ["index.ts", "test/**/*.ts", "vitest.config.ts"]
 }

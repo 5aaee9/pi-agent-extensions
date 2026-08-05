@@ -3,28 +3,36 @@
   "version": "0.1.0",
   "private": true,
   "description": "A collection of pi coding agent extensions",
-  "type": "module",
-  "workspaces": [
-    "pi-provider-sub2api"
-  ],
-  "scripts": {
-    "test": "npm test --workspace @indexyz/pi-provider-sub2api",
-    "typecheck": "npm run typecheck --workspace @indexyz/pi-provider-sub2api",
-    "check": "npm run check --workspace @indexyz/pi-provider-sub2api",
-    "pack:sub2api": "npm pack --workspace @indexyz/pi-provider-sub2api --dry-run"
-  },
   "keywords": [
     "pi-package"
   ],
-  "author": "5aaee9",
   "license": "MIT",
+  "author": "5aaee9",
   "repository": {
     "type": "git",
     "url": "https://github.com/5aaee9/pi-agent-extensions.git"
   },
+  "workspaces": [
+    "pi-provider-sub2api"
+  ],
+  "type": "module",
+  "scripts": {
+    "test": "npm test --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "lint": "oxlint --deny-warnings .",
+    "lint:fix": "oxlint --fix .",
+    "format": "oxfmt .",
+    "format:check": "oxfmt --check .",
+    "check": "npm run format:check && npm run lint && npm run typecheck && npm test",
+    "pack:sub2api": "npm pack --workspace @indexyz/pi-provider-sub2api --dry-run"
+  },
+  "devDependencies": {
+    "oxfmt": "^0.62.0",
+    "oxlint": "^1.77.0"
+  },
   "peerDependencies": {
-    "@earendil-works/pi-ai": "*",
-    "@earendil-works/pi-coding-agent": "*"
+    "@earendil-works/pi-ai": ">=0.83.0",
+    "@earendil-works/pi-coding-agent": ">=0.83.0"
   },
   "pi": {
     "extensions": [
