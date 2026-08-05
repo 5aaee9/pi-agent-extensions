@@ -1,0 +1,34 @@
+{
+  "name": "pi-agent-extensions",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A collection of pi coding agent extensions",
+  "type": "module",
+  "workspaces": [
+    "pi-provider-sub2api"
+  ],
+  "scripts": {
+    "test": "npm test --workspace pi-provider-sub2api",
+    "typecheck": "npm run typecheck --workspace pi-provider-sub2api",
+    "check": "npm run check --workspace pi-provider-sub2api",
+    "pack:sub2api": "npm pack --workspace pi-provider-sub2api --dry-run"
+  },
+  "keywords": [
+    "pi-package"
+  ],
+  "author": "5aaee9",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/5aaee9/pi-agent-extensions.git"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "pi": {
+    "extensions": [
+      "./pi-provider-sub2api/index.ts"
+    ]
+  }
+}

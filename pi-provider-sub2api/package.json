@@ -1,0 +1,58 @@
+{
+  "name": "pi-provider-sub2api",
+  "version": "0.1.0",
+  "description": "A pi provider extension for Sub2API-compatible relays with dynamic model discovery",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "provider",
+    "sub2api",
+    "llm"
+  ],
+  "author": "5aaee9",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/5aaee9/pi-agent-extensions.git",
+    "directory": "pi-provider-sub2api"
+  },
+  "homepage": "https://github.com/5aaee9/pi-agent-extensions/tree/main/pi-provider-sub2api#readme",
+  "bugs": {
+    "url": "https://github.com/5aaee9/pi-agent-extensions/issues"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "files": [
+    "index.ts",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node ./test/sub2api.test.cjs",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm test",
+    "prepack": "npm run check"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "0.83.0",
+    "@earendil-works/pi-coding-agent": "0.83.0",
+    "@types/node": "^24.0.0",
+    "jiti": "^2.7.0",
+    "typescript": "^7.0.2"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

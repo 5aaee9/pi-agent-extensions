@@ -1,0 +1,10 @@
+# npm
+node_modules/
+*.tgz
+
+# Agent artifacts
+.pi-subagents/
+
+# Temporary files
+*.log
+*.tmp
