@@ -83,11 +83,43 @@ npm run pack:sub2api
 
 ## Release checklist
 
+Releases use npm trusted publishing through [`.github/workflows/publish.yml`](https://github.com/5aaee9/pi-agent-extensions/blob/main/.github/workflows/publish.yml); no long-lived npm token is stored in GitHub.
+
+### One-time package bootstrap
+
+An unpublished package must be published once before its trusted publisher can be configured on npm. The package owner can bootstrap it from the repository root with a token stored only in `/tmp/npm_token`:
+
+```bash
+set -eu
+TOKEN_FILE=/tmp/npm_token
+NPMRC="$(mktemp)"
+trap 'rm -f "$NPMRC"' EXIT
+chmod 600 "$NPMRC"
+printf '//registry.npmjs.org/:_authToken=%s\n' "$(tr -d '\r\n' < "$TOKEN_FILE")" > "$NPMRC"
+NPM_CONFIG_USERCONFIG="$NPMRC" npm publish --workspace @indexyz/pi-provider-sub2api --access public
+rm -f "$TOKEN_FILE"
+```
+
+The temporary npmrc is removed on exit, and the token file is removed only after a successful publish. Never pass the token as a command-line argument or store it in the repository or a GitHub secret.
+
+### Trusted publisher setup
+
+After the bootstrap publish, configure the npm package's GitHub Actions trusted publisher with:
+
+- Organization or user: `5aaee9`
+- Repository: `pi-agent-extensions`
+- Workflow filename: `publish.yml`
+- Allowed action: `npm publish`
+
+For each release:
+
 1. Update the child package version and `CHANGELOG.md`.
 2. Run `npm run check` and inspect `npm run pack:sub2api`.
 3. Commit and push the release commit to `main`.
-4. Confirm the npm identity with `npm whoami`, then publish with `npm publish --workspace @indexyz/pi-provider-sub2api`.
-5. Tag the published version (for example `pi-provider-sub2api-v0.1.0`), push the tag, and create the matching GitHub release.
+4. Create and push a matching `v<version>` tag, such as `v0.1.1`.
+5. Confirm the **Publish Package** workflow completed, then create the matching GitHub release.
+
+The workflow requires the tag to exactly match the package version and publishes from a GitHub-hosted runner using npm's short-lived OIDC credentials.
 
 ## License
 
