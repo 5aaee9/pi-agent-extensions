@@ -8,10 +8,10 @@
     "pi-provider-sub2api"
   ],
   "scripts": {
-    "test": "npm test --workspace pi-provider-sub2api",
-    "typecheck": "npm run typecheck --workspace pi-provider-sub2api",
-    "check": "npm run check --workspace pi-provider-sub2api",
-    "pack:sub2api": "npm pack --workspace pi-provider-sub2api --dry-run"
+    "test": "npm test --workspace @indexyz/pi-provider-sub2api",
+    "typecheck": "npm run typecheck --workspace @indexyz/pi-provider-sub2api",
+    "check": "npm run check --workspace @indexyz/pi-provider-sub2api",
+    "pack:sub2api": "npm pack --workspace @indexyz/pi-provider-sub2api --dry-run"
   },
   "keywords": [
     "pi-package"

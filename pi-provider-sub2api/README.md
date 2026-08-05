@@ -1,4 +1,4 @@
-# pi-provider-sub2api
+# @indexyz/pi-provider-sub2api
 
 A [pi](https://github.com/earendil-works/pi-mono) provider extension for Sub2API-compatible relays. It discovers models dynamically and registers every configured relay as a separate pi provider.
 
@@ -11,7 +11,7 @@ A [pi](https://github.com/earendil-works/pi-mono) provider extension for Sub2API
 ## Install
 
 ```bash
-pi install npm:pi-provider-sub2api
+pi install npm:@indexyz/pi-provider-sub2api
 ```
 
 To try the extension from this repository without installing it:
@@ -86,7 +86,7 @@ npm run pack:sub2api
 1. Update the child package version and `CHANGELOG.md`.
 2. Run `npm run check` and inspect `npm run pack:sub2api`.
 3. Commit and push the release commit to `main`.
-4. Confirm the npm identity with `npm whoami`, then publish with `npm publish --workspace pi-provider-sub2api`.
+4. Confirm the npm identity with `npm whoami`, then publish with `npm publish --workspace @indexyz/pi-provider-sub2api`.
 5. Tag the published version (for example `pi-provider-sub2api-v0.1.0`), push the tag, and create the matching GitHub release.
 
 ## License
