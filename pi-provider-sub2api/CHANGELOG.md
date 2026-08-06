@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.7 - 2026-08-06
+
 - Fix npm-installed extension startup by installing the `pi-ai` runtime needed by the native Codex compaction serializers, while keeping Pi-provided public core packages as wildcard peers.
 
 ## 0.1.6 - 2026-08-06
