@@ -39,12 +39,12 @@
     "prepack": "npm run check"
   },
   "dependencies": {
-    "@earendil-works/pi-ai": "0.83.0"
+    "@earendil-works/pi-ai": "0.84.0"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "0.83.0",
-    "@earendil-works/pi-coding-agent": "0.83.0",
-    "@earendil-works/pi-tui": "0.83.0",
+    "@earendil-works/pi-ai": "0.84.0",
+    "@earendil-works/pi-coding-agent": "0.84.0",
+    "@earendil-works/pi-tui": "0.84.0",
     "@types/node": "^24.0.0",
     "typescript": "^7.0.2",
     "vitest": "^4.1.10"

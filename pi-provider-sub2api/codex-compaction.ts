@@ -1,6 +1,4 @@
 import { calculateCost, type Model, type Tool, type Usage } from "@earendil-works/pi-ai";
-import { createGrammarToolInputProperties } from "@earendil-works/pi-ai/api/constrained-sampling";
-import { convertResponsesMessages } from "@earendil-works/pi-ai/api/openai-responses-shared";
 import {
   buildContextEntries,
   convertToLlm,
@@ -10,6 +8,21 @@ import {
   type SessionBeforeCompactEvent,
   type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
+
+// Pi's extension loader aliases the public pi-ai package root to its compat entrypoint.
+// Resolve our pinned serializer runtime first, then import its private modules by absolute
+// URL so Jiti cannot rewrite subpaths as `compat.js/api/*`.
+const PI_AI_RUNTIME_ENTRY = import.meta.resolve("@earendil-works/pi-ai");
+const [constrainedSampling, responsesShared] = await Promise.all([
+  import(new URL("./api/constrained-sampling.js", PI_AI_RUNTIME_ENTRY).href) as Promise<
+    typeof import("@earendil-works/pi-ai/api/constrained-sampling")
+  >,
+  import(new URL("./api/openai-responses-shared.js", PI_AI_RUNTIME_ENTRY).href) as Promise<
+    typeof import("@earendil-works/pi-ai/api/openai-responses-shared")
+  >,
+]);
+const { createGrammarToolInputProperties } = constrainedSampling;
+const { convertResponsesMessages } = responsesShared;
 
 const NATIVE_COMPACTION_KIND = "sub2api-codex-native-compaction";
 const NATIVE_COMPACTION_VERSION = 1;
