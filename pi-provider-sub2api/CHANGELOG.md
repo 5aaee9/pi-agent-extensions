@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.4 - 2026-08-06
 
 - Read Sub2API's `GET /v1/sub2api/billing` multiplier and apply it to pi's built-in model prices, including long-context tiers.
 - Parse official subscription, key-quota, aggregate-usage, and daily-usage fields from `GET /v1/usage`.
