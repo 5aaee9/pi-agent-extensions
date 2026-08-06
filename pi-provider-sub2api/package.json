@@ -22,6 +22,7 @@
   },
   "files": [
     "index.ts",
+    "codex-compaction.ts",
     "README.md",
     "CHANGELOG.md",
     "LICENSE"

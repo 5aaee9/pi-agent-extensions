@@ -67,6 +67,10 @@ Anthropic models are registered directly with pi's built-in Anthropic Messages i
 
 Codex models use pi's Codex Responses adapter so requests keep the Codex shape (instructions, `store: false`, encrypted reasoning, forced SSE). Sub2API relays do not expose ChatGPT's `/v1/codex/responses` passthrough route, so at the request boundary the extension rewrites the request URL to the relay's standard `/v1/responses` endpoint, drops the generated `chatgpt-account-id` header, and replaces only the fake JWT bearer credential with the relay token.
 
+Codex models also use OpenAI's standalone server-side compaction protocol when pi runs `/compact`, threshold compaction, or overflow recovery. The extension serializes pi's active session into Responses input items, sends `POST /v1/responses/compact` with the real relay bearer token, and persists the returned opaque output window in the compaction entry's `details`. Before later Codex Responses calls, it replaces pi's textual summary replay plus its pre-compaction kept window with that stored native window, followed by the live post-compaction tail. Repeated compactions compact the previous native window together with the new tail instead of nesting textual checkpoint markers.
+
+If the first native compact request is unavailable or malformed, pi's normal textual compaction remains the fallback. Once an opaque native checkpoint is active, a failed repeated compaction is cancelled rather than replacing the only replayable checkpoint with a summary of its local marker. Native checkpoints are bound to the provider, model, API, and normalized relay Responses URL; switching any of those leaves the opaque state untouched rather than forwarding it to a different endpoint.
+
 Reasoning models map thinking levels so relayed Codex backends accept them: `minimal` clamps to `low` and `xhigh` passes through, because the backends reject the `minimal` and `none` efforts. The Codex adapter omits the `reasoning` field when thinking is off; for plain OpenAI Responses models, `off` is not selectable, which makes that adapter omit the field as well.
 
 OpenAI Responses and Chat Completions models use pi's built-in implementations and call `/v1/responses` and `/v1/chat/completions`, respectively.
@@ -96,6 +100,7 @@ Additional behavior:
 - `GET /v1/models` remains the authoritative model inventory. When an OpenAI model is missing token limits, the extension best-effort merges metadata for the same model ID from Sub2API's `GET /backend-api/codex/models` manifest; manifest-only models are never registered. The `gpt-5.6` inventory alias uses `gpt-5.6-sol` metadata.
 - Remote model metadata accepts `context_window`, `contextWindow`, `context_length`, `max_context_tokens`, `limit.context`, and `limits.context` for context size. Output limits accept `max_tokens`, `maxTokens`, `max_output_tokens`, `max_completion_tokens`, `limit.output`, and `limits.output`; the first valid positive integer is used, so an invalid earlier alias does not hide a valid later one.
 - Missing OpenAI model limits are filled from pi's catalog for the selected API (`openai-codex` or `openai`). Only fields still unavailable after remote and catalog lookup fall back to a 200,000-token context window and a model-family-specific output limit.
+- Codex standalone compaction requests have a three-minute timeout, reject redirects, and cap compact response JSON at 32 MiB so retained native windows can contain images without allowing unbounded responses.
 - Network interception is request-scoped; process-wide transports are never patched.
 
 ## Security
@@ -112,7 +117,8 @@ Use HTTPS for remote relays. Plain HTTP is accepted for trusted local developmen
 
 - **Provider does not appear:** inspect stderr for `[sub2api] failed to load ...`; verify that the JSON is valid and every entry has non-empty `baseURL` and `token` strings.
 - **No models appear:** verify that `<baseURL>/v1/models` is reachable with `Authorization: Bearer <token>`. Discovery failures are logged as `[sub2api:<provider>] failed to fetch models`.
-- **Requests fail:** confirm the configured API is supported by the relay: Anthropic Messages uses `/v1/messages`, Codex models are rewritten to `/v1/responses`, OpenAI Responses uses `/v1/responses`, and Chat Completions uses `/v1/chat/completions`.
+- **Requests fail:** confirm the configured API is supported by the relay: Anthropic Messages uses `/v1/messages`, Codex models are rewritten to `/v1/responses` and use `/v1/responses/compact` for compaction, OpenAI Responses uses `/v1/responses`, and Chat Completions uses `/v1/chat/completions`.
+- **Native compaction falls back:** verify that the relay supports `POST /v1/responses/compact` for the selected model and returns a `response.compaction` object whose `output` contains retained user messages followed by one encrypted `compaction` item.
 - **Usage unavailable:** verify that the relay's `/v1/usage` endpoint returns JSON with subscription, quota, rate-limit, or usage data for the configured bearer token. The root `/usage` route is probed only for compatibility with other relays.
 - **Price multiplier missing:** verify that `<baseURL>/v1/sub2api/billing` returns the v1 token-billing contract: `object: "sub2api.key_billing"`, `schema_version: 1`, `billing_scope: "token"`, non-negative `group_rate_multiplier`, `resolved_rate_multiplier`, and `effective_rate_multiplier` values, plus a boolean `peak_rate_enabled`. Sub2API simple mode returns 404 and therefore uses pi's standard built-in prices.
 - **Custom agent directory:** ensure `sub2api.json` is directly inside the directory named by `PI_CODING_AGENT_DIR`.
@@ -154,7 +160,7 @@ The workflow requires the tag to exactly match the package version and publishes
 
 ## Acknowledgements
 
-The quota workflow is informed by the MIT-licensed [`dereknex/pi-sub2api-provider`](https://github.com/dereknex/pi-sub2api-provider) project and adapted to this package's `sub2api.json` configuration and native Pi provider routing.
+The quota workflow is informed by the MIT-licensed [`dereknex/pi-sub2api-provider`](https://github.com/dereknex/pi-sub2api-provider) project and adapted to this package's `sub2api.json` configuration and native Pi provider routing. The native compaction hook design is informed by the MIT-licensed [`jordyvandomselaar/pi-openai-compaction`](https://github.com/jordyvandomselaar/pi-openai-compaction) extension and adapted to Sub2API relay authentication and routing.
 
 ## License
 

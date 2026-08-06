@@ -692,6 +692,8 @@ describe("sub2api provider extension", () => {
       maxTokens: 8000,
     });
     expect([...handlers.keys()]).toEqual([
+      "session_before_compact",
+      "before_provider_request",
       "session_start",
       "model_select",
       "turn_end",

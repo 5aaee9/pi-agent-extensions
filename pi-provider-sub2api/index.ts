@@ -11,6 +11,7 @@ import type {
   ReadonlyFooterDataProvider,
 } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { registerCodexCompaction } from "./codex-compaction.ts";
 
 const CONFIG_FILENAME = "sub2api.json";
 const REQUEST_TIMEOUT_MS = 5_000;
@@ -1501,6 +1502,8 @@ export default async function (pi: ExtensionAPI) {
       lifecycleController.signal,
       () => isCurrent() && relaysByProvider.get(relay.provider) === relay,
     );
+
+  registerCodexCompaction(pi, (provider) => relaysByProvider.get(provider));
 
   const providers = await Promise.all(
     relays.map(async (relay) => {

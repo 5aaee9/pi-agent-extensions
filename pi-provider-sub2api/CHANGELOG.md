@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add OpenAI Codex standalone server-side compaction for relay models using `openai-codex-responses`: serialize the active pi session to `POST /v1/responses/compact`, persist the returned native window in compaction details, and replace pi's textual summary replay with the opaque window plus the live tail on subsequent requests.
+- Preserve repeated native checkpoints safely, account for compact-endpoint token usage, and fall back to pi compaction only before an opaque checkpoint becomes authoritative.
 - Render a custom footer that preserves the project, token/model, and extension-status rows while placing relay usage on a dedicated final row below them.
 
 ## 0.1.5 - 2026-08-06

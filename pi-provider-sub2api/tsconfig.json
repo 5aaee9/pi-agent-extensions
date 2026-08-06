@@ -11,5 +11,5 @@
     "skipLibCheck": true,
     "allowImportingTsExtensions": true
   },
-  "include": ["index.ts", "test/**/*.ts", "vitest.config.ts"]
+  "include": ["index.ts", "codex-compaction.ts", "test/**/*.ts", "vitest.config.ts"]
 }
