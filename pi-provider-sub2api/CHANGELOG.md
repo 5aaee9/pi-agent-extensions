@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.8 - 2026-08-06
+
 - Restore Pi 0.84 startup compatibility by loading the pinned private Codex serializer runtime through absolute module URLs, avoiding Pi/Jiti's public `pi-ai` root alias rewriting private `api/*` imports under `compat.js`.
 - Validate the published extension with Pi's real extension loader, update its pinned serializer runtime and development packages to 0.84.0, and retain host loading compatibility with Pi 0.83.
 
