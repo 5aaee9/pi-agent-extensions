@@ -88,8 +88,9 @@ Additional behavior:
 - Model discovery and quota requests use a 5-second timeout per attempt. Transient network errors plus HTTP 408, 425, 429, 500, 502, 503, and 504 responses are retried up to twice with one- and two-second exponential backoff.
 - Models whose IDs start with `gpt-image` are excluded.
 - IDs containing `claude`, `codex`, or `gpt-5` are exposed as reasoning models.
-- Remote model metadata accepts `context_window`, `contextWindow`, `context_length`, `max_context_tokens`, `limit.context`, and `limits.context` for context size. Output limits accept `max_tokens`, `maxTokens`, `max_output_tokens`, `max_completion_tokens`, `limit.output`, and `limits.output`; positive numeric strings are normalized.
-- Missing model metadata falls back to a 200,000-token context window and a model-family-specific output limit.
+- `GET /v1/models` remains the authoritative model inventory. When an OpenAI model is missing token limits, the extension best-effort merges metadata for the same model ID from Sub2API's `GET /backend-api/codex/models` manifest; manifest-only models are never registered. The `gpt-5.6` inventory alias uses `gpt-5.6-sol` metadata.
+- Remote model metadata accepts `context_window`, `contextWindow`, `context_length`, `max_context_tokens`, `limit.context`, and `limits.context` for context size. Output limits accept `max_tokens`, `maxTokens`, `max_output_tokens`, `max_completion_tokens`, `limit.output`, and `limits.output`; the first valid positive integer is used, so an invalid earlier alias does not hide a valid later one.
+- Missing OpenAI model limits are filled from pi's catalog for the selected API (`openai-codex` or `openai`). Only fields still unavailable after remote and catalog lookup fall back to a 200,000-token context window and a model-family-specific output limit.
 - Network interception is request-scoped; process-wide transports are never patched.
 
 ## Security
@@ -100,7 +101,7 @@ The configuration contains plaintext API tokens. Keep it outside repositories an
 chmod 600 ~/.pi/agent/sub2api.json
 ```
 
-Use HTTPS for remote relays. Plain HTTP is accepted for trusted local development endpoints only. Base URLs containing embedded credentials, query strings, or fragments are rejected. Authenticated discovery, quota, and wrapped Codex requests reject redirects, and discovery/quota JSON responses are capped at 1 MiB.
+Use HTTPS for remote relays. Plain HTTP is accepted for trusted local development endpoints only. Base URLs containing embedded credentials, query strings, or fragments are rejected. Authenticated discovery, Codex-manifest, quota, and wrapped Codex requests reject redirects, and discovery/manifest/quota JSON responses are capped at 1 MiB.
 
 ## Troubleshooting
 

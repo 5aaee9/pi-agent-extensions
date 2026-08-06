@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { openAICodexResponsesApi } from "@earendil-works/pi-ai/compat";
+import { getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
 import type {
   ExtensionAPI,
   ExtensionContext,
@@ -55,6 +56,24 @@ interface DiscoveredModel {
   contextWindow?: number;
   maxTokens?: number;
 }
+
+interface ModelTokenLimits {
+  contextWindow?: number;
+  maxTokens?: number;
+}
+
+const OPENAI_BUILTIN_LIMITS = new Map<string, ModelTokenLimits>(
+  getBuiltinModels("openai").map((model) => [model.id, model]),
+);
+const CODEX_BUILTIN_LIMITS = new Map<string, ModelTokenLimits>(
+  getBuiltinModels("openai-codex").map((model) => [model.id, model]),
+);
+const BUILTIN_LIMITS_BY_API: Record<SupportedApi, Map<string, ModelTokenLimits>> = {
+  "anthropic-messages": new Map(),
+  "openai-codex-responses": CODEX_BUILTIN_LIMITS,
+  "openai-responses": OPENAI_BUILTIN_LIMITS,
+  "openai-completions": OPENAI_BUILTIN_LIMITS,
+};
 
 interface RateLimit {
   limit: number;
@@ -416,6 +435,19 @@ function getDefaultMaxTokens(modelId: string) {
   return /^claude-haiku-4-5(?:-|$)/i.test(modelId) ? 8192 : 16384;
 }
 
+function getModelMetadataIds(modelId: string) {
+  return modelId.toLowerCase() === "gpt-5.6" ? [modelId, "gpt-5.6-sol"] : [modelId];
+}
+
+function getBuiltinModelLimits(modelId: string, api: SupportedApi) {
+  const catalog = BUILTIN_LIMITS_BY_API[api];
+  for (const candidate of getModelMetadataIds(modelId)) {
+    const limits = catalog.get(candidate);
+    if (limits) return limits;
+  }
+  return undefined;
+}
+
 function streamCodex(model: any, context: any, options: any) {
   const relay = relaysByProvider.get(model.provider);
   if (!relay) return CODEX_API.streamSimple(model, context, options);
@@ -471,33 +503,51 @@ function toPositiveInteger(value: unknown) {
     : undefined;
 }
 
+function firstPositiveInteger(...values: unknown[]) {
+  for (const value of values) {
+    const parsed = toPositiveInteger(value);
+    if (parsed !== undefined) return parsed;
+  }
+  return undefined;
+}
+
+function firstMaxTokensWithinContext(
+  contextWindow: number | undefined,
+  ...values: (number | undefined)[]
+) {
+  return values.find(
+    (value): value is number =>
+      value !== undefined && (contextWindow === undefined || value <= contextWindow),
+  );
+}
+
 function pickRemoteContextWindow(model: Record<string, unknown>) {
   const limit = asRecord(model.limit);
   const limits = asRecord(model.limits);
-  return toPositiveInteger(
-    model.context_window ??
-      model.contextWindow ??
-      model.context_length ??
-      model.max_context_tokens ??
-      limit?.context ??
-      limits?.context,
+  return firstPositiveInteger(
+    model.context_window,
+    model.contextWindow,
+    model.context_length,
+    model.max_context_tokens,
+    limit?.context,
+    limits?.context,
   );
 }
 
 function pickRemoteMaxTokens(model: Record<string, unknown>) {
   const limit = asRecord(model.limit);
   const limits = asRecord(model.limits);
-  return toPositiveInteger(
-    model.max_tokens ??
-      model.maxTokens ??
-      model.max_output_tokens ??
-      model.max_completion_tokens ??
-      limit?.output ??
-      limits?.output,
+  return firstPositiveInteger(
+    model.max_tokens,
+    model.maxTokens,
+    model.max_output_tokens,
+    model.max_completion_tokens,
+    limit?.output,
+    limits?.output,
   );
 }
 
-async function fetchModels(relay: RelayConfig): Promise<DiscoveredModel[]> {
+async function fetchModelInventory(relay: RelayConfig): Promise<DiscoveredModel[]> {
   try {
     const result = await fetchTextWithRetry(`${relay.baseUrl}/models`, {
       headers: { Authorization: `Bearer ${relay.apiKey}`, Accept: "application/json" },
@@ -540,6 +590,72 @@ async function fetchModels(relay: RelayConfig): Promise<DiscoveredModel[]> {
     console.error(`[sub2api:${relay.provider}] failed to fetch models:`, error);
     return [];
   }
+}
+
+async function fetchCodexManifest(relay: RelayConfig) {
+  const metadata = new Map<string, ModelTokenLimits>();
+  try {
+    const result = await fetchTextWithRetry(`${relay.anthropicBaseUrl}/backend-api/codex/models`, {
+      headers: { Authorization: `Bearer ${relay.apiKey}`, Accept: "application/json" },
+    });
+    if (!result) return metadata;
+    if (!result.response.ok) {
+      discardResponse(result.response);
+      return metadata;
+    }
+    if ("bodyError" in result || !("text" in result)) return metadata;
+
+    const payload = asRecord(JSON.parse(result.text) as unknown);
+    if (!Array.isArray(payload?.models)) return metadata;
+    for (const value of payload.models) {
+      const model = asRecord(value);
+      if (!model || !isSafeModelId(model.slug) || metadata.has(model.slug)) continue;
+      metadata.set(model.slug, {
+        contextWindow: pickRemoteContextWindow(model),
+        maxTokens: pickRemoteMaxTokens(model),
+      });
+    }
+  } catch {
+    // This endpoint is a best-effort Sub2API enrichment. Other compatible
+    // relays may not expose it, so standard model discovery must still work.
+  }
+  return metadata;
+}
+
+async function fetchModels(relay: RelayConfig): Promise<DiscoveredModel[]> {
+  const models = await fetchModelInventory(relay);
+  const needsCodexMetadata = models.some(
+    (model) =>
+      !EXCLUDED.test(model.id) &&
+      OPENAI.test(model.id) &&
+      (model.contextWindow === undefined ||
+        model.maxTokens === undefined ||
+        model.maxTokens > model.contextWindow),
+  );
+  if (!needsCodexMetadata) return models;
+
+  const manifest = await fetchCodexManifest(relay);
+  if (!manifest.size) return models;
+  return models.map((model) => {
+    if (!OPENAI.test(model.id)) return model;
+    const metadata = getModelMetadataIds(model.id)
+      .map((candidate) => manifest.get(candidate))
+      .filter((limits): limits is ModelTokenLimits => limits !== undefined);
+    if (!metadata.length) return model;
+    const contextWindow =
+      model.contextWindow ??
+      firstPositiveInteger(...metadata.map((limits) => limits.contextWindow));
+    const maxTokens = firstMaxTokensWithinContext(
+      contextWindow,
+      model.maxTokens,
+      ...metadata.map((limits) => limits.maxTokens),
+    );
+    return {
+      ...model,
+      contextWindow,
+      maxTokens,
+    };
+  });
 }
 
 function toFiniteNumber(value: unknown) {
@@ -905,12 +1021,12 @@ export default async function (pi: ExtensionAPI) {
       .filter((model) => !EXCLUDED.test(model.id))
       .map((model) => {
         const api = getModelApi(model.id, relay.api);
-        const contextWindow = model.contextWindow ?? 200000;
+        const builtinLimits = getBuiltinModelLimits(model.id, api);
+        const contextWindow = model.contextWindow ?? builtinLimits?.contextWindow ?? 200000;
         const defaultMaxTokens = Math.min(getDefaultMaxTokens(model.id), contextWindow);
         const maxTokens =
-          model.maxTokens !== undefined && model.maxTokens <= contextWindow
-            ? model.maxTokens
-            : defaultMaxTokens;
+          firstMaxTokensWithinContext(contextWindow, model.maxTokens, builtinLimits?.maxTokens) ??
+          defaultMaxTokens;
         return {
           id: model.id,
           name: model.name,

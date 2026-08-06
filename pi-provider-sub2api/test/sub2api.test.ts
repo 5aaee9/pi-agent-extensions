@@ -219,6 +219,7 @@ describe("sub2api provider extension", () => {
     writeFileSync(join(stateDir, "sub2api.json"), JSON.stringify(relayDefinitions));
 
     const modelFetchCalls: FetchCall[] = [];
+    const metadataFetchCalls: FetchCall[] = [];
     const transportFetchCalls: FetchCall[] = [];
     const customFetchCalls: FetchCall[] = [];
     const codexCalls: CodexCall[] = [];
@@ -230,6 +231,10 @@ describe("sub2api provider extension", () => {
       if (discovered) {
         modelFetchCalls.push({ url, init });
         return Response.json({ data: discovered.models });
+      }
+      if (url.endsWith("/backend-api/codex/models")) {
+        metadataFetchCalls.push({ url, init });
+        return Response.json({ models: [] });
       }
 
       transportFetchCalls.push({ url, init });
@@ -270,6 +275,14 @@ describe("sub2api provider extension", () => {
       expect(call.init?.signal?.aborted).toBe(false);
       expect(call.init?.redirect).toBe("error");
     }
+    expect(metadataFetchCalls.map((call) => call.url)).toEqual([
+      "https://responses.example/backend-api/codex/models",
+    ]);
+    expect(new Headers(metadataFetchCalls[0]!.init?.headers).get("authorization")).toBe(
+      "Bearer sk-responses",
+    );
+    expect(metadataFetchCalls[0]!.init?.signal).toBeInstanceOf(AbortSignal);
+    expect(metadataFetchCalls[0]!.init?.redirect).toBe("error");
     expect(registrations.map((registration) => registration.name)).toEqual(
       Object.keys(relayDefinitions),
     );
