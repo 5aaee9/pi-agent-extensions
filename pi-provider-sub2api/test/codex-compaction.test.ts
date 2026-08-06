@@ -159,7 +159,7 @@ function compactEvent(branchEntries: SessionEntry[], signal = new AbortControlle
   };
 }
 
-function compactResponse(encryptedContent: string) {
+function compactResponse(encryptedContent: string, itemType = "compaction") {
   return {
     id: `cmp-response-${encryptedContent}`,
     object: "response.compaction",
@@ -172,7 +172,7 @@ function compactResponse(encryptedContent: string) {
         role: "user",
         content: [{ type: "input_text", text: "Remember BLUE-42." }],
       },
-      { id: "cmp-item", type: "compaction", encrypted_content: encryptedContent },
+      { id: "cmp-item", type: itemType, encrypted_content: encryptedContent },
     ],
     usage: {
       input_tokens: 100,
@@ -299,6 +299,25 @@ describe("Codex standalone compaction", () => {
     expect(rewrittenWithContext.input.at(-1)).toEqual(injectedTail);
   });
 
+  it("accepts the compaction_summary item returned by Codex relays", async () => {
+    const user = userEntry("user-1", "Remember BLUE-42.");
+    const harness = createHarness([user]);
+    vi.stubGlobal("fetch", async () => {
+      return Response.json(compactResponse("relay-opaque", "compaction_summary"));
+    });
+
+    const result = await harness.handlers.get("session_before_compact")!(
+      compactEvent([user]),
+      harness.context,
+    );
+
+    expect(result.compaction.details.compactedWindow.at(-1)).toMatchObject({
+      type: "compaction_summary",
+      encrypted_content: "relay-opaque",
+    });
+    expect(harness.notifications).toEqual([]);
+  });
+
   it("feeds a previous native window and its live tail into repeated compaction", async () => {
     const user = userEntry("user-1", "Remember BLUE-42.");
     const priorDetails: NativeCodexCompactionDetails = {
@@ -308,7 +327,7 @@ describe("Codex standalone compaction", () => {
       api: "openai-codex-responses",
       model: model.id,
       responsesUrl: relay.responsesUrl,
-      compactedWindow: compactResponse("opaque-1").output,
+      compactedWindow: compactResponse("opaque-1", "compaction_summary").output,
       compactResponseId: "first",
       createdAt: new Date().toISOString(),
     };
@@ -319,7 +338,7 @@ describe("Codex standalone compaction", () => {
     let requestBody: any;
     vi.stubGlobal("fetch", async (_input: URL | RequestInfo, init?: RequestInit) => {
       requestBody = JSON.parse(String(init?.body));
-      return Response.json(compactResponse("opaque-2"));
+      return Response.json(compactResponse("opaque-2", "compaction_summary"));
     });
 
     const result = await harness.handlers.get("session_before_compact")!(
@@ -329,9 +348,11 @@ describe("Codex standalone compaction", () => {
 
     expect(requestBody.input.slice(0, 2)).toEqual(priorDetails.compactedWindow);
     expect(JSON.stringify(requestBody.input)).toContain("New fact GREEN-7.");
-    expect(requestBody.input.filter((item: any) => item.type === "compaction")).toHaveLength(1);
+    expect(
+      requestBody.input.filter((item: any) => item.type === "compaction_summary"),
+    ).toHaveLength(1);
     expect(result.compaction.details.compactedWindow.at(-1)).toMatchObject({
-      type: "compaction",
+      type: "compaction_summary",
       encrypted_content: "opaque-2",
     });
   });

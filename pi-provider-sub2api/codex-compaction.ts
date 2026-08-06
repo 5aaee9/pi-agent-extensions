@@ -17,6 +17,9 @@ const NATIVE_COMPACTION_SUMMARY = "[OpenAI native compaction checkpoint]";
 const COMPACTION_TIMEOUT_MS = 180_000;
 const MAX_COMPACTION_RESPONSE_BYTES = 32 * 1024 * 1024;
 const CODEX_TOOL_CALL_PROVIDERS = new Set(["openai", "openai-codex", "opencode"]);
+// OpenAI documents `compaction`; some Codex relays emit `compaction_summary`.
+// Both are opaque replay items and must be persisted without normalization.
+const COMPACTION_ITEM_TYPES = new Set(["compaction", "compaction_summary"]);
 
 export interface CodexCompactionRelay {
   provider: string;
@@ -67,7 +70,8 @@ function cloneItems(items: ResponseItem[]) {
 function isCompactionItem(value: unknown): value is ResponseItem {
   return (
     isJsonObject(value) &&
-    value.type === "compaction" &&
+    typeof value.type === "string" &&
+    COMPACTION_ITEM_TYPES.has(value.type) &&
     typeof value.id === "string" &&
     value.id.length > 0 &&
     typeof value.encrypted_content === "string" &&
@@ -102,7 +106,9 @@ function isCompactedUserMessage(value: unknown) {
 function parseCompactedWindow(value: unknown): ResponseItem[] | undefined {
   if (!Array.isArray(value) || value.length === 0 || !value.every(isJsonObject)) return undefined;
   const compactionIndexes = value.flatMap((item, index) =>
-    isJsonObject(item) && item.type === "compaction" ? [index] : [],
+    isJsonObject(item) && typeof item.type === "string" && COMPACTION_ITEM_TYPES.has(item.type)
+      ? [index]
+      : [],
   );
   if (compactionIndexes.length !== 1 || compactionIndexes[0] !== value.length - 1) {
     return undefined;
