@@ -549,7 +549,7 @@ describe("sub2api provider extension", () => {
     ]);
   });
 
-  it("refreshes quota across lifecycle events and reports details through /quota", async () => {
+  it("refreshes the final footer line across lifecycle events without a command", async () => {
     writeFileSync(
       join(stateDir, "sub2api.json"),
       JSON.stringify({
@@ -611,10 +611,7 @@ describe("sub2api provider extension", () => {
 
     const registrations: Registration[] = [];
     const handlers = new Map<string, (event: any, context: any) => unknown>();
-    const commands = new Map<
-      string,
-      { handler: (args: string, context: any) => Promise<void> | void }
-    >();
+    const registerCommand = vi.fn<() => void>();
     await extension({
       registerProvider(name: string, config: ProviderConfig) {
         registrations.push({ name, config });
@@ -622,12 +619,7 @@ describe("sub2api provider extension", () => {
       on(name: string, handler: (event: any, context: any) => unknown) {
         handlers.set(name, handler);
       },
-      registerCommand(
-        name: string,
-        options: { handler: (args: string, context: any) => Promise<void> | void },
-      ) {
-        commands.set(name, options);
-      },
+      registerCommand,
     } as unknown as ExtensionAPI);
 
     expect(registrations).toHaveLength(1);
@@ -641,48 +633,35 @@ describe("sub2api provider extension", () => {
       "turn_end",
       "session_shutdown",
     ]);
-    expect(commands.has("quota")).toBe(true);
+    expect(registerCommand).not.toHaveBeenCalled();
 
-    const statuses: Array<[string, string | undefined]> = [];
-    const notifications: Array<[string, string | undefined]> = [];
+    const usageLines: Array<[string, string | undefined]> = [];
     const activeModel = { provider: "quota-relay", id: "grok-quota" };
     const context = {
       hasUI: true,
       model: activeModel,
       ui: {
         theme: { fg: (_color: string, text: string) => text },
-        setStatus: (key: string, text: string | undefined) => statuses.push([key, text]),
-        notify: (message: string, type?: string) => notifications.push([message, type]),
+        setStatus: (key: string, text: string | undefined) => usageLines.push([key, text]),
       },
     };
 
     handlers.get("session_start")!({}, context);
-    await vi.waitFor(() => expect(quotaVersion).toBe(1));
-    expect(statuses.at(-1)?.[1]).toContain("● quota-relay 5h 10% · d 10%");
+    expect(usageLines.at(-1)).toEqual(["sub2api-usage", "quota-relay · loading…"]);
+    await vi.waitFor(() => expect(usageLines.at(-1)?.[1]).toBe("quota-relay · 5h 10% · d 10%"));
+    expect(quotaVersion).toBe(1);
 
     handlers.get("model_select")!({ model: activeModel }, context);
-    await vi.waitFor(() => expect(statuses.at(-1)?.[1]).toContain("5h 20%"));
+    await vi.waitFor(() => expect(usageLines.at(-1)?.[1]).toContain("5h 20%"));
     expect(quotaVersion).toBe(2);
 
     handlers.get("turn_end")!({}, context);
-    await vi.waitFor(() => expect(statuses.at(-1)?.[1]).toContain("5h 30%"));
+    await vi.waitFor(() => expect(usageLines.at(-1)?.[1]).toContain("5h 30%"));
     expect(quotaVersion).toBe(3);
-
-    await commands.get("quota")!.handler("", context);
-    expect(quotaVersion).toBe(4);
-    expect(statuses.at(-1)?.[1]).toContain("5h 40%");
-    expect(notifications).toHaveLength(1);
-    expect(notifications[0]?.[1]).toBe("info");
-    expect(notifications[0]?.[0]).toContain("Sub2API quota — quota-relay");
-    expect(notifications[0]?.[0]).toContain("Today cost: $0.4000");
-    expect(notifications[0]?.[0]).toContain("Total cost: $0.4000");
-    expect(notifications[0]?.[0]).toContain("1,800 tokens");
-    expect(notifications[0]?.[0]).toContain("5h: $8.00/$20.00");
 
     const usageCalls = fetchCalls.filter((call) => call.url.endsWith("/usage"));
     expect(usageCalls.map((call) => call.url)).toEqual([
       "https://quota.example/usage",
-      "https://quota.example/v1/usage",
       "https://quota.example/v1/usage",
       "https://quota.example/v1/usage",
       "https://quota.example/v1/usage",
@@ -692,17 +671,111 @@ describe("sub2api provider extension", () => {
       expect(call.init?.redirect).toBe("error");
     }
 
-    const callsBeforeNoUiCommand = fetchCalls.length;
-    await commands.get("quota")!.handler("", { ...context, hasUI: false });
-    expect(fetchCalls).toHaveLength(callsBeforeNoUiCommand);
+    const callsBeforeNoUiTurn = fetchCalls.length;
+    handlers.get("turn_end")!({}, { ...context, hasUI: false });
+    expect(fetchCalls).toHaveLength(callsBeforeNoUiTurn);
 
     context.model = { provider: "other", id: "other-model" };
     handlers.get("model_select")!({ model: context.model }, context);
-    expect(statuses.at(-1)).toEqual(["sub2api-quota", undefined]);
+    expect(usageLines.at(-1)).toEqual(["sub2api-usage", undefined]);
+  });
 
-    context.model = { provider: "evil\u001b[31m\n", id: "other-model" };
-    await commands.get("quota")!.handler("", context);
-    expect(notifications.at(-1)).toEqual(["Provider 'evil' is not managed by Sub2API.", "warning"]);
+  it("keeps an unavailable usage status visible when the relay has no usage endpoint", async () => {
+    writeFileSync(
+      join(stateDir, "sub2api.json"),
+      JSON.stringify({ unavailable: { baseURL: "https://unavailable.example", token: "sk" } }),
+    );
+
+    vi.stubGlobal("fetch", async (input: URL | RequestInfo) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (url === "https://unavailable.example/v1/models") {
+        return Response.json({ data: [{ id: "grok-unavailable" }] });
+      }
+      return new Response(null, { status: 404 });
+    });
+
+    const handlers = new Map<string, (event: any, context: any) => unknown>();
+    await extension({
+      registerProvider() {},
+      on(name: string, handler: (event: any, context: any) => unknown) {
+        handlers.set(name, handler);
+      },
+    } as unknown as ExtensionAPI);
+
+    const usageLines: string[] = [];
+    const context = {
+      hasUI: true,
+      model: { provider: "unavailable", id: "grok-unavailable" },
+      ui: {
+        theme: { fg: (_color: string, text: string) => text },
+        setStatus: (_key: string, text: string | undefined) => {
+          if (text) usageLines.push(text);
+        },
+      },
+    };
+
+    handlers.get("session_start")!({}, context);
+    expect(usageLines.at(-1)).toBe("unavailable · loading…");
+    await vi.waitFor(() => expect(usageLines.at(-1)).toBe("unavailable · usage unavailable"));
+  });
+
+  it("allows the usage endpoint enough time to return slow aggregate data", async () => {
+    writeFileSync(
+      join(stateDir, "sub2api.json"),
+      JSON.stringify({ slow: { baseURL: "https://slow.example", token: "sk-slow" } }),
+    );
+
+    let activeTimeout = 0;
+    vi.spyOn(AbortSignal, "timeout").mockImplementation((delay) => {
+      activeTimeout = delay;
+      return new AbortController().signal;
+    });
+    const usageTimeouts: number[] = [];
+    vi.stubGlobal("fetch", async (input: URL | RequestInfo) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (url === "https://slow.example/v1/models") {
+        return Response.json({ data: [{ id: "grok-slow" }] });
+      }
+      if (url === "https://slow.example/v1/sub2api/billing") {
+        return new Response(null, { status: 404 });
+      }
+      if (url === "https://slow.example/usage") {
+        usageTimeouts.push(activeTimeout);
+        return new Response("<!doctype html>", { headers: { "content-type": "text/html" } });
+      }
+      if (url === "https://slow.example/v1/usage") {
+        usageTimeouts.push(activeTimeout);
+        if (activeTimeout < 30_000) return new Response(null, { status: 400 });
+        return Response.json({
+          usage: { today: { actual_cost: 448.47, total_tokens: 655_300_000 } },
+        });
+      }
+      return new Response(null, { status: 404 });
+    });
+
+    const handlers = new Map<string, (event: any, context: any) => unknown>();
+    await extension({
+      registerProvider() {},
+      on(name: string, handler: (event: any, context: any) => unknown) {
+        handlers.set(name, handler);
+      },
+    } as unknown as ExtensionAPI);
+
+    const usageLines: string[] = [];
+    const context = {
+      hasUI: true,
+      model: { provider: "slow", id: "grok-slow" },
+      ui: {
+        theme: { fg: (_color: string, text: string) => text },
+        setStatus: (_key: string, text: string | undefined) => {
+          if (text) usageLines.push(text);
+        },
+      },
+    };
+
+    handlers.get("session_start")!({}, context);
+    await vi.waitFor(() => expect(usageLines.at(-1)).toBe("slow · d $448.47 · 655.3m tok"));
+    expect(usageTimeouts).toEqual([30_000, 30_000]);
   });
 
   it("applies Sub2API billing rates and shows subscription usage in the UI", async () => {
@@ -795,22 +868,12 @@ describe("sub2api provider extension", () => {
 
     const registrations: Registration[] = [];
     const handlers = new Map<string, (event: any, context: any) => unknown>();
-    const commands = new Map<
-      string,
-      { handler: (args: string, context: any) => Promise<void> | void }
-    >();
     await extension({
       registerProvider(name: string, config: ProviderConfig) {
         registrations.push({ name, config });
       },
       on(name: string, handler: (event: any, context: any) => unknown) {
         handlers.set(name, handler);
-      },
-      registerCommand(
-        name: string,
-        options: { handler: (args: string, context: any) => Promise<void> | void },
-      ) {
-        commands.set(name, options);
       },
     } as unknown as ExtensionAPI);
 
@@ -830,51 +893,40 @@ describe("sub2api provider extension", () => {
       ],
     });
 
-    const statuses: Array<[string, string | undefined]> = [];
-    const notifications: Array<[string, string | undefined]> = [];
+    const usageLines: Array<[string, string | undefined]> = [];
     const context = {
       hasUI: true,
       model: { provider: "subscription-relay", id: "gpt-5.5" },
       ui: {
         theme: { fg: (_color: string, text: string) => text },
-        setStatus: (key: string, text: string | undefined) => statuses.push([key, text]),
-        notify: (message: string, type?: string) => notifications.push([message, type]),
+        setStatus: (key: string, text: string | undefined) => usageLines.push([key, text]),
       },
     };
 
     handlers.get("session_start")!({}, context);
+    expect(usageLines.at(-1)).toEqual(["sub2api-usage", "subscription-relay · loading…"]);
     await vi.waitFor(() =>
-      expect(fetchCalls.map((call) => call.url)).toContain("https://subscription.example/v1/usage"),
+      expect(usageLines.at(-1)?.[1]).toBe("subscription-relay · d 30% · w 30% · m 30%"),
     );
-    expect
-      .soft(statuses.at(-1)?.[1])
-      .toContain("● subscription-relay ×0.75 · d 30% · w 30% · m 30%");
-
-    await commands.get("quota")!.handler("", context);
-    expect.soft(notifications.at(-1)?.[0]).toContain("Plan: Weekly plan");
-    expect.soft(notifications.at(-1)?.[0]).toContain("Effective price: ×0.750");
-    expect.soft(notifications.at(-1)?.[0]).toContain("Remaining: unlimited");
-    expect.soft(notifications.at(-1)?.[0]).toContain("daily: $3.00/$10.00 (30%)");
-    expect.soft(notifications.at(-1)?.[0]).toContain("1,800 tokens");
 
     billingMultiplier = 0.5;
     handlers.get("model_select")!({ model: context.model }, context);
     await vi.waitFor(() => expect(registrations).toHaveLength(2));
     expect.soft(modelConfigs(registrations.at(-1)!)[0]!.cost.input).toBe(2.5);
-    expect.soft(statuses.at(-1)?.[1]).toContain("subscription-relay ×0.5");
+    expect.soft(usageLines.at(-1)?.[1]).toBe("subscription-relay · d 30% · w 30% · m 30%");
 
     usageAvailable = false;
     billingMultiplier = 0.25;
     handlers.get("model_select")!({ model: context.model }, context);
     await vi.waitFor(() => expect(registrations).toHaveLength(3));
     expect.soft(modelConfigs(registrations.at(-1)!)[0]!.cost.input).toBe(1.25);
-    expect.soft(statuses.at(-1)?.[1]).toContain("subscription-relay ×0.25");
+    expect.soft(usageLines.at(-1)?.[1]).toBe("subscription-relay · d 30% · w 30% · m 30%");
 
     billingAvailable = false;
     handlers.get("turn_end")!({}, context);
     await vi.waitFor(() => expect(registrations).toHaveLength(4));
     expect.soft(modelConfigs(registrations.at(-1)!)[0]!.cost.input).toBe(5);
-    expect.soft(statuses.at(-1)?.[1]).not.toContain("×");
+    expect.soft(usageLines.at(-1)?.[1]).not.toContain("×");
 
     const billingCall = fetchCalls.find(
       (call) => call.url === "https://subscription.example/v1/sub2api/billing",
@@ -920,13 +972,13 @@ describe("sub2api provider extension", () => {
       registerCommand() {},
     } as unknown as ExtensionAPI);
 
-    const statuses: Array<string | undefined> = [];
+    const usageLines: Array<string | undefined> = [];
     const context = {
       hasUI: true,
       model: { provider: "stale", id: "grok-stale" },
       ui: {
         theme: { fg: (_color: string, text: string) => text },
-        setStatus: (_key: string, text: string | undefined) => statuses.push(text),
+        setStatus: (_key: string, text: string | undefined) => usageLines.push(text),
       },
     };
     handlers.get("session_start")!({}, context);
@@ -940,8 +992,10 @@ describe("sub2api provider extension", () => {
     );
     await new Promise((resolveTurn) => setTimeout(resolveTurn, 0));
 
-    expect(statuses.at(-1)).toBeUndefined();
-    expect(statuses.filter((status): status is string => typeof status === "string")).toEqual([]);
+    expect(usageLines.at(-1)).toBeUndefined();
+    expect(usageLines.filter((line): line is string => typeof line === "string")).toEqual([
+      "stale · loading…",
+    ]);
   });
 
   it("retries model discovery with exponential backoff and a five-second timeout", async () => {

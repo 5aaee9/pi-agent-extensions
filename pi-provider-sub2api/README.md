@@ -77,19 +77,20 @@ At startup and during quota refreshes, the extension queries Sub2API's API-key b
 
 For the active provider, the extension also probes a root `/usage` compatibility route and then Sub2API's official `GET /v1/usage` endpoint. A recognized response may contain key quotas, `rate_limits`, subscription daily/weekly/monthly usage, `daily_usage`, and `usage.today`/`usage.total` data; camelCase aliases are accepted for compatible relays.
 
-Quota refreshes run in the background on `session_start`, `model_select`, and `turn_end`. The built-in footer then shows a compact status such as:
+Usage refreshes run in the background on `session_start`, `model_select`, and `turn_end`. The extension registers no slash command. It immediately appends a usage status as the last line of pi's built-in footer, then replaces the loading text with compact usage when the request completes:
 
 ```text
-● my-relay ×0.75 · d 24% · w 11% · m 7%
+my-relay · loading…
+my-relay · d 24% · w 11% · m 7%
 ```
 
-Run `/quota` for the current provider's plan, effective price multiplier, billing mode, daily request/token totals, actual billed costs, subscription-window usage, key quota, rate-limit usage, remaining quota, and reset times. Providers without a compatible usage endpoint continue to work normally and simply omit the quota status.
+The usage footer line intentionally omits status icons, the `usage` label, and billing multipliers to keep the completed state compact. Providers without a compatible usage endpoint continue to work normally; their usage status changes to `my-relay · usage unavailable` instead of disappearing silently.
 
 The billing endpoint reports a token-price multiplier, not the purchase price of a subscription plan. The latter is not available through Sub2API's API-key-authenticated contract.
 
 Additional behavior:
 
-- Model discovery, billing, and quota requests use a 5-second timeout per attempt. Transient network errors plus HTTP 408, 425, 429, 500, 502, 503, and 504 responses are retried up to twice with one- and two-second exponential backoff.
+- Model discovery and billing requests use a 5-second timeout per attempt. Usage requests use a 30-second timeout because `/v1/usage` may aggregate a large history before responding. Transient network errors plus HTTP 408, 425, 429, 500, 502, 503, and 504 responses are retried up to twice with one- and two-second exponential backoff.
 - Models whose IDs start with `gpt-image` are excluded.
 - IDs containing `claude`, `codex`, or `gpt-5` are exposed as reasoning models.
 - `GET /v1/models` remains the authoritative model inventory. When an OpenAI model is missing token limits, the extension best-effort merges metadata for the same model ID from Sub2API's `GET /backend-api/codex/models` manifest; manifest-only models are never registered. The `gpt-5.6` inventory alias uses `gpt-5.6-sol` metadata.
@@ -112,7 +113,7 @@ Use HTTPS for remote relays. Plain HTTP is accepted for trusted local developmen
 - **Provider does not appear:** inspect stderr for `[sub2api] failed to load ...`; verify that the JSON is valid and every entry has non-empty `baseURL` and `token` strings.
 - **No models appear:** verify that `<baseURL>/v1/models` is reachable with `Authorization: Bearer <token>`. Discovery failures are logged as `[sub2api:<provider>] failed to fetch models`.
 - **Requests fail:** confirm the configured API is supported by the relay: Anthropic Messages uses `/v1/messages`, Codex models are rewritten to `/v1/responses`, OpenAI Responses uses `/v1/responses`, and Chat Completions uses `/v1/chat/completions`.
-- **No quota status:** run `/quota` and verify that the relay's `/v1/usage` endpoint returns JSON with subscription, quota, rate-limit, or usage data for the configured bearer token. The root `/usage` route is probed only for compatibility with other relays.
+- **Usage unavailable:** verify that the relay's `/v1/usage` endpoint returns JSON with subscription, quota, rate-limit, or usage data for the configured bearer token. The root `/usage` route is probed only for compatibility with other relays.
 - **Price multiplier missing:** verify that `<baseURL>/v1/sub2api/billing` returns the v1 token-billing contract: `object: "sub2api.key_billing"`, `schema_version: 1`, `billing_scope: "token"`, non-negative `group_rate_multiplier`, `resolved_rate_multiplier`, and `effective_rate_multiplier` values, plus a boolean `peak_rate_enabled`. Sub2API simple mode returns 404 and therefore uses pi's standard built-in prices.
 - **Custom agent directory:** ensure `sub2api.json` is directly inside the directory named by `PI_CODING_AGENT_DIR`.
 

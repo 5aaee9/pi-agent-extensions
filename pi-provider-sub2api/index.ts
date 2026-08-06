@@ -12,11 +12,12 @@ import type {
 
 const CONFIG_FILENAME = "sub2api.json";
 const REQUEST_TIMEOUT_MS = 5_000;
+const USAGE_REQUEST_TIMEOUT_MS = 30_000;
 const MAX_RETRIES = 2;
 const RETRY_BASE_DELAY_MS = 1_000;
 const MAX_RESPONSE_BYTES = 1024 * 1024;
 const MAX_MODEL_TOKEN_LIMIT = 10_000_000;
-const QUOTA_STATUS_KEY = "sub2api-quota";
+const USAGE_STATUS_KEY = "sub2api-usage";
 const CODEX_API = openAICodexResponsesApi();
 const ANSI_ESCAPE = new RegExp(`${String.fromCharCode(27)}\\[[0-?]*[ -/]*[@-~]`, "g");
 
@@ -374,13 +375,14 @@ type TextFetchResult =
 async function fetchTextWithRetry(
   url: string,
   init: RequestInit = {},
+  timeoutMs = REQUEST_TIMEOUT_MS,
 ): Promise<TextFetchResult | null> {
   const canRetry = (init.method ?? "GET").toUpperCase() === "GET";
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt += 1) {
     if (init.signal?.aborted) return null;
     let shouldRetry = false;
     try {
-      const timeoutSignal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+      const timeoutSignal = AbortSignal.timeout(timeoutMs);
       const signal = init.signal ? AbortSignal.any([init.signal, timeoutSignal]) : timeoutSignal;
       const response = await fetch(url, { ...init, redirect: "error", signal });
       if (canRetry && isRetryableStatus(response.status) && attempt < MAX_RETRIES) {
@@ -1100,10 +1102,14 @@ async function fetchQuotaAt(
   usageUrl: string,
   signal: AbortSignal,
 ): Promise<QuotaRefreshResult> {
-  const result = await fetchTextWithRetry(usageUrl, {
-    headers: { Authorization: `Bearer ${relay.apiKey}`, Accept: "application/json" },
-    signal,
-  });
+  const result = await fetchTextWithRetry(
+    usageUrl,
+    {
+      headers: { Authorization: `Bearer ${relay.apiKey}`, Accept: "application/json" },
+      signal,
+    },
+    USAGE_REQUEST_TIMEOUT_MS,
+  );
   if (!result) return { kind: "temporary", detail: "network request failed" };
   const { response } = result;
   if (response.status === 404 || response.status === 405) {
@@ -1194,13 +1200,6 @@ function formatMoney(value: number, fractionDigits = 2) {
   return `$${value.toFixed(fractionDigits)}`;
 }
 
-function formatMultiplier(value: number, fractionDigits = 3) {
-  return value
-    .toFixed(fractionDigits)
-    .replace(/\.0+$/, "")
-    .replace(/(\.\d*?)0+$/, "$1");
-}
-
 function formatCompactTokens(value: number) {
   if (value < 1_000) return value.toLocaleString();
   if (value < 1_000_000) return `${(value / 1_000).toFixed(1).replace(/\.0$/, "")}k`;
@@ -1218,10 +1217,8 @@ function pickQuotaWindows(rateLimits: RateLimit[]) {
   return preferred.length ? preferred : rateLimits;
 }
 
-function formatQuotaStatus(provider: string, info: QuotaInfo, billing?: BillingInfo) {
-  const heading = billing
-    ? `● ${provider} ×${formatMultiplier(billing.effectiveRateMultiplier)}`
-    : `● ${provider}`;
+function formatQuotaStatus(provider: string, info: QuotaInfo) {
+  const heading = provider;
   const windows = (
     info.subscriptionLimits.length ? info.subscriptionLimits : pickQuotaWindows(info.rateLimits)
   ).filter((rateLimit) => rateLimit.limit > 0);
@@ -1230,23 +1227,29 @@ function formatQuotaStatus(provider: string, info: QuotaInfo, billing?: BillingI
       const percent = Math.round((rateLimit.used / rateLimit.limit) * 100);
       return `${shortWindowLabel(rateLimit.window)} ${percent}%`;
     });
-    const separator = billing ? " · " : " ";
-    return sanitizeDisplayString(`${heading}${separator}${percentages.join(" · ")}`, 200);
+    return sanitizeDisplayString(`${heading} · ${percentages.join(" · ")}`, 200);
   }
   const latestUsage = info.todayUsage ?? getLatestDailyUsage(info.dailyUsage);
   const usageParts = [`d ${formatMoney(info.todayCost)}`];
   if (latestUsage?.totalTokens) {
     usageParts.push(`${formatCompactTokens(latestUsage.totalTokens)} tok`);
   }
-  return sanitizeDisplayString(`${heading}${billing ? " · " : " "}${usageParts.join(" · ")}`, 200);
+  return sanitizeDisplayString(`${heading} · ${usageParts.join(" · ")}`, 200);
 }
 
-function setQuotaStatus(ctx: ExtensionContext, provider: string, info: QuotaInfo) {
+function setUsageLine(
+  ctx: ExtensionContext,
+  provider: string,
+  text: string,
+  color: "accent" | "dim" = "accent",
+) {
   if (!ctx.hasUI || ctx.model?.provider !== provider) return;
-  ctx.ui.setStatus(
-    QUOTA_STATUS_KEY,
-    ctx.ui.theme.fg("accent", formatQuotaStatus(provider, info, billingByProvider.get(provider))),
-  );
+  const line = sanitizeDisplayString(text, 200);
+  ctx.ui.setStatus(USAGE_STATUS_KEY, ctx.ui.theme.fg(color, line));
+}
+
+function setUsageFromQuota(ctx: ExtensionContext, provider: string, info: QuotaInfo) {
+  setUsageLine(ctx, provider, formatQuotaStatus(provider, info));
 }
 
 function refreshActiveQuota(
@@ -1259,78 +1262,24 @@ function refreshActiveQuota(
   if (!ctx.hasUI || !isCurrent()) return;
   const relay = relaysByProvider.get(provider);
   if (!relay) {
-    ctx.ui.setStatus(QUOTA_STATUS_KEY, undefined);
+    ctx.ui.setStatus(USAGE_STATUS_KEY, undefined);
     return;
   }
 
   const cached = quotaByProvider.get(provider);
-  if (cached) setQuotaStatus(ctx, provider, cached);
-  else ctx.ui.setStatus(QUOTA_STATUS_KEY, undefined);
+  if (cached) setUsageFromQuota(ctx, provider, cached);
+  else setUsageLine(ctx, provider, `${provider} · loading…`, "dim");
   void refreshBillingInfo(relay).then(() => {
     const latest = quotaByProvider.get(provider);
-    if (isCurrent() && latest) setQuotaStatus(ctx, provider, latest);
+    if (isCurrent() && latest) setUsageFromQuota(ctx, provider, latest);
   });
   void refresh(relay).then((result) => {
-    if (isCurrent() && result.kind === "ok") setQuotaStatus(ctx, provider, result.info);
+    if (!isCurrent()) return;
+    if (result.kind === "ok") setUsageFromQuota(ctx, provider, result.info);
+    else if (!quotaByProvider.has(provider)) {
+      setUsageLine(ctx, provider, `${provider} · usage unavailable`, "dim");
+    }
   });
-}
-
-function formatQuotaReport(provider: string, info: QuotaInfo, billing?: BillingInfo) {
-  const latestDay = getLatestDailyUsage(info.dailyUsage) ?? info.todayUsage;
-  const lines = [`Sub2API quota — ${provider}`, `Status: ${info.status}`, `Mode: ${info.mode}`];
-
-  if (info.planName) lines.push(`Plan: ${info.planName}`);
-  if (billing) {
-    lines.push(`Effective price: ×${billing.effectiveRateMultiplier.toFixed(3)}`);
-    if (billing.peakRateEnabled && billing.appliedPeakMultiplier !== undefined) {
-      lines.push(
-        `  resolved ×${formatMultiplier(billing.resolvedRateMultiplier)} · peak ×${formatMultiplier(billing.appliedPeakMultiplier)}`,
-      );
-    }
-  }
-  if (info.remaining !== undefined) {
-    lines.push(
-      `Remaining: ${info.remaining < 0 ? "unlimited" : formatMoney(info.remaining, 2)}${info.unit && info.unit !== "USD" ? ` ${info.unit}` : ""}`,
-    );
-  }
-  lines.push(
-    `Today cost: ${formatMoney(info.todayCost, 4)}`,
-    `Total cost: ${formatMoney(info.totalCost, 4)}`,
-    `Updated: ${new Date(info.lastUpdated).toLocaleString()}`,
-  );
-
-  if (latestDay) {
-    lines.push(
-      `Daily usage (${latestDay.date || "latest"}): ${latestDay.requests.toLocaleString()} requests, ${latestDay.totalTokens.toLocaleString()} tokens`,
-      `  input ${latestDay.inputTokens.toLocaleString()} · output ${latestDay.outputTokens.toLocaleString()} · cache read ${latestDay.cacheReadTokens.toLocaleString()} · cache write ${latestDay.cacheWriteTokens.toLocaleString()}`,
-    );
-  }
-
-  if (info.subscriptionLimits.length) {
-    lines.push("Subscription usage:");
-    for (const limit of info.subscriptionLimits) {
-      const percent = Math.round((limit.used / limit.limit) * 100);
-      lines.push(
-        `  ${normalizeWindowLabel(limit.window)}: ${formatMoney(limit.used)}/${formatMoney(limit.limit)} (${percent}%)`,
-      );
-    }
-  }
-
-  if (info.quota) {
-    lines.push(
-      `Key quota: ${formatMoney(info.quota.used)}/${formatMoney(info.quota.limit)} (remaining ${formatMoney(info.quota.remaining)})`,
-    );
-  }
-
-  lines.push("Rate limits:");
-  if (!info.rateLimits.length) lines.push("  none reported by provider");
-  for (const rateLimit of info.rateLimits) {
-    const reset = rateLimit.resetAt ? new Date(rateLimit.resetAt).toLocaleString() : "unknown";
-    lines.push(
-      `  ${normalizeWindowLabel(rateLimit.window)}: ${formatMoney(rateLimit.used)}/${formatMoney(rateLimit.limit)} (remaining ${formatMoney(rateLimit.remaining)}, resets ${reset})`,
-    );
-  }
-  return lines.join("\n");
 }
 
 export default async function (pi: ExtensionAPI) {
@@ -1458,7 +1407,7 @@ export default async function (pi: ExtensionAPI) {
         refreshRelayBillingAndPricing,
         isCurrent,
       );
-    } else if (ctx.hasUI) ctx.ui.setStatus(QUOTA_STATUS_KEY, undefined);
+    } else if (ctx.hasUI) ctx.ui.setStatus(USAGE_STATUS_KEY, undefined);
   });
 
   pi.on("model_select", (event, ctx) => {
@@ -1486,62 +1435,6 @@ export default async function (pi: ExtensionAPI) {
   pi.on("session_shutdown", (_event, ctx) => {
     active = false;
     lifecycleController.abort();
-    if (ctx.hasUI) ctx.ui.setStatus(QUOTA_STATUS_KEY, undefined);
-  });
-
-  pi.registerCommand("quota", {
-    description: "Show detailed Sub2API quota for the active provider",
-    handler: async (_args, ctx) => {
-      if (!ctx.hasUI || !isCurrent()) return;
-      const provider = ctx.model?.provider;
-      if (!provider) {
-        if (ctx.hasUI) ctx.ui.notify("No active model selected.", "error");
-        return;
-      }
-
-      const relay = relaysByProvider.get(provider);
-      if (!relay) {
-        const label = sanitizeDisplayString(provider, 128) || "unknown";
-        ctx.ui.notify(`Provider '${label}' is not managed by Sub2API.`, "warning");
-        return;
-      }
-
-      const [result] = await Promise.all([
-        refreshRelayQuota(relay),
-        refreshRelayBillingAndPricing(relay),
-      ]);
-      if (!isCurrent()) return;
-      if (result.kind === "ok") {
-        setQuotaStatus(ctx, provider, result.info);
-        ctx.ui.notify(
-          formatQuotaReport(provider, result.info, billingByProvider.get(provider)),
-          "info",
-        );
-        return;
-      }
-
-      const cached = quotaByProvider.get(provider);
-      if (cached) {
-        setQuotaStatus(ctx, provider, cached);
-        ctx.ui.notify(
-          `Quota refresh failed; showing cached data.\n\n${formatQuotaReport(provider, cached, billingByProvider.get(provider))}`,
-          "warning",
-        );
-        return;
-      }
-
-      if (result.kind === "auth") {
-        ctx.ui.notify(`Quota endpoint rejected the relay token (HTTP ${result.status}).`, "error");
-      } else if (result.kind === "temporary") {
-        ctx.ui.notify(`Quota endpoint is temporarily unavailable: ${result.detail}.`, "warning");
-      } else if (result.kind === "invalid") {
-        ctx.ui.notify("Quota endpoint returned an unsupported response.", "warning");
-      } else {
-        ctx.ui.notify(
-          `Provider '${provider}' has no usable /usage or /v1/usage endpoint.`,
-          "warning",
-        );
-      }
-    },
+    if (ctx.hasUI) ctx.ui.setStatus(USAGE_STATUS_KEY, undefined);
   });
 }

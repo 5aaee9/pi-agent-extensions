@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Report relay usage on the final footer line, with automatic refreshes on session start, model selection, and turn end; remove the `/quota` command.
+- Show loading and unavailable states so the usage line no longer disappears while the endpoint is pending or unsupported.
+- Keep the usage footer line compact and flush-left by omitting leading padding, status icons, the `usage` label, and billing multipliers.
+- Allow usage requests 30 seconds per attempt so relays with slow aggregate usage queries do not fail the previous 5-second timeout.
+
 ## 0.1.4 - 2026-08-06
 
 - Read Sub2API's `GET /v1/sub2api/billing` multiplier and apply it to pi's built-in model prices, including long-context tiers.
