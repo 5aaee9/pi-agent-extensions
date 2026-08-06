@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fix npm-installed extension startup by installing the `pi-ai` runtime needed by the native Codex compaction serializers, while keeping Pi-provided public core packages as wildcard peers.
+
 ## 0.1.6 - 2026-08-06
 
 - Add OpenAI Codex standalone server-side compaction for relay models using `openai-codex-responses`: serialize the active pi session to `POST /v1/responses/compact`, persist the returned native window in compaction details, and replace pi's textual summary replay with the opaque window plus the live tail on subsequent requests.
