@@ -96,6 +96,17 @@ describe("model metadata discovery", () => {
           models: [{ slug: "gpt-5.3-codex-spark", context_window: 128000 }],
         });
       }
+      if (url === "https://auto.example/v1/sub2api/billing") {
+        return Response.json({
+          object: "sub2api.key_billing",
+          schema_version: 2,
+          billing_scope: "token",
+          group_rate_multiplier: 1,
+          resolved_rate_multiplier: 0.01,
+          peak_rate_enabled: false,
+          effective_rate_multiplier: 0.01,
+        });
+      }
       return new Response(null, { status: 404 });
     });
 
@@ -129,6 +140,7 @@ describe("model metadata discovery", () => {
       [260000, 64000],
       [122000, 12000],
     ]);
+    expect(autoModels[0]!.cost.input).toBe(5);
 
     const responsesModel = registrations.find(({ name }) => name === "responses")!.config
       .models![0]!;
@@ -142,8 +154,10 @@ describe("model metadata discovery", () => {
       [
         "https://auto.example/v1/models",
         "https://auto.example/backend-api/codex/models",
+        "https://auto.example/v1/sub2api/billing",
         "https://responses-metadata.example/v1/models",
         "https://responses-metadata.example/backend-api/codex/models",
+        "https://responses-metadata.example/v1/sub2api/billing",
       ].sort(),
     );
     for (const call of calls) {
@@ -178,14 +192,32 @@ describe("model metadata discovery", () => {
       registerCommand() {},
     } as unknown as ExtensionAPI);
 
-    expect(calls).toEqual([
-      "https://no-manifest.example/v1/models",
-      "https://no-manifest.example/backend-api/codex/models",
-    ]);
+    expect(calls.sort()).toEqual(
+      [
+        "https://no-manifest.example/v1/models",
+        "https://no-manifest.example/backend-api/codex/models",
+        "https://no-manifest.example/v1/sub2api/billing",
+      ].sort(),
+    );
     expect(registrations[0]!.config.models![0]).toMatchObject({
       id: "gpt-5.5",
       contextWindow: 272000,
       maxTokens: 128000,
+      cost: {
+        input: 5,
+        output: 30,
+        cacheRead: 0.5,
+        cacheWrite: 0,
+        tiers: [
+          {
+            inputTokensAbove: 272000,
+            input: 10,
+            output: 45,
+            cacheRead: 1,
+            cacheWrite: 0,
+          },
+        ],
+      },
     });
     expect(consoleError).not.toHaveBeenCalled();
   });

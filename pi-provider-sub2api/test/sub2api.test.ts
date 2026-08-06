@@ -220,6 +220,7 @@ describe("sub2api provider extension", () => {
 
     const modelFetchCalls: FetchCall[] = [];
     const metadataFetchCalls: FetchCall[] = [];
+    const billingFetchCalls: FetchCall[] = [];
     const transportFetchCalls: FetchCall[] = [];
     const customFetchCalls: FetchCall[] = [];
     const codexCalls: CodexCall[] = [];
@@ -235,6 +236,10 @@ describe("sub2api provider extension", () => {
       if (url.endsWith("/backend-api/codex/models")) {
         metadataFetchCalls.push({ url, init });
         return Response.json({ models: [] });
+      }
+      if (url.endsWith("/v1/sub2api/billing")) {
+        billingFetchCalls.push({ url, init });
+        return new Response(null, { status: 404 });
       }
 
       transportFetchCalls.push({ url, init });
@@ -283,6 +288,12 @@ describe("sub2api provider extension", () => {
     );
     expect(metadataFetchCalls[0]!.init?.signal).toBeInstanceOf(AbortSignal);
     expect(metadataFetchCalls[0]!.init?.redirect).toBe("error");
+    expect(billingFetchCalls).toHaveLength(Object.keys(relayDefinitions).length);
+    for (const call of billingFetchCalls) {
+      expect(new Headers(call.init?.headers).get("authorization")).toMatch(/^Bearer /);
+      expect(call.init?.signal).toBeInstanceOf(AbortSignal);
+      expect(call.init?.redirect).toBe("error");
+    }
     expect(registrations.map((registration) => registration.name)).toEqual(
       Object.keys(relayDefinitions),
     );
@@ -694,6 +705,186 @@ describe("sub2api provider extension", () => {
     expect(notifications.at(-1)).toEqual(["Provider 'evil' is not managed by Sub2API.", "warning"]);
   });
 
+  it("applies Sub2API billing rates and shows subscription usage in the UI", async () => {
+    writeFileSync(
+      join(stateDir, "sub2api.json"),
+      JSON.stringify({
+        "subscription-relay": { baseURL: "https://subscription.example", token: "sk-sub" },
+      }),
+    );
+
+    const fetchCalls: FetchCall[] = [];
+    let billingMultiplier = 0.75;
+    let billingAvailable = true;
+    let usageAvailable = true;
+    vi.stubGlobal("fetch", async (input: URL | RequestInfo, init?: RequestInit) => {
+      const url = input instanceof Request ? input.url : String(input);
+      fetchCalls.push({ url, init });
+      if (url === "https://subscription.example/v1/models") {
+        return Response.json({ data: [{ id: "gpt-5.5", display_name: "GPT-5.5" }] });
+      }
+      if (url === "https://subscription.example/backend-api/codex/models") {
+        return Response.json({ models: [] });
+      }
+      if (url === "https://subscription.example/v1/sub2api/billing") {
+        if (!billingAvailable) return new Response(null, { status: 404 });
+        return Response.json({
+          object: "sub2api.key_billing",
+          schema_version: 1,
+          billing_scope: "token",
+          group_rate_multiplier: 1,
+          resolved_rate_multiplier: billingMultiplier,
+          peak_rate_enabled: false,
+          effective_rate_multiplier: billingMultiplier,
+          observed_at: "2026-08-06T00:00:00Z",
+        });
+      }
+      if (url === "https://subscription.example/usage") {
+        return new Response("<!doctype html><p>not an API</p>", {
+          headers: { "content-type": "text/html" },
+        });
+      }
+      if (url === "https://subscription.example/v1/usage") {
+        if (!usageAvailable) return new Response(null, { status: 400 });
+        return Response.json({
+          mode: "unrestricted",
+          isValid: true,
+          planName: "Weekly plan",
+          remaining: -1,
+          unit: "USD",
+          subscription: {
+            daily_usage_usd: 3,
+            weekly_usage_usd: 6,
+            monthly_usage_usd: 9,
+            daily_limit_usd: 10,
+            weekly_limit_usd: 20,
+            monthly_limit_usd: 30,
+            weekly_window_start: "2026-08-03T00:00:00Z",
+            expires_at: "2026-09-01T00:00:00Z",
+          },
+          usage: {
+            today: {
+              requests: 7,
+              input_tokens: 1000,
+              output_tokens: 500,
+              cache_read_tokens: 250,
+              cache_creation_tokens: 50,
+              total_tokens: 1800,
+              cost: 0.5,
+              actual_cost: 0.4,
+            },
+            total: { actual_cost: 4.2 },
+          },
+          daily_usage: [
+            {
+              date: "2026-08-06",
+              requests: 7,
+              input_tokens: 1000,
+              output_tokens: 500,
+              cache_read_tokens: 250,
+              cache_write_tokens: 50,
+              total_tokens: 1800,
+              cost: 0.5,
+              actual_cost: 0.4,
+            },
+          ],
+        });
+      }
+      return new Response(null, { status: 404 });
+    });
+
+    const registrations: Registration[] = [];
+    const handlers = new Map<string, (event: any, context: any) => unknown>();
+    const commands = new Map<
+      string,
+      { handler: (args: string, context: any) => Promise<void> | void }
+    >();
+    await extension({
+      registerProvider(name: string, config: ProviderConfig) {
+        registrations.push({ name, config });
+      },
+      on(name: string, handler: (event: any, context: any) => unknown) {
+        handlers.set(name, handler);
+      },
+      registerCommand(
+        name: string,
+        options: { handler: (args: string, context: any) => Promise<void> | void },
+      ) {
+        commands.set(name, options);
+      },
+    } as unknown as ExtensionAPI);
+
+    expect.soft(modelConfigs(registrations[0]!)[0]!.cost).toEqual({
+      input: 3.75,
+      output: 22.5,
+      cacheRead: 0.375,
+      cacheWrite: 0,
+      tiers: [
+        {
+          inputTokensAbove: 272000,
+          input: 7.5,
+          output: 33.75,
+          cacheRead: 0.75,
+          cacheWrite: 0,
+        },
+      ],
+    });
+
+    const statuses: Array<[string, string | undefined]> = [];
+    const notifications: Array<[string, string | undefined]> = [];
+    const context = {
+      hasUI: true,
+      model: { provider: "subscription-relay", id: "gpt-5.5" },
+      ui: {
+        theme: { fg: (_color: string, text: string) => text },
+        setStatus: (key: string, text: string | undefined) => statuses.push([key, text]),
+        notify: (message: string, type?: string) => notifications.push([message, type]),
+      },
+    };
+
+    handlers.get("session_start")!({}, context);
+    await vi.waitFor(() =>
+      expect(fetchCalls.map((call) => call.url)).toContain("https://subscription.example/v1/usage"),
+    );
+    expect
+      .soft(statuses.at(-1)?.[1])
+      .toContain("● subscription-relay ×0.75 · d 30% · w 30% · m 30%");
+
+    await commands.get("quota")!.handler("", context);
+    expect.soft(notifications.at(-1)?.[0]).toContain("Plan: Weekly plan");
+    expect.soft(notifications.at(-1)?.[0]).toContain("Effective price: ×0.750");
+    expect.soft(notifications.at(-1)?.[0]).toContain("Remaining: unlimited");
+    expect.soft(notifications.at(-1)?.[0]).toContain("daily: $3.00/$10.00 (30%)");
+    expect.soft(notifications.at(-1)?.[0]).toContain("1,800 tokens");
+
+    billingMultiplier = 0.5;
+    handlers.get("model_select")!({ model: context.model }, context);
+    await vi.waitFor(() => expect(registrations).toHaveLength(2));
+    expect.soft(modelConfigs(registrations.at(-1)!)[0]!.cost.input).toBe(2.5);
+    expect.soft(statuses.at(-1)?.[1]).toContain("subscription-relay ×0.5");
+
+    usageAvailable = false;
+    billingMultiplier = 0.25;
+    handlers.get("model_select")!({ model: context.model }, context);
+    await vi.waitFor(() => expect(registrations).toHaveLength(3));
+    expect.soft(modelConfigs(registrations.at(-1)!)[0]!.cost.input).toBe(1.25);
+    expect.soft(statuses.at(-1)?.[1]).toContain("subscription-relay ×0.25");
+
+    billingAvailable = false;
+    handlers.get("turn_end")!({}, context);
+    await vi.waitFor(() => expect(registrations).toHaveLength(4));
+    expect.soft(modelConfigs(registrations.at(-1)!)[0]!.cost.input).toBe(5);
+    expect.soft(statuses.at(-1)?.[1]).not.toContain("×");
+
+    const billingCall = fetchCalls.find(
+      (call) => call.url === "https://subscription.example/v1/sub2api/billing",
+    );
+    expect.soft(billingCall).toBeDefined();
+    expect.soft(new Headers(billingCall?.init?.headers).get("authorization")).toBe("Bearer sk-sub");
+    expect.soft(billingCall?.init?.redirect).toBe("error");
+    expect.soft(billingCall?.init?.signal).toBeInstanceOf(AbortSignal);
+  });
+
   it("does not publish an in-flight quota result after session shutdown", async () => {
     writeFileSync(
       join(stateDir, "sub2api.json"),
@@ -771,7 +962,11 @@ describe("sub2api provider extension", () => {
       return realSetTimeout(callback, 0);
     }) as typeof setTimeout);
     let attempts = 0;
-    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async (input) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (url.endsWith("/v1/sub2api/billing")) {
+        return new Response(null, { status: 404 });
+      }
       attempts += 1;
       if (attempts === 1) {
         return new Response(
@@ -789,8 +984,8 @@ describe("sub2api provider extension", () => {
 
     const registrations = await registerProviders();
 
-    expect(fetchMock).toHaveBeenCalledTimes(3);
-    expect(timeoutSpy.mock.calls).toEqual([[5_000], [5_000], [5_000]]);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(timeoutSpy.mock.calls).toEqual([[5_000], [5_000], [5_000], [5_000]]);
     expect(retryDelays).toEqual([1_000, 2_000]);
     expect(registrations).toHaveLength(1);
   });

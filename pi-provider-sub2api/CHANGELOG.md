@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Read Sub2API's `GET /v1/sub2api/billing` multiplier and apply it to pi's built-in model prices, including long-context tiers.
+- Parse official subscription, key-quota, aggregate-usage, and daily-usage fields from `GET /v1/usage`.
+- Show the effective price multiplier plus subscription usage in the footer, and include plan, subscription-window, and key-quota details in `/quota`.
+
 ## 0.1.3 - 2026-08-06
 
 - Enrich OpenAI model token limits from Sub2API's Codex manifest while keeping `/v1/models` authoritative for model availability, and resolve remaining limits from pi's API-specific built-in catalog.

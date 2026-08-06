@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { openAICodexResponsesApi } from "@earendil-works/pi-ai/compat";
 import { getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
+import type { ModelCost } from "@earendil-works/pi-ai";
 import type {
   ExtensionAPI,
   ExtensionContext,
@@ -62,17 +63,27 @@ interface ModelTokenLimits {
   maxTokens?: number;
 }
 
-const OPENAI_BUILTIN_LIMITS = new Map<string, ModelTokenLimits>(
+interface BuiltinModelMetadata extends ModelTokenLimits {
+  cost: ModelCost;
+}
+
+const ANTHROPIC_BUILTIN_METADATA = new Map<string, BuiltinModelMetadata>(
+  getBuiltinModels("anthropic").map((model) => [model.id, model]),
+);
+const OPENAI_BUILTIN_METADATA = new Map<string, BuiltinModelMetadata>(
   getBuiltinModels("openai").map((model) => [model.id, model]),
 );
-const CODEX_BUILTIN_LIMITS = new Map<string, ModelTokenLimits>(
+const CODEX_BUILTIN_METADATA = new Map<string, BuiltinModelMetadata>(
   getBuiltinModels("openai-codex").map((model) => [model.id, model]),
 );
-const BUILTIN_LIMITS_BY_API: Record<SupportedApi, Map<string, ModelTokenLimits>> = {
-  "anthropic-messages": new Map(),
-  "openai-codex-responses": CODEX_BUILTIN_LIMITS,
-  "openai-responses": OPENAI_BUILTIN_LIMITS,
-  "openai-completions": OPENAI_BUILTIN_LIMITS,
+const XAI_BUILTIN_METADATA = new Map<string, BuiltinModelMetadata>(
+  getBuiltinModels("xai").map((model) => [model.id, model]),
+);
+const BUILTIN_METADATA_BY_API: Record<SupportedApi, Map<string, BuiltinModelMetadata>[]> = {
+  "anthropic-messages": [ANTHROPIC_BUILTIN_METADATA],
+  "openai-codex-responses": [CODEX_BUILTIN_METADATA, OPENAI_BUILTIN_METADATA],
+  "openai-responses": [OPENAI_BUILTIN_METADATA, XAI_BUILTIN_METADATA],
+  "openai-completions": [OPENAI_BUILTIN_METADATA, XAI_BUILTIN_METADATA],
 };
 
 interface RateLimit {
@@ -95,12 +106,44 @@ interface DailyUsage {
   actualCost: number;
 }
 
+interface QuotaAmount {
+  limit: number;
+  used: number;
+  remaining: number;
+  unit: string;
+}
+
+interface BillingInfo {
+  billingUrl: string;
+  schemaVersion: number;
+  billingScope: string;
+  groupRateMultiplier: number;
+  userRateMultiplier?: number;
+  resolvedRateMultiplier: number;
+  peakRateEnabled: boolean;
+  peakStart?: string;
+  peakEnd?: string;
+  peakRateMultiplier?: number;
+  appliedPeakMultiplier?: number;
+  effectiveRateMultiplier: number;
+  timezone?: string;
+  observedAt?: string;
+  lastUpdated: number;
+}
+
 interface QuotaInfo {
   usageUrl: string;
   rateLimits: RateLimit[];
+  subscriptionLimits: RateLimit[];
   dailyUsage: DailyUsage[];
+  todayUsage?: DailyUsage;
+  quota?: QuotaAmount;
   todayCost: number;
   totalCost: number;
+  planName?: string;
+  remaining?: number;
+  unit?: string;
+  expiresAt?: string;
   status: string;
   mode: string;
   lastUpdated: number;
@@ -113,9 +156,18 @@ type QuotaRefreshResult =
   | { kind: "temporary"; detail: string }
   | { kind: "invalid" };
 
+type BillingRefreshResult =
+  | { kind: "ok"; info: BillingInfo }
+  | { kind: "not-found" }
+  | { kind: "auth"; status: number }
+  | { kind: "temporary"; detail: string }
+  | { kind: "invalid" };
+
 const relaysByProvider = new Map<string, RelayConfig>();
 const quotaByProvider = new Map<string, QuotaInfo>();
+const billingByProvider = new Map<string, BillingInfo>();
 const quotaRefreshes = new Map<string, Promise<QuotaRefreshResult>>();
+const billingRefreshes = new Map<string, Promise<BillingRefreshResult>>();
 let activeExtensionGeneration = 0;
 
 function getAgentDir() {
@@ -439,13 +491,29 @@ function getModelMetadataIds(modelId: string) {
   return modelId.toLowerCase() === "gpt-5.6" ? [modelId, "gpt-5.6-sol"] : [modelId];
 }
 
-function getBuiltinModelLimits(modelId: string, api: SupportedApi) {
-  const catalog = BUILTIN_LIMITS_BY_API[api];
+function getBuiltinModelMetadata(modelId: string, api: SupportedApi) {
   for (const candidate of getModelMetadataIds(modelId)) {
-    const limits = catalog.get(candidate);
-    if (limits) return limits;
+    for (const catalog of BUILTIN_METADATA_BY_API[api]) {
+      const metadata = catalog.get(candidate);
+      if (metadata) return metadata;
+    }
   }
   return undefined;
+}
+
+function scaleModelCost(cost: ModelCost | undefined, multiplier: number): ModelCost {
+  if (!cost) return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+  const scaleRates = <T extends ModelCost>(rates: T): T => ({
+    ...rates,
+    input: rates.input * multiplier,
+    output: rates.output * multiplier,
+    cacheRead: rates.cacheRead * multiplier,
+    cacheWrite: rates.cacheWrite * multiplier,
+  });
+  return {
+    ...scaleRates(cost),
+    tiers: cost.tiers?.map((tier) => scaleRates(tier)),
+  };
 }
 
 function streamCodex(model: any, context: any, options: any) {
@@ -678,6 +746,22 @@ function firstNumber(...values: unknown[]) {
   return undefined;
 }
 
+function firstFiniteNumber(...values: unknown[]) {
+  for (const value of values) {
+    const parsed = toFiniteNumber(value);
+    if (parsed !== undefined) return parsed;
+  }
+  return undefined;
+}
+
+function firstStrictNonNegativeNumber(...values: unknown[]) {
+  for (const value of values) {
+    const parsed = toFiniteNumber(value);
+    if (parsed !== undefined && parsed >= 0) return parsed;
+  }
+  return undefined;
+}
+
 function firstString(...values: unknown[]) {
   for (const value of values) {
     if (typeof value !== "string") continue;
@@ -688,9 +772,18 @@ function firstString(...values: unknown[]) {
 }
 
 function hasQuotaFields(value: Record<string, unknown>) {
-  return ["rate_limits", "rateLimits", "daily_usage", "dailyUsage", "usage"].some(
-    (key) => key in value,
-  );
+  return [
+    "mode",
+    "quota",
+    "subscription",
+    "planName",
+    "plan_name",
+    "rate_limits",
+    "rateLimits",
+    "daily_usage",
+    "dailyUsage",
+    "usage",
+  ].some((key) => key in value);
 }
 
 function selectQuotaPayload(value: unknown) {
@@ -734,26 +827,77 @@ function parseDailyUsage(payload: Record<string, unknown>) {
   return raw.slice(0, 400).flatMap((value): DailyUsage[] => {
     const entry = asRecord(value);
     if (!entry) return [];
-    const inputTokens = firstNumber(entry.input_tokens, entry.inputTokens) ?? 0;
-    const outputTokens = firstNumber(entry.output_tokens, entry.outputTokens) ?? 0;
-    const cacheReadTokens = firstNumber(entry.cache_read_tokens, entry.cacheReadTokens) ?? 0;
-    const cacheWriteTokens = firstNumber(entry.cache_write_tokens, entry.cacheWriteTokens) ?? 0;
-    return [
-      {
-        date: firstString(entry.date, entry.day) ?? "",
-        requests: firstNumber(entry.requests, entry.request_count, entry.requestCount) ?? 0,
-        inputTokens,
-        outputTokens,
-        cacheReadTokens,
-        cacheWriteTokens,
-        totalTokens:
-          firstNumber(entry.total_tokens, entry.totalTokens) ??
-          inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens,
-        cost: firstNumber(entry.cost) ?? 0,
-        actualCost: firstNumber(entry.actual_cost, entry.actualCost, entry.cost) ?? 0,
-      },
-    ];
+    return [parseUsageEntry(entry)];
   });
+}
+
+function parseUsageEntry(entry: Record<string, unknown>, fallbackDate = "") {
+  const inputTokens = firstNumber(entry.input_tokens, entry.inputTokens) ?? 0;
+  const outputTokens = firstNumber(entry.output_tokens, entry.outputTokens) ?? 0;
+  const cacheReadTokens = firstNumber(entry.cache_read_tokens, entry.cacheReadTokens) ?? 0;
+  const cacheWriteTokens =
+    firstNumber(
+      entry.cache_write_tokens,
+      entry.cacheWriteTokens,
+      entry.cache_creation_tokens,
+      entry.cacheCreationTokens,
+    ) ?? 0;
+  return {
+    date: firstString(entry.date, entry.day) ?? fallbackDate,
+    requests: firstNumber(entry.requests, entry.request_count, entry.requestCount) ?? 0,
+    inputTokens,
+    outputTokens,
+    cacheReadTokens,
+    cacheWriteTokens,
+    totalTokens:
+      firstNumber(entry.total_tokens, entry.totalTokens) ??
+      inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens,
+    cost: firstNumber(entry.cost) ?? 0,
+    actualCost: firstNumber(entry.actual_cost, entry.actualCost, entry.cost) ?? 0,
+  } satisfies DailyUsage;
+}
+
+function parseSubscriptionLimits(payload: Record<string, unknown>) {
+  const subscription = asRecord(payload.subscription);
+  if (!subscription) return [];
+
+  return [
+    {
+      window: "daily",
+      limit: firstNumber(subscription.daily_limit_usd, subscription.dailyLimitUsd) ?? 0,
+      used: firstNumber(subscription.daily_usage_usd, subscription.dailyUsageUsd) ?? 0,
+    },
+    {
+      window: "weekly",
+      limit: firstNumber(subscription.weekly_limit_usd, subscription.weeklyLimitUsd) ?? 0,
+      used: firstNumber(subscription.weekly_usage_usd, subscription.weeklyUsageUsd) ?? 0,
+    },
+    {
+      window: "monthly",
+      limit: firstNumber(subscription.monthly_limit_usd, subscription.monthlyLimitUsd) ?? 0,
+      used: firstNumber(subscription.monthly_usage_usd, subscription.monthlyUsageUsd) ?? 0,
+    },
+  ]
+    .filter((entry) => entry.limit > 0)
+    .map((entry): RateLimit => ({
+      ...entry,
+      remaining: Math.max(0, entry.limit - entry.used),
+      resetAt: "",
+    }));
+}
+
+function parseQuotaAmount(payload: Record<string, unknown>) {
+  const quota = asRecord(payload.quota);
+  if (!quota) return undefined;
+  const limit = firstNumber(quota.limit);
+  if (limit === undefined || limit <= 0) return undefined;
+  const used = firstNumber(quota.used) ?? 0;
+  return {
+    limit,
+    used,
+    remaining: firstNumber(quota.remaining) ?? Math.max(0, limit - used),
+    unit: firstString(quota.unit, payload.unit) ?? "USD",
+  } satisfies QuotaAmount;
 }
 
 function getLatestDailyUsage(dailyUsage: DailyUsage[]) {
@@ -768,11 +912,13 @@ function parseQuotaInfo(value: unknown, usageUrl: string): QuotaInfo | undefined
   if (!payload) return undefined;
 
   const rateLimits = parseRateLimits(payload);
+  const subscriptionLimits = parseSubscriptionLimits(payload);
   const dailyUsage = parseDailyUsage(payload);
   const latestDay = getLatestDailyUsage(dailyUsage);
   const usage = asRecord(payload.usage);
   const today = asRecord(usage?.today);
   const total = asRecord(usage?.total);
+  const todayUsage = today ? parseUsageEntry(today, "today") : undefined;
   const todayCost =
     firstNumber(
       today?.actual_cost,
@@ -780,6 +926,7 @@ function parseQuotaInfo(value: unknown, usageUrl: string): QuotaInfo | undefined
       today?.cost,
       payload.today_cost,
       payload.todayCost,
+      todayUsage?.actualCost,
       latestDay?.actualCost,
       latestDay?.cost,
     ) ?? 0;
@@ -795,9 +942,16 @@ function parseQuotaInfo(value: unknown, usageUrl: string): QuotaInfo | undefined
   return {
     usageUrl,
     rateLimits,
+    subscriptionLimits,
     dailyUsage,
+    todayUsage,
+    quota: parseQuotaAmount(payload),
     todayCost,
     totalCost,
+    planName: firstString(payload.planName, payload.plan_name),
+    remaining: firstFiniteNumber(payload.remaining),
+    unit: firstString(payload.unit),
+    expiresAt: firstString(payload.expires_at, payload.expiresAt),
     status:
       firstString(payload.status) ??
       (payload.isValid === true || payload.is_valid === true ? "valid" : "unknown"),
@@ -808,6 +962,137 @@ function parseQuotaInfo(value: unknown, usageUrl: string): QuotaInfo | undefined
 
 function getUsageUrls(relay: RelayConfig) {
   return [...new Set([`${relay.anthropicBaseUrl}/usage`, `${relay.baseUrl}/usage`])];
+}
+
+function getBillingUrl(relay: RelayConfig) {
+  return `${relay.baseUrl}/sub2api/billing`;
+}
+
+function parseBillingInfo(value: unknown, billingUrl: string): BillingInfo | undefined {
+  const payload = asRecord(value);
+  if (!payload || firstString(payload.object) !== "sub2api.key_billing") return undefined;
+  const schemaVersion = toPositiveInteger(payload.schema_version ?? payload.schemaVersion);
+  const billingScope = firstString(payload.billing_scope, payload.billingScope);
+  const groupRateMultiplier = firstStrictNonNegativeNumber(
+    payload.group_rate_multiplier,
+    payload.groupRateMultiplier,
+  );
+  const resolvedRateMultiplier = firstStrictNonNegativeNumber(
+    payload.resolved_rate_multiplier,
+    payload.resolvedRateMultiplier,
+  );
+  const effectiveRateMultiplier = firstStrictNonNegativeNumber(
+    payload.effective_rate_multiplier,
+    payload.effectiveRateMultiplier,
+  );
+  const peakRateEnabled = payload.peak_rate_enabled ?? payload.peakRateEnabled;
+  if (
+    schemaVersion !== 1 ||
+    billingScope !== "token" ||
+    groupRateMultiplier === undefined ||
+    resolvedRateMultiplier === undefined ||
+    effectiveRateMultiplier === undefined ||
+    typeof peakRateEnabled !== "boolean"
+  ) {
+    return undefined;
+  }
+
+  return {
+    billingUrl,
+    schemaVersion,
+    billingScope,
+    groupRateMultiplier,
+    userRateMultiplier: firstStrictNonNegativeNumber(
+      payload.user_rate_multiplier,
+      payload.userRateMultiplier,
+    ),
+    resolvedRateMultiplier,
+    peakRateEnabled,
+    peakStart: firstString(payload.peak_start, payload.peakStart),
+    peakEnd: firstString(payload.peak_end, payload.peakEnd),
+    peakRateMultiplier: firstStrictNonNegativeNumber(
+      payload.peak_rate_multiplier,
+      payload.peakRateMultiplier,
+    ),
+    appliedPeakMultiplier: firstStrictNonNegativeNumber(
+      payload.applied_peak_multiplier,
+      payload.appliedPeakMultiplier,
+    ),
+    effectiveRateMultiplier,
+    timezone: firstString(payload.timezone),
+    observedAt: firstString(payload.observed_at, payload.observedAt),
+    lastUpdated: Date.now(),
+  };
+}
+
+async function fetchBilling(
+  relay: RelayConfig,
+  signal: AbortSignal,
+): Promise<BillingRefreshResult> {
+  const billingUrl = getBillingUrl(relay);
+  const result = await fetchTextWithRetry(billingUrl, {
+    headers: { Authorization: `Bearer ${relay.apiKey}`, Accept: "application/json" },
+    signal,
+  });
+  if (!result) return { kind: "temporary", detail: "network request failed" };
+  const { response } = result;
+  if (response.status === 404 || response.status === 405) {
+    discardResponse(response);
+    return { kind: "not-found" };
+  }
+  if (response.status === 401 || response.status === 403) {
+    discardResponse(response);
+    return { kind: "auth", status: response.status };
+  }
+  if (!response.ok) {
+    discardResponse(response);
+    return { kind: "temporary", detail: `HTTP ${response.status}` };
+  }
+  if ("bodyError" in result) {
+    return isRetryableError(result.bodyError)
+      ? { kind: "temporary", detail: "response body failed" }
+      : { kind: "invalid" };
+  }
+  if (!("text" in result)) return { kind: "invalid" };
+
+  try {
+    if (/<!doctype|<html/i.test(result.text)) return { kind: "invalid" };
+    const info = parseBillingInfo(JSON.parse(result.text) as unknown, billingUrl);
+    return info ? { kind: "ok", info } : { kind: "invalid" };
+  } catch {
+    return { kind: "invalid" };
+  }
+}
+
+function refreshBilling(relay: RelayConfig, signal: AbortSignal, canCommit: () => boolean) {
+  const pending = billingRefreshes.get(relay.provider);
+  if (pending) return pending;
+
+  const promise = fetchBilling(relay, signal)
+    .then((result) => {
+      if (!canCommit()) {
+        return result.kind === "ok"
+          ? ({ kind: "temporary", detail: "request cancelled" } as const)
+          : result;
+      }
+      if (result.kind === "ok") {
+        billingByProvider.set(relay.provider, result.info);
+      } else if (["not-found", "auth", "invalid"].includes(result.kind)) {
+        billingByProvider.delete(relay.provider);
+      }
+      return result;
+    })
+    .catch((): BillingRefreshResult => ({
+      kind: "temporary",
+      detail: "network request failed",
+    }))
+    .finally(() => {
+      if (billingRefreshes.get(relay.provider) === promise) {
+        billingRefreshes.delete(relay.provider);
+      }
+    });
+  billingRefreshes.set(relay.provider, promise);
+  return promise;
 }
 
 async function fetchQuotaAt(
@@ -893,6 +1178,7 @@ function normalizeWindowLabel(window: string) {
   const value = window.toLowerCase();
   if (value === "1d" || value === "day" || value === "daily") return "daily";
   if (value === "7d" || value === "week" || value === "weekly") return "weekly";
+  if (value === "30d" || value === "month" || value === "monthly") return "monthly";
   return value || "default";
 }
 
@@ -900,11 +1186,25 @@ function shortWindowLabel(window: string) {
   const label = normalizeWindowLabel(window);
   if (label === "daily") return "d";
   if (label === "weekly") return "w";
+  if (label === "monthly") return "m";
   return label;
 }
 
 function formatMoney(value: number, fractionDigits = 2) {
   return `$${value.toFixed(fractionDigits)}`;
+}
+
+function formatMultiplier(value: number, fractionDigits = 3) {
+  return value
+    .toFixed(fractionDigits)
+    .replace(/\.0+$/, "")
+    .replace(/(\.\d*?)0+$/, "$1");
+}
+
+function formatCompactTokens(value: number) {
+  if (value < 1_000) return value.toLocaleString();
+  if (value < 1_000_000) return `${(value / 1_000).toFixed(1).replace(/\.0$/, "")}k`;
+  return `${(value / 1_000_000).toFixed(1).replace(/\.0$/, "")}m`;
 }
 
 function pickQuotaWindows(rateLimits: RateLimit[]) {
@@ -918,27 +1218,42 @@ function pickQuotaWindows(rateLimits: RateLimit[]) {
   return preferred.length ? preferred : rateLimits;
 }
 
-function formatQuotaStatus(provider: string, info: QuotaInfo) {
-  const windows = pickQuotaWindows(info.rateLimits).filter((rateLimit) => rateLimit.limit > 0);
+function formatQuotaStatus(provider: string, info: QuotaInfo, billing?: BillingInfo) {
+  const heading = billing
+    ? `● ${provider} ×${formatMultiplier(billing.effectiveRateMultiplier)}`
+    : `● ${provider}`;
+  const windows = (
+    info.subscriptionLimits.length ? info.subscriptionLimits : pickQuotaWindows(info.rateLimits)
+  ).filter((rateLimit) => rateLimit.limit > 0);
   if (windows.length) {
     const percentages = windows.map((rateLimit) => {
       const percent = Math.round((rateLimit.used / rateLimit.limit) * 100);
       return `${shortWindowLabel(rateLimit.window)} ${percent}%`;
     });
-    return sanitizeDisplayString(`● ${provider} ${percentages.join(" · ")}`, 200);
+    const separator = billing ? " · " : " ";
+    return sanitizeDisplayString(`${heading}${separator}${percentages.join(" · ")}`, 200);
   }
-  return sanitizeDisplayString(`● ${provider} d ${formatMoney(info.todayCost)}`, 200);
+  const latestUsage = info.todayUsage ?? getLatestDailyUsage(info.dailyUsage);
+  const usageParts = [`d ${formatMoney(info.todayCost)}`];
+  if (latestUsage?.totalTokens) {
+    usageParts.push(`${formatCompactTokens(latestUsage.totalTokens)} tok`);
+  }
+  return sanitizeDisplayString(`${heading}${billing ? " · " : " "}${usageParts.join(" · ")}`, 200);
 }
 
 function setQuotaStatus(ctx: ExtensionContext, provider: string, info: QuotaInfo) {
   if (!ctx.hasUI || ctx.model?.provider !== provider) return;
-  ctx.ui.setStatus(QUOTA_STATUS_KEY, ctx.ui.theme.fg("accent", formatQuotaStatus(provider, info)));
+  ctx.ui.setStatus(
+    QUOTA_STATUS_KEY,
+    ctx.ui.theme.fg("accent", formatQuotaStatus(provider, info, billingByProvider.get(provider))),
+  );
 }
 
 function refreshActiveQuota(
   ctx: ExtensionContext,
   provider: string,
   refresh: (relay: RelayConfig) => Promise<QuotaRefreshResult>,
+  refreshBillingInfo: (relay: RelayConfig) => Promise<BillingRefreshResult>,
   isCurrent: () => boolean,
 ) {
   if (!ctx.hasUI || !isCurrent()) return;
@@ -951,26 +1266,59 @@ function refreshActiveQuota(
   const cached = quotaByProvider.get(provider);
   if (cached) setQuotaStatus(ctx, provider, cached);
   else ctx.ui.setStatus(QUOTA_STATUS_KEY, undefined);
+  void refreshBillingInfo(relay).then(() => {
+    const latest = quotaByProvider.get(provider);
+    if (isCurrent() && latest) setQuotaStatus(ctx, provider, latest);
+  });
   void refresh(relay).then((result) => {
     if (isCurrent() && result.kind === "ok") setQuotaStatus(ctx, provider, result.info);
   });
 }
 
-function formatQuotaReport(provider: string, info: QuotaInfo) {
-  const latestDay = getLatestDailyUsage(info.dailyUsage);
-  const lines = [
-    `Sub2API quota — ${provider}`,
-    `Status: ${info.status}`,
-    `Mode: ${info.mode}`,
+function formatQuotaReport(provider: string, info: QuotaInfo, billing?: BillingInfo) {
+  const latestDay = getLatestDailyUsage(info.dailyUsage) ?? info.todayUsage;
+  const lines = [`Sub2API quota — ${provider}`, `Status: ${info.status}`, `Mode: ${info.mode}`];
+
+  if (info.planName) lines.push(`Plan: ${info.planName}`);
+  if (billing) {
+    lines.push(`Effective price: ×${billing.effectiveRateMultiplier.toFixed(3)}`);
+    if (billing.peakRateEnabled && billing.appliedPeakMultiplier !== undefined) {
+      lines.push(
+        `  resolved ×${formatMultiplier(billing.resolvedRateMultiplier)} · peak ×${formatMultiplier(billing.appliedPeakMultiplier)}`,
+      );
+    }
+  }
+  if (info.remaining !== undefined) {
+    lines.push(
+      `Remaining: ${info.remaining < 0 ? "unlimited" : formatMoney(info.remaining, 2)}${info.unit && info.unit !== "USD" ? ` ${info.unit}` : ""}`,
+    );
+  }
+  lines.push(
     `Today cost: ${formatMoney(info.todayCost, 4)}`,
     `Total cost: ${formatMoney(info.totalCost, 4)}`,
     `Updated: ${new Date(info.lastUpdated).toLocaleString()}`,
-  ];
+  );
 
   if (latestDay) {
     lines.push(
       `Daily usage (${latestDay.date || "latest"}): ${latestDay.requests.toLocaleString()} requests, ${latestDay.totalTokens.toLocaleString()} tokens`,
       `  input ${latestDay.inputTokens.toLocaleString()} · output ${latestDay.outputTokens.toLocaleString()} · cache read ${latestDay.cacheReadTokens.toLocaleString()} · cache write ${latestDay.cacheWriteTokens.toLocaleString()}`,
+    );
+  }
+
+  if (info.subscriptionLimits.length) {
+    lines.push("Subscription usage:");
+    for (const limit of info.subscriptionLimits) {
+      const percent = Math.round((limit.used / limit.limit) * 100);
+      lines.push(
+        `  ${normalizeWindowLabel(limit.window)}: ${formatMoney(limit.used)}/${formatMoney(limit.limit)} (${percent}%)`,
+      );
+    }
+  }
+
+  if (info.quota) {
+    lines.push(
+      `Key quota: ${formatMoney(info.quota.used)}/${formatMoney(info.quota.limit)} (remaining ${formatMoney(info.quota.remaining)})`,
     );
   }
 
@@ -1003,7 +1351,9 @@ export default async function (pi: ExtensionAPI) {
 
   relaysByProvider.clear();
   quotaByProvider.clear();
+  billingByProvider.clear();
   quotaRefreshes.clear();
+  billingRefreshes.clear();
   for (const relay of relays) relaysByProvider.set(relay.provider, relay);
   const refreshRelayQuota = (relay: RelayConfig) =>
     refreshQuota(
@@ -1011,17 +1361,35 @@ export default async function (pi: ExtensionAPI) {
       lifecycleController.signal,
       () => isCurrent() && relaysByProvider.get(relay.provider) === relay,
     );
+  const refreshRelayBilling = (relay: RelayConfig) =>
+    refreshBilling(
+      relay,
+      lifecycleController.signal,
+      () => isCurrent() && relaysByProvider.get(relay.provider) === relay,
+    );
 
   const providers = await Promise.all(
-    relays.map(async (relay) => ({ relay, models: await fetchModels(relay) })),
+    relays.map(async (relay) => {
+      const [models] = await Promise.all([fetchModels(relay), refreshRelayBilling(relay)]);
+      return { relay, models };
+    }),
   );
 
-  for (const { relay, models } of providers) {
+  const discoveredModelsByProvider = new Map(
+    providers.map(({ relay, models }) => [relay.provider, models]),
+  );
+  const registeredPriceMultipliers = new Map<string, number>();
+  const registerRelayProvider = (relay: RelayConfig, models: DiscoveredModel[]) => {
+    const priceMultiplier = billingByProvider.get(relay.provider)?.effectiveRateMultiplier ?? 1;
     const registeredModels: ProviderModelConfig[] = models
       .filter((model) => !EXCLUDED.test(model.id))
       .map((model) => {
         const api = getModelApi(model.id, relay.api);
-        const builtinLimits = getBuiltinModelLimits(model.id, api);
+        const builtinMetadata = getBuiltinModelMetadata(model.id, api);
+        // Keep Anthropic's relay-safe limits: pi's native catalog can advertise a
+        // larger output cap than some Sub2API deployments accept. Its pricing is
+        // still authoritative when available.
+        const builtinLimits = api === "anthropic-messages" ? undefined : builtinMetadata;
         const contextWindow = model.contextWindow ?? builtinLimits?.contextWindow ?? 200000;
         const defaultMaxTokens = Math.min(getDefaultMaxTokens(model.id), contextWindow);
         const maxTokens =
@@ -1035,7 +1403,7 @@ export default async function (pi: ExtensionAPI) {
           reasoning: REASONING.test(model.id),
           thinkingLevelMap: getThinkingLevelMap(model.id, api),
           input: ["text", "image"],
-          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+          cost: scaleModelCost(builtinMetadata?.cost, priceMultiplier),
           contextWindow,
           maxTokens,
           headers:
@@ -1060,19 +1428,59 @@ export default async function (pi: ExtensionAPI) {
       ...(usesCodex ? { streamSimple: streamCodex } : {}),
       models: registeredModels,
     });
+    registeredPriceMultipliers.set(relay.provider, priceMultiplier);
+  };
+
+  for (const { relay, models } of providers) {
+    registerRelayProvider(relay, models);
   }
 
+  const syncRelayProviderPricing = (relay: RelayConfig) => {
+    if (!isCurrent()) return;
+    const models = discoveredModelsByProvider.get(relay.provider);
+    if (!models) return;
+    const priceMultiplier = billingByProvider.get(relay.provider)?.effectiveRateMultiplier ?? 1;
+    if (registeredPriceMultipliers.get(relay.provider) === priceMultiplier) return;
+    registerRelayProvider(relay, models);
+  };
+  const refreshRelayBillingAndPricing = async (relay: RelayConfig) => {
+    const result = await refreshRelayBilling(relay);
+    syncRelayProviderPricing(relay);
+    return result;
+  };
+
   pi.on("session_start", (_event, ctx) => {
-    if (ctx.model) refreshActiveQuota(ctx, ctx.model.provider, refreshRelayQuota, isCurrent);
-    else if (ctx.hasUI) ctx.ui.setStatus(QUOTA_STATUS_KEY, undefined);
+    if (ctx.model) {
+      refreshActiveQuota(
+        ctx,
+        ctx.model.provider,
+        refreshRelayQuota,
+        refreshRelayBillingAndPricing,
+        isCurrent,
+      );
+    } else if (ctx.hasUI) ctx.ui.setStatus(QUOTA_STATUS_KEY, undefined);
   });
 
   pi.on("model_select", (event, ctx) => {
-    refreshActiveQuota(ctx, event.model.provider, refreshRelayQuota, isCurrent);
+    refreshActiveQuota(
+      ctx,
+      event.model.provider,
+      refreshRelayQuota,
+      refreshRelayBillingAndPricing,
+      isCurrent,
+    );
   });
 
   pi.on("turn_end", (_event, ctx) => {
-    if (ctx.model) refreshActiveQuota(ctx, ctx.model.provider, refreshRelayQuota, isCurrent);
+    if (ctx.model) {
+      refreshActiveQuota(
+        ctx,
+        ctx.model.provider,
+        refreshRelayQuota,
+        refreshRelayBillingAndPricing,
+        isCurrent,
+      );
+    }
   });
 
   pi.on("session_shutdown", (_event, ctx) => {
@@ -1098,11 +1506,17 @@ export default async function (pi: ExtensionAPI) {
         return;
       }
 
-      const result = await refreshRelayQuota(relay);
+      const [result] = await Promise.all([
+        refreshRelayQuota(relay),
+        refreshRelayBillingAndPricing(relay),
+      ]);
       if (!isCurrent()) return;
       if (result.kind === "ok") {
         setQuotaStatus(ctx, provider, result.info);
-        ctx.ui.notify(formatQuotaReport(provider, result.info), "info");
+        ctx.ui.notify(
+          formatQuotaReport(provider, result.info, billingByProvider.get(provider)),
+          "info",
+        );
         return;
       }
 
@@ -1110,7 +1524,7 @@ export default async function (pi: ExtensionAPI) {
       if (cached) {
         setQuotaStatus(ctx, provider, cached);
         ctx.ui.notify(
-          `Quota refresh failed; showing cached data.\n\n${formatQuotaReport(provider, cached)}`,
+          `Quota refresh failed; showing cached data.\n\n${formatQuotaReport(provider, cached, billingByProvider.get(provider))}`,
           "warning",
         );
         return;
