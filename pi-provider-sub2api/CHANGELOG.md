@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.3 - 2026-08-06
+
+- Enrich OpenAI model token limits from Sub2API's Codex manifest while keeping `/v1/models` authoritative for model availability, and resolve remaining limits from pi's API-specific built-in catalog.
+- Map the `gpt-5.6` inventory alias to `gpt-5.6-sol` metadata and let later valid metadata aliases recover from invalid earlier values.
+
 ## 0.1.2 - 2026-08-06
 
 - Rewrite Codex adapter requests from `/v1/codex/responses` to the relay's standard `/v1/responses` endpoint at the request boundary, and drop the fake `chatgpt-account-id` header. Sub2API relays do not expose ChatGPT's Codex passthrough route, so Codex models previously failed with `404 page not found`.
