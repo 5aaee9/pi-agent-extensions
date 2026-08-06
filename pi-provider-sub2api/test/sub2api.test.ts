@@ -1,5 +1,5 @@
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { ExtensionAPI, ProviderConfig } from "@earendil-works/pi-coding-agent";
@@ -31,6 +31,70 @@ interface Registration {
 interface FetchCall {
   url: string;
   init?: RequestInit;
+}
+
+interface TestFooterComponent {
+  render(width: number): string[];
+  dispose?(): void;
+}
+
+interface TestFooterTheme {
+  fg(color: string, text: string): string;
+}
+
+interface TestFooterData {
+  getGitBranch(): string | null;
+  getExtensionStatuses(): ReadonlyMap<string, string>;
+  getAvailableProviderCount(): number;
+  onBranchChange(callback: () => void): () => void;
+}
+
+type TestFooterFactory = (
+  tui: { requestRender(): void },
+  theme: TestFooterTheme,
+  footerData: TestFooterData,
+) => TestFooterComponent;
+
+function createFooterHarness(statuses: ReadonlyMap<string, string> = new Map()) {
+  let component: TestFooterComponent | undefined;
+  const theme = { fg: (_color: string, text: string) => text };
+  const footerData: TestFooterData = {
+    getGitBranch: () => "main",
+    getExtensionStatuses: () => statuses,
+    getAvailableProviderCount: () => 1,
+    onBranchChange: () => () => {},
+  };
+  return {
+    ui: {
+      theme,
+      setFooter(factory: TestFooterFactory | undefined) {
+        component?.dispose?.();
+        component = factory?.({ requestRender() {} }, theme, footerData);
+      },
+    },
+    render() {
+      return (component?.render(200) ?? []).map((line) => line.trimEnd());
+    },
+  };
+}
+
+function createFooterContext(
+  model: { provider: string; id: string },
+  footer: ReturnType<typeof createFooterHarness>,
+) {
+  return {
+    hasUI: true,
+    mode: "tui",
+    cwd: join(homedir(), "Projects", "demo"),
+    model,
+    thinkingLevel: "off",
+    getContextUsage: () => ({ tokens: 0, contextWindow: 64_000, percent: 0 }),
+    sessionManager: {
+      getEntries: () => [],
+      getSessionName: () => undefined,
+    },
+    ui: footer.ui,
+  };
 }
 
 interface CodexCall {
@@ -549,7 +613,7 @@ describe("sub2api provider extension", () => {
     ]);
   });
 
-  it("refreshes the final footer line across lifecycle events without a command", async () => {
+  it("refreshes a dedicated final footer row across lifecycle events", async () => {
     writeFileSync(
       join(stateDir, "sub2api.json"),
       JSON.stringify({
@@ -635,28 +699,22 @@ describe("sub2api provider extension", () => {
     ]);
     expect(registerCommand).not.toHaveBeenCalled();
 
-    const usageLines: Array<[string, string | undefined]> = [];
+    const footer = createFooterHarness(new Map([["mcp", "mcp connected"]]));
     const activeModel = { provider: "quota-relay", id: "grok-quota" };
-    const context = {
-      hasUI: true,
-      model: activeModel,
-      ui: {
-        theme: { fg: (_color: string, text: string) => text },
-        setStatus: (key: string, text: string | undefined) => usageLines.push([key, text]),
-      },
-    };
+    const context = createFooterContext(activeModel, footer);
 
     handlers.get("session_start")!({}, context);
-    expect(usageLines.at(-1)).toEqual(["sub2api-usage", "quota-relay · loading…"]);
-    await vi.waitFor(() => expect(usageLines.at(-1)?.[1]).toBe("quota-relay · 5h 10% · d 10%"));
+    expect(footer.render()[0]).toBe("~/Projects/demo (main)");
+    expect(footer.render().slice(-2)).toEqual(["mcp connected", "quota-relay · loading…"]);
+    await vi.waitFor(() => expect(footer.render().at(-1)).toBe("quota-relay · 5h 10% · d 10%"));
     expect(quotaVersion).toBe(1);
 
     handlers.get("model_select")!({ model: activeModel }, context);
-    await vi.waitFor(() => expect(usageLines.at(-1)?.[1]).toContain("5h 20%"));
+    await vi.waitFor(() => expect(footer.render().at(-1)).toContain("5h 20%"));
     expect(quotaVersion).toBe(2);
 
     handlers.get("turn_end")!({}, context);
-    await vi.waitFor(() => expect(usageLines.at(-1)?.[1]).toContain("5h 30%"));
+    await vi.waitFor(() => expect(footer.render().at(-1)).toContain("5h 30%"));
     expect(quotaVersion).toBe(3);
 
     const usageCalls = fetchCalls.filter((call) => call.url.endsWith("/usage"));
@@ -677,7 +735,7 @@ describe("sub2api provider extension", () => {
 
     context.model = { provider: "other", id: "other-model" };
     handlers.get("model_select")!({ model: context.model }, context);
-    expect(usageLines.at(-1)).toEqual(["sub2api-usage", undefined]);
+    expect(footer.render().at(-1)).toBe("mcp connected");
   });
 
   it("keeps an unavailable usage status visible when the relay has no usage endpoint", async () => {
@@ -702,21 +760,15 @@ describe("sub2api provider extension", () => {
       },
     } as unknown as ExtensionAPI);
 
-    const usageLines: string[] = [];
-    const context = {
-      hasUI: true,
-      model: { provider: "unavailable", id: "grok-unavailable" },
-      ui: {
-        theme: { fg: (_color: string, text: string) => text },
-        setStatus: (_key: string, text: string | undefined) => {
-          if (text) usageLines.push(text);
-        },
-      },
-    };
+    const footer = createFooterHarness();
+    const context = createFooterContext(
+      { provider: "unavailable", id: "grok-unavailable" },
+      footer,
+    );
 
     handlers.get("session_start")!({}, context);
-    expect(usageLines.at(-1)).toBe("unavailable · loading…");
-    await vi.waitFor(() => expect(usageLines.at(-1)).toBe("unavailable · usage unavailable"));
+    expect(footer.render().at(-1)).toBe("unavailable · loading…");
+    await vi.waitFor(() => expect(footer.render().at(-1)).toBe("unavailable · usage unavailable"));
   });
 
   it("allows the usage endpoint enough time to return slow aggregate data", async () => {
@@ -761,20 +813,11 @@ describe("sub2api provider extension", () => {
       },
     } as unknown as ExtensionAPI);
 
-    const usageLines: string[] = [];
-    const context = {
-      hasUI: true,
-      model: { provider: "slow", id: "grok-slow" },
-      ui: {
-        theme: { fg: (_color: string, text: string) => text },
-        setStatus: (_key: string, text: string | undefined) => {
-          if (text) usageLines.push(text);
-        },
-      },
-    };
+    const footer = createFooterHarness();
+    const context = createFooterContext({ provider: "slow", id: "grok-slow" }, footer);
 
     handlers.get("session_start")!({}, context);
-    await vi.waitFor(() => expect(usageLines.at(-1)).toBe("slow · d $448.47 · 655.3m tok"));
+    await vi.waitFor(() => expect(footer.render().at(-1)).toBe("slow · d $448.47 · 655.3m tok"));
     expect(usageTimeouts).toEqual([30_000, 30_000]);
   });
 
@@ -893,40 +936,33 @@ describe("sub2api provider extension", () => {
       ],
     });
 
-    const usageLines: Array<[string, string | undefined]> = [];
-    const context = {
-      hasUI: true,
-      model: { provider: "subscription-relay", id: "gpt-5.5" },
-      ui: {
-        theme: { fg: (_color: string, text: string) => text },
-        setStatus: (key: string, text: string | undefined) => usageLines.push([key, text]),
-      },
-    };
+    const footer = createFooterHarness();
+    const context = createFooterContext({ provider: "subscription-relay", id: "gpt-5.5" }, footer);
 
     handlers.get("session_start")!({}, context);
-    expect(usageLines.at(-1)).toEqual(["sub2api-usage", "subscription-relay · loading…"]);
+    expect(footer.render().at(-1)).toBe("subscription-relay · loading…");
     await vi.waitFor(() =>
-      expect(usageLines.at(-1)?.[1]).toBe("subscription-relay · d 30% · w 30% · m 30%"),
+      expect(footer.render().at(-1)).toBe("subscription-relay · d 30% · w 30% · m 30%"),
     );
 
     billingMultiplier = 0.5;
     handlers.get("model_select")!({ model: context.model }, context);
     await vi.waitFor(() => expect(registrations).toHaveLength(2));
     expect.soft(modelConfigs(registrations.at(-1)!)[0]!.cost.input).toBe(2.5);
-    expect.soft(usageLines.at(-1)?.[1]).toBe("subscription-relay · d 30% · w 30% · m 30%");
+    expect.soft(footer.render().at(-1)).toBe("subscription-relay · d 30% · w 30% · m 30%");
 
     usageAvailable = false;
     billingMultiplier = 0.25;
     handlers.get("model_select")!({ model: context.model }, context);
     await vi.waitFor(() => expect(registrations).toHaveLength(3));
     expect.soft(modelConfigs(registrations.at(-1)!)[0]!.cost.input).toBe(1.25);
-    expect.soft(usageLines.at(-1)?.[1]).toBe("subscription-relay · d 30% · w 30% · m 30%");
+    expect.soft(footer.render().at(-1)).toBe("subscription-relay · d 30% · w 30% · m 30%");
 
     billingAvailable = false;
     handlers.get("turn_end")!({}, context);
     await vi.waitFor(() => expect(registrations).toHaveLength(4));
     expect.soft(modelConfigs(registrations.at(-1)!)[0]!.cost.input).toBe(5);
-    expect.soft(usageLines.at(-1)?.[1]).not.toContain("×");
+    expect.soft(footer.render().at(-1)).not.toContain("×");
 
     const billingCall = fetchCalls.find(
       (call) => call.url === "https://subscription.example/v1/sub2api/billing",
@@ -972,17 +1008,11 @@ describe("sub2api provider extension", () => {
       registerCommand() {},
     } as unknown as ExtensionAPI);
 
-    const usageLines: Array<string | undefined> = [];
-    const context = {
-      hasUI: true,
-      model: { provider: "stale", id: "grok-stale" },
-      ui: {
-        theme: { fg: (_color: string, text: string) => text },
-        setStatus: (_key: string, text: string | undefined) => usageLines.push(text),
-      },
-    };
+    const footer = createFooterHarness();
+    const context = createFooterContext({ provider: "stale", id: "grok-stale" }, footer);
     handlers.get("session_start")!({}, context);
     await usageStarted;
+    expect(footer.render().at(-1)).toBe("stale · loading…");
     handlers.get("session_shutdown")!({}, context);
     expect(usageSignal?.aborted).toBe(true);
     resolveUsage?.(
@@ -992,10 +1022,7 @@ describe("sub2api provider extension", () => {
     );
     await new Promise((resolveTurn) => setTimeout(resolveTurn, 0));
 
-    expect(usageLines.at(-1)).toBeUndefined();
-    expect(usageLines.filter((line): line is string => typeof line === "string")).toEqual([
-      "stale · loading…",
-    ]);
+    expect(footer.render()).not.toContain("stale · loading…");
   });
 
   it("retries model discovery with exponential backoff and a five-second timeout", async () => {

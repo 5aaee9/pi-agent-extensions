@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Render a custom footer that preserves the project, token/model, and extension-status rows while placing relay usage on a dedicated final row below them.
+
 ## 0.1.5 - 2026-08-06
 
 - Report relay usage on the final footer line, with automatic refreshes on session start, model selection, and turn end; remove the `/quota` command.

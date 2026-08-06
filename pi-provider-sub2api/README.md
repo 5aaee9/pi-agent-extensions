@@ -77,14 +77,14 @@ At startup and during quota refreshes, the extension queries Sub2API's API-key b
 
 For the active provider, the extension also probes a root `/usage` compatibility route and then Sub2API's official `GET /v1/usage` endpoint. A recognized response may contain key quotas, `rate_limits`, subscription daily/weekly/monthly usage, `daily_usage`, and `usage.today`/`usage.total` data; camelCase aliases are accepted for compatible relays.
 
-Usage refreshes run in the background on `session_start`, `model_select`, and `turn_end`. The extension registers no slash command. It immediately appends a usage status as the last line of pi's built-in footer, then replaces the loading text with compact usage when the request completes:
+Usage refreshes run in the background on `session_start`, `model_select`, and `turn_end`. The extension registers no slash command. It installs a custom footer that keeps the project path first, followed by pi's token/model statistics and other extension statuses, then adds usage as its own final row. Keeping usage outside the shared status row prevents it from being joined with MCP and similar extension statuses:
 
 ```text
 my-relay · loading…
 my-relay · d 24% · w 11% · m 7%
 ```
 
-The usage footer line intentionally omits status icons, the `usage` label, and billing multipliers to keep the completed state compact. Providers without a compatible usage endpoint continue to work normally; their usage status changes to `my-relay · usage unavailable` instead of disappearing silently.
+The dedicated usage row intentionally omits leading padding, status icons, the `usage` label, and billing multipliers to keep the completed state compact. Providers without a compatible usage endpoint continue to work normally; their usage row changes to `my-relay · usage unavailable` instead of disappearing silently. Pi exposes one custom-footer slot, so another extension that replaces the entire footer can override this layout; extensions that only call `setStatus`, including MCP status integrations, remain on their own row above usage.
 
 The billing endpoint reports a token-price multiplier, not the purchase price of a subscription plan. The latter is not available through Sub2API's API-key-authenticated contract.
 
