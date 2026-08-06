@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.5 - 2026-08-06
 
 - Report relay usage on the final footer line, with automatic refreshes on session start, model selection, and turn end; remove the `/quota` command.
 - Show loading and unavailable states so the usage line no longer disappears while the endpoint is pending or unsupported.
