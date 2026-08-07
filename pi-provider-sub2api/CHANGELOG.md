@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.9 - 2026-08-07
+
 - Retry relayed Codex `stream_read_error` failures indefinitely with exponential backoff from one second up to a 30-minute maximum interval, while preserving cancellation and leaving other errors terminal.
 
 ## 0.1.8 - 2026-08-06
