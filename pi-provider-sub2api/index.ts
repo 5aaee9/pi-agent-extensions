@@ -3,7 +3,16 @@ import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { openAICodexResponsesApi } from "@earendil-works/pi-ai/compat";
 import { getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
-import type { ModelCost } from "@earendil-works/pi-ai";
+import {
+  createAssistantMessageEventStream,
+  type AssistantMessage,
+  type AssistantMessageEvent,
+  type AssistantMessageEventStream,
+  type Context,
+  type Model,
+  type ModelCost,
+  type SimpleStreamOptions,
+} from "@earendil-works/pi-ai";
 import type {
   ExtensionAPI,
   ExtensionContext,
@@ -18,6 +27,8 @@ const REQUEST_TIMEOUT_MS = 5_000;
 const USAGE_REQUEST_TIMEOUT_MS = 30_000;
 const MAX_RETRIES = 2;
 const RETRY_BASE_DELAY_MS = 1_000;
+const CODEX_STREAM_RETRY_BASE_DELAY_MS = 1_000;
+const CODEX_STREAM_RETRY_MAX_DELAY_MS = 30 * 60 * 1_000;
 const MAX_RESPONSE_BYTES = 1024 * 1024;
 const MAX_MODEL_TOKEN_LIMIT = 10_000_000;
 const USAGE_FOOTER_KEY = "sub2api-usage";
@@ -521,12 +532,194 @@ function scaleModelCost(cost: ModelCost | undefined, multiplier: number): ModelC
   };
 }
 
-function streamCodex(model: any, context: any, options: any) {
+function codexRetryDelayMs(attempt: number) {
+  return Math.min(
+    CODEX_STREAM_RETRY_MAX_DELAY_MS,
+    CODEX_STREAM_RETRY_BASE_DELAY_MS * 2 ** Math.min(attempt - 1, 30),
+  );
+}
+
+function waitForCodexRetry(delayMs: number, signal?: AbortSignal) {
+  if (signal?.aborted) return Promise.resolve(false);
+  return new Promise<boolean>((resolveWait) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const finish = (completed: boolean) => {
+      if (timer !== undefined) clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      resolveWait(completed);
+    };
+    const onAbort = () => finish(false);
+    timer = setTimeout(() => finish(true), delayMs);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+function assistantMessageFromError(
+  model: Model<any>,
+  prior: AssistantMessage | undefined,
+  stopReason: "error" | "aborted",
+  errorMessage?: string,
+): AssistantMessage {
+  return {
+    ...(prior ?? {
+      role: "assistant",
+      content: [],
+      api: model.api,
+      provider: model.provider,
+      model: model.id,
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      timestamp: Date.now(),
+    }),
+    stopReason,
+    errorMessage,
+  };
+}
+
+function messageFromEvent(event: AssistantMessageEvent) {
+  if (event.type === "done") return event.message;
+  if (event.type === "error") return event.error;
+  return event.partial;
+}
+
+function isCodexStreamReadError(value: string) {
+  return value === "stream_read_error" || value === "Codex error: stream_read_error";
+}
+
+function createCodexAttemptSignal(parent?: AbortSignal) {
+  const controller = new AbortController();
+  const abortAttempt = () => controller.abort(parent?.reason);
+  if (parent?.aborted) abortAttempt();
+  else parent?.addEventListener("abort", abortAttempt, { once: true });
+  return {
+    signal: controller.signal,
+    cleanup() {
+      parent?.removeEventListener("abort", abortAttempt);
+    },
+  };
+}
+
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function pushCodexTerminalEvent(
+  stream: AssistantMessageEventStream,
+  event: Extract<AssistantMessageEvent, { type: "done" | "error" }>,
+) {
+  const finalMessage = event.type === "done" ? event.message : event.error;
+  stream.push({
+    type: "start",
+    partial: {
+      ...structuredClone(finalMessage),
+      stopReason: "pending",
+      errorMessage: undefined,
+    },
+  });
+  stream.push(structuredClone(event));
+  stream.end();
+}
+
+function pushCodexTerminalError(
+  stream: AssistantMessageEventStream,
+  model: Model<any>,
+  prior: AssistantMessage | undefined,
+  stopReason: "error" | "aborted",
+  message?: string,
+) {
+  const error = assistantMessageFromError(model, prior, stopReason, message);
+  pushCodexTerminalEvent(stream, { type: "error", reason: stopReason, error });
+}
+
+function streamCodexWithRetry(
+  model: Model<any>,
+  context: Context,
+  options: SimpleStreamOptions,
+): AssistantMessageEventStream {
+  const stream = createAssistantMessageEventStream();
+  void (async () => {
+    let retryAttempt = 0;
+
+    for (;;) {
+      let retryStreamRead = false;
+      let attemptMessage: AssistantMessage | undefined;
+      const attemptSignal = createCodexAttemptSignal(options.signal);
+      try {
+        const attemptStream = CODEX_API.streamSimple(model, context, {
+          ...options,
+          signal: attemptSignal.signal,
+        });
+        for await (const event of attemptStream) {
+          attemptMessage = messageFromEvent(event);
+          if (
+            event.type === "error" &&
+            event.reason === "error" &&
+            isCodexStreamReadError(event.error.errorMessage ?? "")
+          ) {
+            retryStreamRead = true;
+            break;
+          }
+
+          if (event.type === "done" || event.type === "error") {
+            pushCodexTerminalEvent(stream, event);
+            return;
+          }
+        }
+      } catch (error) {
+        const message = errorMessage(error);
+        if (isCodexStreamReadError(message)) {
+          retryStreamRead = true;
+        } else {
+          pushCodexTerminalError(stream, model, attemptMessage, "error", message);
+          return;
+        }
+      } finally {
+        attemptSignal.cleanup();
+      }
+
+      if (!retryStreamRead) {
+        pushCodexTerminalError(
+          stream,
+          model,
+          attemptMessage,
+          "error",
+          "Codex stream ended without a terminal event",
+        );
+        return;
+      }
+
+      retryAttempt += 1;
+      const delayMs = codexRetryDelayMs(retryAttempt);
+      console.warn(
+        `[sub2api:${model.provider}] Codex stream_read_error; retry ${retryAttempt} in ${Math.ceil(delayMs / 1000)}s`,
+      );
+      if (!(await waitForCodexRetry(delayMs, options.signal))) {
+        pushCodexTerminalError(stream, model, undefined, "aborted");
+        return;
+      }
+    }
+  })().catch((error) => {
+    pushCodexTerminalError(stream, model, undefined, "error", errorMessage(error));
+  });
+  return stream;
+}
+
+function streamCodex(
+  model: Model<any>,
+  context: Context,
+  options: SimpleStreamOptions = {},
+): AssistantMessageEventStream {
   const relay = relaysByProvider.get(model.provider);
   if (!relay) return CODEX_API.streamSimple(model, context, options);
 
-  const upstreamFetch = options?.fetch ?? globalThis.fetch;
-  return CODEX_API.streamSimple(model, context, {
+  const upstreamFetch = options.fetch ?? globalThis.fetch;
+  return streamCodexWithRetry(model, context, {
     ...options,
     apiKey: relay.codexAuthToken,
     transport: "sse",

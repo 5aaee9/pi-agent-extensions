@@ -232,28 +232,70 @@ async function collectStream(stream: AsyncIterable<unknown>) {
   return events;
 }
 
+function createAssistantMessage(
+  model: Record<string, any>,
+  stopReason: "pending" | "stop" | "error" = "stop",
+  errorMessage?: string,
+): Record<string, any> {
+  return {
+    role: "assistant",
+    content: [],
+    api: model.api,
+    provider: model.provider,
+    model: model.id,
+    usage: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 0,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
+    stopReason,
+    errorMessage,
+    timestamp: Date.now(),
+  };
+}
+
+function createStartEvent(model: Record<string, any>) {
+  return { type: "start", partial: createAssistantMessage(model, "pending") };
+}
+
 function createDoneEvent(model: Record<string, any>) {
   return {
     type: "done",
     reason: "stop",
-    message: {
-      role: "assistant",
-      content: [],
-      api: model.api,
-      provider: model.provider,
-      model: model.id,
-      usage: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0,
-        totalTokens: 0,
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-      },
-      stopReason: "stop",
-      timestamp: Date.now(),
-    },
+    message: createAssistantMessage(model),
   };
+}
+
+function createErrorEvent(model: Record<string, any>, errorMessage: string) {
+  return {
+    type: "error",
+    reason: "error",
+    error: createAssistantMessage(model, "error", errorMessage),
+  };
+}
+
+async function* createTextAttemptEvents(
+  model: Record<string, any>,
+  text: string,
+  includeDone = true,
+) {
+  const partial = createAssistantMessage(model, "pending");
+  yield { type: "start", partial };
+  partial.content.push({ type: "text", text: "" });
+  yield { type: "text_start", contentIndex: 0, partial };
+  partial.content[0]!.text = text;
+  yield { type: "text_delta", contentIndex: 0, delta: text, partial };
+  yield { type: "text_end", contentIndex: 0, content: text, partial };
+  if (includeDone) {
+    yield {
+      type: "done",
+      reason: "stop",
+      message: { ...partial, stopReason: "stop" },
+    };
+  }
 }
 
 async function loadProviderComposer() {
@@ -611,6 +653,224 @@ describe("sub2api provider extension", () => {
       "https://responses.example/v1/responses",
       "http://v1/v1/chat/completions",
     ]);
+  });
+
+  it("retries Codex stream_read_error forever with exponential backoff capped at 30 minutes", async () => {
+    writeFileSync(
+      join(stateDir, "sub2api.json"),
+      JSON.stringify({
+        codex: {
+          baseURL: "https://retry.example",
+          token: "sk-retry",
+          api: "openai-codex-responses",
+        },
+      }),
+    );
+    vi.stubGlobal("fetch", async (input: URL | RequestInfo) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (url === "https://retry.example/v1/models") {
+        return Response.json({
+          data: [{ id: "gpt-5.5", context_window: 200_000, max_tokens: 16_384 }],
+        });
+      }
+      return new Response(null, { status: 404 });
+    });
+
+    const [registration] = await registerProviders();
+    const model = { ...modelConfigs(registration!)[0]!, provider: registration!.name };
+    const callTimes: number[] = [];
+    codexApiMock.streamSimple.mockImplementation(() => {
+      callTimes.push(Date.now());
+      const attempt = callTimes.length;
+      return (async function* () {
+        if (attempt <= 13) {
+          if (attempt === 1) {
+            for await (const event of createTextAttemptEvents(model, "stale partial", false)) {
+              yield event;
+            }
+          } else yield createStartEvent(model);
+          yield createErrorEvent(model, "Codex error: stream_read_error");
+          return;
+        }
+        for await (const event of createTextAttemptEvents(model, "fresh response")) yield event;
+      })();
+    });
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const controller = new AbortController();
+    const addAbortListener = vi.spyOn(controller.signal, "addEventListener");
+    const removeAbortListener = vi.spyOn(controller.signal, "removeEventListener");
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+
+    const retryingStream = registration!.config.streamSimple!(
+      model as never,
+      { messages: [] } as never,
+      { signal: controller.signal },
+    );
+    const streamPromise = collectStream(retryingStream);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(callTimes).toEqual([0]);
+
+    const expectedDelays = [
+      1_000, 2_000, 4_000, 8_000, 16_000, 32_000, 64_000, 128_000, 256_000, 512_000, 1_024_000,
+      1_800_000, 1_800_000,
+    ];
+    for (const [index, delay] of expectedDelays.entries()) {
+      await vi.advanceTimersByTimeAsync(delay - 1);
+      expect(callTimes).toHaveLength(index + 1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(callTimes).toHaveLength(index + 2);
+    }
+
+    const events = await streamPromise;
+    expect(events.map((event: any) => event.type)).toEqual(["start", "done"]);
+    expect(JSON.stringify(events)).not.toContain("stale partial");
+    expect(JSON.stringify(events)).toContain("fresh response");
+    await expect(retryingStream.result()).resolves.toMatchObject({
+      stopReason: "stop",
+      content: [{ type: "text", text: "fresh response" }],
+    });
+    expect(callTimes.slice(1).map((time, index) => time - callTimes[index]!)).toEqual(
+      expectedDelays,
+    );
+    expect(warning).toHaveBeenCalledTimes(expectedDelays.length);
+    expect(addAbortListener).toHaveBeenCalled();
+    expect(removeAbortListener).toHaveBeenCalledTimes(addAbortListener.mock.calls.length);
+  });
+
+  it("stops Codex stream retries on abort and does not retry other errors", async () => {
+    writeFileSync(
+      join(stateDir, "sub2api.json"),
+      JSON.stringify({
+        codex: {
+          baseURL: "https://retry.example",
+          token: "sk-retry",
+          api: "openai-codex-responses",
+        },
+      }),
+    );
+    vi.stubGlobal("fetch", async (input: URL | RequestInfo) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (url === "https://retry.example/v1/models") {
+        return Response.json({
+          data: [{ id: "gpt-5.5", context_window: 200_000, max_tokens: 16_384 }],
+        });
+      }
+      return new Response(null, { status: 404 });
+    });
+
+    const [registration] = await registerProviders();
+    const model = { ...modelConfigs(registration!)[0]!, provider: registration!.name };
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.useFakeTimers();
+
+    const controller = new AbortController();
+    codexApiMock.streamSimple.mockImplementationOnce(() =>
+      (async function* () {
+        for await (const event of createTextAttemptEvents(model, "stale partial", false)) {
+          yield event;
+        }
+        yield createErrorEvent(model, "Codex error: stream_read_error");
+      })(),
+    );
+    const abortedStream = registration!.config.streamSimple!(
+      model as never,
+      { messages: [] } as never,
+      { signal: controller.signal },
+    );
+    const abortedPromise = collectStream(abortedStream);
+    await vi.advanceTimersByTimeAsync(0);
+    controller.abort();
+    await vi.advanceTimersByTimeAsync(0);
+
+    const abortedEvents = await abortedPromise;
+    expect(abortedEvents.at(-1)).toMatchObject({ type: "error", reason: "aborted" });
+    expect(JSON.stringify(abortedEvents)).not.toContain("stale partial");
+    await expect(abortedStream.result()).resolves.toMatchObject({
+      stopReason: "aborted",
+      content: [],
+    });
+    expect(codexApiMock.streamSimple).toHaveBeenCalledTimes(1);
+
+    codexApiMock.streamSimple.mockImplementationOnce(() =>
+      (async function* () {
+        yield createStartEvent(model);
+        yield createErrorEvent(
+          model,
+          "Codex error: invalid_request_error: field stream_read_error is unsupported",
+        );
+      })(),
+    );
+    const otherEvents = await collectStream(
+      registration!.config.streamSimple!(model as never, { messages: [] } as never, {}),
+    );
+    expect(otherEvents.at(-1)).toMatchObject({
+      type: "error",
+      error: {
+        errorMessage: "Codex error: invalid_request_error: field stream_read_error is unsupported",
+      },
+    });
+
+    codexApiMock.streamSimple.mockImplementationOnce(() =>
+      (async function* () {
+        yield createErrorEvent(model, " Codex error: STREAM_READ_ERROR ");
+      })(),
+    );
+    const variantEvents = await collectStream(
+      registration!.config.streamSimple!(model as never, { messages: [] } as never, {}),
+    );
+    expect(variantEvents.at(-1)).toMatchObject({
+      type: "error",
+      error: { errorMessage: " Codex error: STREAM_READ_ERROR " },
+    });
+
+    codexApiMock.streamSimple
+      .mockImplementationOnce(() =>
+        (async function* () {
+          for await (const event of createTextAttemptEvents(model, "old attempt", false)) {
+            yield event;
+          }
+          yield createErrorEvent(model, "Codex error: stream_read_error");
+        })(),
+      )
+      .mockImplementationOnce(() =>
+        (async function* () {
+          yield* [];
+          throw new Error("socket exploded");
+        })(),
+      );
+    const thrownPromise = collectStream(
+      registration!.config.streamSimple!(model as never, { messages: [] } as never, {}),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(1_000);
+    const thrownEvents = await thrownPromise;
+    expect(thrownEvents.map((event: any) => event.type)).toEqual(["start", "error"]);
+    expect(JSON.stringify(thrownEvents)).not.toContain("old attempt");
+    expect(thrownEvents.at(-1)).toMatchObject({
+      reason: "error",
+      error: { errorMessage: "socket exploded", content: [] },
+    });
+
+    codexApiMock.streamSimple
+      .mockImplementationOnce(() =>
+        (async function* () {
+          yield* [];
+          throw new Error("stream_read_error");
+        })(),
+      )
+      .mockImplementationOnce(() =>
+        (async function* () {
+          yield createDoneEvent(model);
+        })(),
+      );
+    const bareErrorPromise = collectStream(
+      registration!.config.streamSimple!(model as never, { messages: [] } as never, {}),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect((await bareErrorPromise).map((event: any) => event.type)).toEqual(["start", "done"]);
+    expect(codexApiMock.streamSimple).toHaveBeenCalledTimes(7);
   });
 
   it("refreshes a dedicated final footer row across lifecycle events", async () => {

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Retry relayed Codex `stream_read_error` failures indefinitely with exponential backoff from one second up to a 30-minute maximum interval, while preserving cancellation and leaving other errors terminal.
+
 ## 0.1.8 - 2026-08-06
 
 - Restore Pi 0.84 startup compatibility by loading the pinned private Codex serializer runtime through absolute module URLs, avoiding Pi/Jiti's public `pi-ai` root alias rewriting private `api/*` imports under `compat.js`.
