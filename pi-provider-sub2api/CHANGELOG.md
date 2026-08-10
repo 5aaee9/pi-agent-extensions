@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.10 - 2026-08-10
+
 - Emit the relayed Codex stream lifecycle start when generation actually begins, so timing extensions measure real elapsed time instead of seeing synthetic start and terminal events in the same tick.
 
 ## 0.1.9 - 2026-08-07
