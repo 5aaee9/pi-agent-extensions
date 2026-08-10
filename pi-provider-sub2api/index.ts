@@ -612,16 +612,19 @@ function errorMessage(error: unknown) {
 function pushCodexTerminalEvent(
   stream: AssistantMessageEventStream,
   event: Extract<AssistantMessageEvent, { type: "done" | "error" }>,
+  streamStarted: boolean,
 ) {
-  const finalMessage = event.type === "done" ? event.message : event.error;
-  stream.push({
-    type: "start",
-    partial: {
-      ...structuredClone(finalMessage),
-      stopReason: "pending",
-      errorMessage: undefined,
-    },
-  });
+  if (!streamStarted) {
+    const finalMessage = event.type === "done" ? event.message : event.error;
+    stream.push({
+      type: "start",
+      partial: {
+        ...structuredClone(finalMessage),
+        stopReason: "pending",
+        errorMessage: undefined,
+      },
+    });
+  }
   stream.push(structuredClone(event));
   stream.end();
 }
@@ -632,9 +635,10 @@ function pushCodexTerminalError(
   prior: AssistantMessage | undefined,
   stopReason: "error" | "aborted",
   message?: string,
+  streamStarted = false,
 ) {
   const error = assistantMessageFromError(model, prior, stopReason, message);
-  pushCodexTerminalEvent(stream, { type: "error", reason: stopReason, error });
+  pushCodexTerminalEvent(stream, { type: "error", reason: stopReason, error }, streamStarted);
 }
 
 function streamCodexWithRetry(
@@ -643,6 +647,7 @@ function streamCodexWithRetry(
   options: SimpleStreamOptions,
 ): AssistantMessageEventStream {
   const stream = createAssistantMessageEventStream();
+  let streamStarted = false;
   void (async () => {
     let retryAttempt = 0;
 
@@ -657,6 +662,14 @@ function streamCodexWithRetry(
         });
         for await (const event of attemptStream) {
           attemptMessage = messageFromEvent(event);
+          if (event.type === "start" && !streamStarted) {
+            // Publish the lifecycle start as soon as generation begins so
+            // message_start/message_end consumers can measure real elapsed
+            // time. Keep buffering content events so a retried attempt cannot
+            // leak stale partial output into the outer stream.
+            stream.push(structuredClone(event));
+            streamStarted = true;
+          }
           if (
             event.type === "error" &&
             event.reason === "error" &&
@@ -667,7 +680,7 @@ function streamCodexWithRetry(
           }
 
           if (event.type === "done" || event.type === "error") {
-            pushCodexTerminalEvent(stream, event);
+            pushCodexTerminalEvent(stream, event, streamStarted);
             return;
           }
         }
@@ -676,7 +689,7 @@ function streamCodexWithRetry(
         if (isCodexStreamReadError(message)) {
           retryStreamRead = true;
         } else {
-          pushCodexTerminalError(stream, model, attemptMessage, "error", message);
+          pushCodexTerminalError(stream, model, attemptMessage, "error", message, streamStarted);
           return;
         }
       } finally {
@@ -690,6 +703,7 @@ function streamCodexWithRetry(
           attemptMessage,
           "error",
           "Codex stream ended without a terminal event",
+          streamStarted,
         );
         return;
       }
@@ -700,12 +714,12 @@ function streamCodexWithRetry(
         `[sub2api:${model.provider}] Codex stream_read_error; retry ${retryAttempt} in ${Math.ceil(delayMs / 1000)}s`,
       );
       if (!(await waitForCodexRetry(delayMs, options.signal))) {
-        pushCodexTerminalError(stream, model, undefined, "aborted");
+        pushCodexTerminalError(stream, model, undefined, "aborted", undefined, streamStarted);
         return;
       }
     }
   })().catch((error) => {
-    pushCodexTerminalError(stream, model, undefined, "error", errorMessage(error));
+    pushCodexTerminalError(stream, model, undefined, "error", errorMessage(error), streamStarted);
   });
   return stream;
 }

@@ -655,6 +655,82 @@ describe("sub2api provider extension", () => {
     ]);
   });
 
+  it("publishes the Codex stream start before generation finishes", async () => {
+    writeFileSync(
+      join(stateDir, "sub2api.json"),
+      JSON.stringify({
+        codex: {
+          baseURL: "https://timing.example",
+          token: "sk-timing",
+          api: "openai-codex-responses",
+        },
+      }),
+    );
+    vi.stubGlobal("fetch", async (input: URL | RequestInfo) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (url === "https://timing.example/v1/models") {
+        return Response.json({
+          data: [{ id: "gpt-5.5", context_window: 200_000, max_tokens: 16_384 }],
+        });
+      }
+      return new Response(null, { status: 404 });
+    });
+
+    const [registration] = await registerProviders();
+    const model = { ...modelConfigs(registration!)[0]!, provider: registration!.name };
+    let resolveSourceStarted!: () => void;
+    const sourceStarted = new Promise<void>((resolveStarted) => {
+      resolveSourceStarted = resolveStarted;
+    });
+    let resolveFinishGeneration!: () => void;
+    const finishGeneration = new Promise<void>((resolveGeneration) => {
+      resolveFinishGeneration = resolveGeneration;
+    });
+    codexApiMock.streamSimple.mockImplementation(() =>
+      (async function* () {
+        yield createStartEvent(model);
+        resolveSourceStarted();
+        await finishGeneration;
+        const done = createDoneEvent(model);
+        done.message.usage.output = 336;
+        done.message.usage.totalTokens = 336;
+        yield done;
+      })(),
+    );
+
+    let clockMs = 0;
+    const observed: { type: string; at: number; output: number }[] = [];
+    const stream = registration!.config.streamSimple!(
+      model as never,
+      { messages: [] } as never,
+      {},
+    );
+    const collecting = (async () => {
+      for await (const event of stream) {
+        const message =
+          (event as any).type === "done" ? (event as any).message : (event as any).partial;
+        observed.push({
+          type: (event as any).type,
+          at: clockMs,
+          output: message.usage.output,
+        });
+      }
+    })();
+
+    await sourceStarted;
+    await new Promise<void>((resolveImmediate) => setImmediate(resolveImmediate));
+    expect(observed).toEqual([{ type: "start", at: 0, output: 0 }]);
+
+    clockMs = 1_000;
+    resolveFinishGeneration();
+    await collecting;
+    expect(observed).toEqual([
+      { type: "start", at: 0, output: 0 },
+      { type: "done", at: 1_000, output: 336 },
+    ]);
+    expect(observed[1]!.output / ((observed[1]!.at - observed[0]!.at) / 1_000)).toBe(336);
+  });
+
   it("retries Codex stream_read_error forever with exponential backoff capped at 30 minutes", async () => {
     writeFileSync(
       join(stateDir, "sub2api.json"),
