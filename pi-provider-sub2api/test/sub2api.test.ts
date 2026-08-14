@@ -799,7 +799,11 @@ describe("sub2api provider extension", () => {
     }
 
     const events = await streamPromise;
-    expect(events.map((event: any) => event.type)).toEqual(["start", "done"]);
+    expect(
+      events
+        .filter((event: any) => event.type === "start" || event.type === "done")
+        .map((event: any) => event.type),
+    ).toEqual(["start", "done"]);
     expect(JSON.stringify(events)).not.toContain("stale partial");
     expect(JSON.stringify(events)).toContain("fresh response");
     await expect(retryingStream.result()).resolves.toMatchObject({
@@ -812,6 +816,69 @@ describe("sub2api provider extension", () => {
     expect(warning).toHaveBeenCalledTimes(expectedDelays.length);
     expect(addAbortListener).toHaveBeenCalled();
     expect(removeAbortListener).toHaveBeenCalledTimes(addAbortListener.mock.calls.length);
+  });
+
+  it("keeps the outer stream active during stalled Codex attempts and retry backoffs", async () => {
+    writeFileSync(
+      join(stateDir, "sub2api.json"),
+      JSON.stringify({
+        codex: {
+          baseURL: "https://retry.example",
+          token: "sk-retry",
+          api: "openai-codex-responses",
+        },
+      }),
+    );
+    vi.stubGlobal("fetch", async (input: URL | RequestInfo) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (url === "https://retry.example/v1/models") {
+        return Response.json({
+          data: [{ id: "gpt-5.5", context_window: 200_000, max_tokens: 16_384 }],
+        });
+      }
+      return new Response(null, { status: 404 });
+    });
+
+    const [registration] = await registerProviders();
+    const model = { ...modelConfigs(registration!)[0]!, provider: registration!.name };
+    let attempt = 0;
+    codexApiMock.streamSimple.mockImplementation(() => {
+      attempt += 1;
+      if (attempt > 8) return createTextAttemptEvents(model, "fresh response");
+      const stallBeforeError = attempt === 1;
+      return (async function* () {
+        yield createStartEvent(model);
+        if (stallBeforeError) await new Promise((resolve) => setTimeout(resolve, 95_000));
+        yield createErrorEvent(model, "Upstream request failed");
+      })();
+    });
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+
+    const observedAt: number[] = [];
+    const retryingStream = registration!.config.streamSimple!(
+      model as never,
+      { messages: [] } as never,
+      {},
+    );
+    const collecting = (async () => {
+      for await (const _event of retryingStream) observedAt.push(Date.now());
+    })();
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(95_000);
+    for (const delay of [1_000, 2_000, 4_000, 8_000, 16_000, 32_000, 64_000, 128_000]) {
+      await vi.advanceTimersByTimeAsync(delay);
+    }
+    await collecting;
+
+    expect(
+      Math.max(...observedAt.slice(1).map((time, index) => time - observedAt[index]!)),
+    ).toBeLessThanOrEqual(30_000);
+    await expect(retryingStream.result()).resolves.toMatchObject({
+      stopReason: "stop",
+      content: [{ type: "text", text: "fresh response" }],
+    });
   });
 
   it("retries Upstream request failed errors", async () => {
@@ -857,7 +924,11 @@ describe("sub2api provider extension", () => {
     await vi.advanceTimersByTimeAsync(0);
     await vi.advanceTimersByTimeAsync(1_000);
 
-    expect((await streamPromise).map((event: any) => event.type)).toEqual(["start", "done"]);
+    expect(
+      (await streamPromise)
+        .filter((event: any) => event.type === "start" || event.type === "done")
+        .map((event: any) => event.type),
+    ).toEqual(["start", "done"]);
     await expect(retryingStream.result()).resolves.toMatchObject({
       stopReason: "stop",
       content: [{ type: "text", text: "fresh response" }],
@@ -935,7 +1006,11 @@ describe("sub2api provider extension", () => {
     await vi.advanceTimersByTimeAsync(0);
     await vi.advanceTimersByTimeAsync(1_000);
     const thrownEvents = await thrownPromise;
-    expect(thrownEvents.map((event: any) => event.type)).toEqual(["start", "done"]);
+    expect(
+      thrownEvents
+        .filter((event: any) => event.type === "start" || event.type === "done")
+        .map((event: any) => event.type),
+    ).toEqual(["start", "done"]);
     expect(JSON.stringify(thrownEvents)).not.toContain("old attempt");
     expect(JSON.stringify(thrownEvents)).toContain("fresh response");
     expect(codexApiMock.streamSimple).toHaveBeenCalledTimes(3);

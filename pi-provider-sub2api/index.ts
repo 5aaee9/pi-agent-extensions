@@ -29,6 +29,7 @@ const MAX_RETRIES = 2;
 const RETRY_BASE_DELAY_MS = 1_000;
 const CODEX_STREAM_RETRY_BASE_DELAY_MS = 1_000;
 const CODEX_STREAM_RETRY_MAX_DELAY_MS = 30 * 60 * 1_000;
+const CODEX_STREAM_RETRY_HEARTBEAT_MS = 30_000;
 const MAX_RESPONSE_BYTES = 1024 * 1024;
 const MAX_MODEL_TOKEN_LIMIT = 10_000_000;
 const USAGE_FOOTER_KEY = "sub2api-usage";
@@ -539,17 +540,29 @@ function codexRetryDelayMs(attempt: number) {
   );
 }
 
-function waitForCodexRetry(delayMs: number, signal?: AbortSignal) {
+function waitForCodexRetry(delayMs: number, signal?: AbortSignal, onHeartbeat?: () => void) {
   if (signal?.aborted) return Promise.resolve(false);
   return new Promise<boolean>((resolveWait) => {
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let remainingMs = delayMs;
     const finish = (completed: boolean) => {
       if (timer !== undefined) clearTimeout(timer);
       signal?.removeEventListener("abort", onAbort);
       resolveWait(completed);
     };
     const onAbort = () => finish(false);
-    timer = setTimeout(() => finish(true), delayMs);
+    const waitForNextSlice = () => {
+      const sliceMs = Math.min(remainingMs, CODEX_STREAM_RETRY_HEARTBEAT_MS);
+      timer = setTimeout(() => {
+        remainingMs -= sliceMs;
+        if (remainingMs <= 0) finish(true);
+        else {
+          onHeartbeat?.();
+          waitForNextSlice();
+        }
+      }, sliceMs);
+    };
+    waitForNextSlice();
     signal?.addEventListener("abort", onAbort, { once: true });
   });
 }
@@ -631,6 +644,34 @@ function pushCodexTerminalError(
   pushCodexTerminalEvent(stream, { type: "error", reason: stopReason, error }, streamStarted);
 }
 
+function pushCodexRetryHeartbeat(
+  stream: AssistantMessageEventStream,
+  model: Model<any>,
+  prior: AssistantMessage | undefined,
+  streamStarted: boolean,
+) {
+  const partial: AssistantMessage = {
+    ...assistantMessageFromError(model, prior, "error"),
+    content: [{ type: "text", text: "" }],
+    stopReason: "pending",
+    errorMessage: undefined,
+  };
+  if (!streamStarted) {
+    stream.push({
+      type: "start",
+      partial: { ...structuredClone(partial), content: [] },
+    });
+  }
+  stream.push({ type: "text_start", contentIndex: 0, partial: structuredClone(partial) });
+  stream.push({
+    type: "text_end",
+    contentIndex: 0,
+    content: "",
+    partial: structuredClone(partial),
+  });
+  return true;
+}
+
 function streamCodexWithRetry(
   model: Model<any>,
   context: Context,
@@ -638,25 +679,32 @@ function streamCodexWithRetry(
 ): AssistantMessageEventStream {
   const stream = createAssistantMessageEventStream();
   let streamStarted = false;
+  let streamPartial: AssistantMessage | undefined;
   void (async () => {
     let retryAttempt = 0;
 
     for (;;) {
       let retryReason: string | undefined;
       const attemptSignal = createCodexAttemptSignal(options.signal);
+      const attemptHeartbeat = setInterval(() => {
+        streamStarted = pushCodexRetryHeartbeat(stream, model, streamPartial, streamStarted);
+      }, CODEX_STREAM_RETRY_HEARTBEAT_MS);
       try {
         const attemptStream = CODEX_API.streamSimple(model, context, {
           ...options,
           signal: attemptSignal.signal,
         });
         for await (const event of attemptStream) {
-          if (event.type === "start" && !streamStarted) {
-            // Publish the lifecycle start as soon as generation begins so
-            // message_start/message_end consumers can measure real elapsed
-            // time. Keep buffering content events so a retried attempt cannot
-            // leak stale partial output into the outer stream.
-            stream.push(structuredClone(event));
-            streamStarted = true;
+          if (event.type === "start") {
+            streamPartial = event.partial;
+            if (!streamStarted) {
+              // Publish the lifecycle start as soon as generation begins so
+              // message_start/message_end consumers can measure real elapsed
+              // time. Keep buffering content events so a retried attempt cannot
+              // leak stale partial output into the outer stream.
+              stream.push(structuredClone(event));
+              streamStarted = true;
+            }
           }
           if (event.type === "error") {
             if (options.signal?.aborted) {
@@ -679,6 +727,7 @@ function streamCodexWithRetry(
         }
         retryReason = errorMessage(error);
       } finally {
+        clearInterval(attemptHeartbeat);
         attemptSignal.cleanup();
       }
 
@@ -688,7 +737,12 @@ function streamCodexWithRetry(
       console.warn(
         `[sub2api:${model.provider}] Codex upstream error (${retryReason}); retry ${retryAttempt} in ${Math.ceil(delayMs / 1000)}s`,
       );
-      if (!(await waitForCodexRetry(delayMs, options.signal))) {
+      streamStarted = pushCodexRetryHeartbeat(stream, model, streamPartial, streamStarted);
+      if (
+        !(await waitForCodexRetry(delayMs, options.signal, () => {
+          streamStarted = pushCodexRetryHeartbeat(stream, model, streamPartial, streamStarted);
+        }))
+      ) {
         pushCodexTerminalError(stream, model, undefined, "aborted", undefined, streamStarted);
         return;
       }

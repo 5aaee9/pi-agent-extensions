@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Keep relayed Codex streams active with no-op progress events during buffered attempts and long retry backoffs so Pi's provider-stall watchdog does not abort an active retry.
+
 ## 0.1.11 - 2026-08-14
 
 - Retry all relayed Codex upstream errors indefinitely, including `Upstream request failed`, while preserving active-turn cancellation.
