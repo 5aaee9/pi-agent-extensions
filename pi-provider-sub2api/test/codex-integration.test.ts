@@ -46,6 +46,7 @@ describe("real Codex adapter integration", () => {
     const modelConfig = providerConfig?.models?.[0];
     expect(modelConfig).toBeDefined();
 
+    const controller = new AbortController();
     const transportCalls: Array<{ url: string; headers: Headers; redirect?: RequestRedirect }> = [];
     const transportFetch: typeof globalThis.fetch = async (input, init) => {
       const request = input instanceof Request ? input : undefined;
@@ -54,6 +55,7 @@ describe("real Codex adapter integration", () => {
         headers: new Headers(init?.headers ?? request?.headers),
         redirect: init?.redirect,
       });
+      controller.abort();
       return Response.json(
         { error: { type: "invalid_request_error", message: "intentional test stop" } },
         { status: 400 },
@@ -64,7 +66,7 @@ describe("real Codex adapter integration", () => {
     const stream = providerConfig!.streamSimple!(
       { ...modelConfig, provider: "codex" } as never,
       { messages: [] } as never,
-      { fetch: transportFetch },
+      { fetch: transportFetch, signal: controller.signal },
     );
     for await (const event of stream) events.push(event);
 

@@ -814,7 +814,58 @@ describe("sub2api provider extension", () => {
     expect(removeAbortListener).toHaveBeenCalledTimes(addAbortListener.mock.calls.length);
   });
 
-  it("stops Codex stream retries on abort and does not retry other errors", async () => {
+  it("retries Upstream request failed errors", async () => {
+    writeFileSync(
+      join(stateDir, "sub2api.json"),
+      JSON.stringify({
+        codex: {
+          baseURL: "https://retry.example",
+          token: "sk-retry",
+          api: "openai-codex-responses",
+        },
+      }),
+    );
+    vi.stubGlobal("fetch", async (input: URL | RequestInfo) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (url === "https://retry.example/v1/models") {
+        return Response.json({
+          data: [{ id: "gpt-5.5", context_window: 200_000, max_tokens: 16_384 }],
+        });
+      }
+      return new Response(null, { status: 404 });
+    });
+
+    const [registration] = await registerProviders();
+    const model = { ...modelConfigs(registration!)[0]!, provider: registration!.name };
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.useFakeTimers();
+    codexApiMock.streamSimple
+      .mockImplementationOnce(() =>
+        (async function* () {
+          yield createStartEvent(model);
+          yield createErrorEvent(model, "Upstream request failed");
+        })(),
+      )
+      .mockImplementationOnce(() => createTextAttemptEvents(model, "fresh response"));
+
+    const retryingStream = registration!.config.streamSimple!(
+      model as never,
+      { messages: [] } as never,
+      {},
+    );
+    const streamPromise = collectStream(retryingStream);
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect((await streamPromise).map((event: any) => event.type)).toEqual(["start", "done"]);
+    await expect(retryingStream.result()).resolves.toMatchObject({
+      stopReason: "stop",
+      content: [{ type: "text", text: "fresh response" }],
+    });
+    expect(codexApiMock.streamSimple).toHaveBeenCalledTimes(2);
+  });
+
+  it("stops Codex stream retries on abort and retries thrown errors", async () => {
     writeFileSync(
       join(stateDir, "sub2api.json"),
       JSON.stringify({
@@ -868,85 +919,26 @@ describe("sub2api provider extension", () => {
     });
     expect(codexApiMock.streamSimple).toHaveBeenCalledTimes(1);
 
-    codexApiMock.streamSimple.mockImplementationOnce(() =>
-      (async function* () {
-        yield createStartEvent(model);
-        yield createErrorEvent(
-          model,
-          "Codex error: invalid_request_error: field stream_read_error is unsupported",
-        );
-      })(),
-    );
-    const otherEvents = await collectStream(
-      registration!.config.streamSimple!(model as never, { messages: [] } as never, {}),
-    );
-    expect(otherEvents.at(-1)).toMatchObject({
-      type: "error",
-      error: {
-        errorMessage: "Codex error: invalid_request_error: field stream_read_error is unsupported",
-      },
-    });
-
-    codexApiMock.streamSimple.mockImplementationOnce(() =>
-      (async function* () {
-        yield createErrorEvent(model, " Codex error: STREAM_READ_ERROR ");
-      })(),
-    );
-    const variantEvents = await collectStream(
-      registration!.config.streamSimple!(model as never, { messages: [] } as never, {}),
-    );
-    expect(variantEvents.at(-1)).toMatchObject({
-      type: "error",
-      error: { errorMessage: " Codex error: STREAM_READ_ERROR " },
-    });
-
     codexApiMock.streamSimple
       .mockImplementationOnce(() =>
         (async function* () {
           for await (const event of createTextAttemptEvents(model, "old attempt", false)) {
             yield event;
           }
-          yield createErrorEvent(model, "Codex error: stream_read_error");
-        })(),
-      )
-      .mockImplementationOnce(() =>
-        (async function* () {
-          yield* [];
           throw new Error("socket exploded");
         })(),
-      );
+      )
+      .mockImplementationOnce(() => createTextAttemptEvents(model, "fresh response"));
     const thrownPromise = collectStream(
       registration!.config.streamSimple!(model as never, { messages: [] } as never, {}),
     );
     await vi.advanceTimersByTimeAsync(0);
     await vi.advanceTimersByTimeAsync(1_000);
     const thrownEvents = await thrownPromise;
-    expect(thrownEvents.map((event: any) => event.type)).toEqual(["start", "error"]);
+    expect(thrownEvents.map((event: any) => event.type)).toEqual(["start", "done"]);
     expect(JSON.stringify(thrownEvents)).not.toContain("old attempt");
-    expect(thrownEvents.at(-1)).toMatchObject({
-      reason: "error",
-      error: { errorMessage: "socket exploded", content: [] },
-    });
-
-    codexApiMock.streamSimple
-      .mockImplementationOnce(() =>
-        (async function* () {
-          yield* [];
-          throw new Error("stream_read_error");
-        })(),
-      )
-      .mockImplementationOnce(() =>
-        (async function* () {
-          yield createDoneEvent(model);
-        })(),
-      );
-    const bareErrorPromise = collectStream(
-      registration!.config.streamSimple!(model as never, { messages: [] } as never, {}),
-    );
-    await vi.advanceTimersByTimeAsync(0);
-    await vi.advanceTimersByTimeAsync(1_000);
-    expect((await bareErrorPromise).map((event: any) => event.type)).toEqual(["start", "done"]);
-    expect(codexApiMock.streamSimple).toHaveBeenCalledTimes(7);
+    expect(JSON.stringify(thrownEvents)).toContain("fresh response");
+    expect(codexApiMock.streamSimple).toHaveBeenCalledTimes(3);
   });
 
   it("refreshes a dedicated final footer row across lifecycle events", async () => {

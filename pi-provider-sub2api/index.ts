@@ -582,16 +582,6 @@ function assistantMessageFromError(
   };
 }
 
-function messageFromEvent(event: AssistantMessageEvent) {
-  if (event.type === "done") return event.message;
-  if (event.type === "error") return event.error;
-  return event.partial;
-}
-
-function isCodexStreamReadError(value: string) {
-  return value === "stream_read_error" || value === "Codex error: stream_read_error";
-}
-
 function createCodexAttemptSignal(parent?: AbortSignal) {
   const controller = new AbortController();
   const abortAttempt = () => controller.abort(parent?.reason);
@@ -652,8 +642,7 @@ function streamCodexWithRetry(
     let retryAttempt = 0;
 
     for (;;) {
-      let retryStreamRead = false;
-      let attemptMessage: AssistantMessage | undefined;
+      let retryReason: string | undefined;
       const attemptSignal = createCodexAttemptSignal(options.signal);
       try {
         const attemptStream = CODEX_API.streamSimple(model, context, {
@@ -661,7 +650,6 @@ function streamCodexWithRetry(
           signal: attemptSignal.signal,
         });
         for await (const event of attemptStream) {
-          attemptMessage = messageFromEvent(event);
           if (event.type === "start" && !streamStarted) {
             // Publish the lifecycle start as soon as generation begins so
             // message_start/message_end consumers can measure real elapsed
@@ -670,48 +658,35 @@ function streamCodexWithRetry(
             stream.push(structuredClone(event));
             streamStarted = true;
           }
-          if (
-            event.type === "error" &&
-            event.reason === "error" &&
-            isCodexStreamReadError(event.error.errorMessage ?? "")
-          ) {
-            retryStreamRead = true;
+          if (event.type === "error") {
+            if (options.signal?.aborted) {
+              pushCodexTerminalError(stream, model, undefined, "aborted", undefined, streamStarted);
+              return;
+            }
+            retryReason = event.error.errorMessage ?? "Unknown upstream error";
             break;
           }
 
-          if (event.type === "done" || event.type === "error") {
+          if (event.type === "done") {
             pushCodexTerminalEvent(stream, event, streamStarted);
             return;
           }
         }
       } catch (error) {
-        const message = errorMessage(error);
-        if (isCodexStreamReadError(message)) {
-          retryStreamRead = true;
-        } else {
-          pushCodexTerminalError(stream, model, attemptMessage, "error", message, streamStarted);
+        if (options.signal?.aborted) {
+          pushCodexTerminalError(stream, model, undefined, "aborted", undefined, streamStarted);
           return;
         }
+        retryReason = errorMessage(error);
       } finally {
         attemptSignal.cleanup();
       }
 
-      if (!retryStreamRead) {
-        pushCodexTerminalError(
-          stream,
-          model,
-          attemptMessage,
-          "error",
-          "Codex stream ended without a terminal event",
-          streamStarted,
-        );
-        return;
-      }
-
+      retryReason ??= "Codex stream ended without a terminal event";
       retryAttempt += 1;
       const delayMs = codexRetryDelayMs(retryAttempt);
       console.warn(
-        `[sub2api:${model.provider}] Codex stream_read_error; retry ${retryAttempt} in ${Math.ceil(delayMs / 1000)}s`,
+        `[sub2api:${model.provider}] Codex upstream error (${retryReason}); retry ${retryAttempt} in ${Math.ceil(delayMs / 1000)}s`,
       );
       if (!(await waitForCodexRetry(delayMs, options.signal))) {
         pushCodexTerminalError(stream, model, undefined, "aborted", undefined, streamStarted);
