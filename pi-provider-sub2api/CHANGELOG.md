@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.11 - 2026-08-14
+
 - Retry all relayed Codex upstream errors indefinitely, including `Upstream request failed`, while preserving active-turn cancellation.
 
 ## 0.1.10 - 2026-08-10
