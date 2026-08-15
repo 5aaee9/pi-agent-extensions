@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Return Codex context-window overflow errors to Pi immediately instead of retrying them indefinitely, allowing Pi's compaction recovery to run.
+
 ## 0.1.12 - 2026-08-14
 
 - Keep relayed Codex streams active with no-op progress events during buffered attempts and long retry backoffs so Pi's provider-stall watchdog does not abort an active retry.

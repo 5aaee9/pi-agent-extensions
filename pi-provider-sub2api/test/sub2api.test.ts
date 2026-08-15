@@ -936,6 +936,75 @@ describe("sub2api provider extension", () => {
     expect(codexApiMock.streamSimple).toHaveBeenCalledTimes(2);
   });
 
+  it("returns Codex context overflow errors to Pi without retrying", async () => {
+    writeFileSync(
+      join(stateDir, "sub2api.json"),
+      JSON.stringify({
+        codex: {
+          baseURL: "https://retry.example",
+          token: "sk-retry",
+          api: "openai-codex-responses",
+        },
+      }),
+    );
+    vi.stubGlobal("fetch", async (input: URL | RequestInfo) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (url === "https://retry.example/v1/models") {
+        return Response.json({
+          data: [{ id: "gpt-5.5", context_window: 200_000, max_tokens: 16_384 }],
+        });
+      }
+      return new Response(null, { status: 404 });
+    });
+
+    const [registration] = await registerProviders();
+    const model = { ...modelConfigs(registration!)[0]!, provider: registration!.name };
+    const overflowMessage =
+      "Codex error: Your input exceeds the context window of this model. Please adjust your input and try again.";
+    codexApiMock.streamSimple.mockImplementationOnce(() =>
+      (async function* () {
+        yield createStartEvent(model);
+        yield createErrorEvent(model, overflowMessage);
+      })(),
+    );
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.useFakeTimers();
+
+    const overflowStream = registration!.config.streamSimple!(
+      model as never,
+      { messages: [] } as never,
+      {},
+    );
+    const streamPromise = collectStream(overflowStream);
+    await vi.advanceTimersByTimeAsync(1_000);
+    const events = await streamPromise;
+
+    expect(events.at(-1)).toMatchObject({
+      type: "error",
+      reason: "error",
+      error: { errorMessage: overflowMessage },
+    });
+    expect(codexApiMock.streamSimple).toHaveBeenCalledTimes(1);
+    expect(warning).not.toHaveBeenCalled();
+
+    codexApiMock.streamSimple.mockImplementationOnce(() =>
+      (async function* () {
+        yield* [];
+        throw new Error(overflowMessage);
+      })(),
+    );
+    const thrownEvents = await collectStream(
+      registration!.config.streamSimple!(model as never, { messages: [] } as never, {}),
+    );
+    expect(thrownEvents.at(-1)).toMatchObject({
+      type: "error",
+      reason: "error",
+      error: { errorMessage: overflowMessage },
+    });
+    expect(codexApiMock.streamSimple).toHaveBeenCalledTimes(2);
+    expect(warning).not.toHaveBeenCalled();
+  });
+
   it("stops Codex stream retries on abort and retries thrown errors", async () => {
     writeFileSync(
       join(stateDir, "sub2api.json"),

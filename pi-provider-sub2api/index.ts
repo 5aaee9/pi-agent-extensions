@@ -5,6 +5,7 @@ import { openAICodexResponsesApi } from "@earendil-works/pi-ai/compat";
 import { getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
 import {
   createAssistantMessageEventStream,
+  isContextOverflow,
   type AssistantMessage,
   type AssistantMessageEvent,
   type AssistantMessageEventStream,
@@ -711,6 +712,10 @@ function streamCodexWithRetry(
               pushCodexTerminalError(stream, model, undefined, "aborted", undefined, streamStarted);
               return;
             }
+            if (isContextOverflow(event.error, model.contextWindow)) {
+              pushCodexTerminalEvent(stream, event, streamStarted);
+              return;
+            }
             retryReason = event.error.errorMessage ?? "Unknown upstream error";
             break;
           }
@@ -725,7 +730,17 @@ function streamCodexWithRetry(
           pushCodexTerminalError(stream, model, undefined, "aborted", undefined, streamStarted);
           return;
         }
-        retryReason = errorMessage(error);
+        const message = errorMessage(error);
+        const assistantError = assistantMessageFromError(model, undefined, "error", message);
+        if (isContextOverflow(assistantError, model.contextWindow)) {
+          pushCodexTerminalEvent(
+            stream,
+            { type: "error", reason: "error", error: assistantError },
+            streamStarted,
+          );
+          return;
+        }
+        retryReason = message;
       } finally {
         clearInterval(attemptHeartbeat);
         attemptSignal.cleanup();
