@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.1.14 - 2026-08-16
+
+- Load under OMP (oh-my-pi): probe pi's Codex adapter, `buildContextEntries`, and the private serializer runtime optionally instead of importing them statically, degrade Codex-shaped models to plain `openai-responses` and skip native compaction when the host cannot provide them, and guard the footer API. Pi behavior is unchanged.
+
 ## 0.1.13 - 2026-08-16
 
 - Return Codex context-window overflow errors to Pi immediately instead of retrying them indefinitely, allowing Pi's compaction recovery to run.
