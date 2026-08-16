@@ -1,8 +1,5 @@
 import { calculateCost, type Model, type Tool, type Usage } from "@earendil-works/pi-ai";
 import {
-  buildContextEntries,
-  convertToLlm,
-  sessionEntryToContextMessages,
   type ExtensionAPI,
   type ExtensionContext,
   type SessionBeforeCompactEvent,
@@ -12,17 +9,59 @@ import {
 // Pi's extension loader aliases the public pi-ai package root to its compat entrypoint.
 // Resolve our pinned serializer runtime first, then import its private modules by absolute
 // URL so Jiti cannot rewrite subpaths as `compat.js/api/*`.
-const PI_AI_RUNTIME_ENTRY = import.meta.resolve("@earendil-works/pi-ai");
-const [constrainedSampling, responsesShared] = await Promise.all([
-  import(new URL("./api/constrained-sampling.js", PI_AI_RUNTIME_ENTRY).href) as Promise<
-    typeof import("@earendil-works/pi-ai/api/constrained-sampling")
-  >,
-  import(new URL("./api/openai-responses-shared.js", PI_AI_RUNTIME_ENTRY).href) as Promise<
-    typeof import("@earendil-works/pi-ai/api/openai-responses-shared")
-  >,
-]);
-const { createGrammarToolInputProperties } = constrainedSampling;
-const { convertResponsesMessages } = responsesShared;
+//
+// OMP (oh-my-pi) aliases the same specifiers to a compat shim that neither exports
+// `buildContextEntries` nor carries pi-ai's private module files, and Bun fails static
+// named-import validation at module link time. Load everything optionally instead and
+// skip native compaction when the host runtime cannot provide the serializers.
+type ConstrainedSamplingModule = typeof import("@earendil-works/pi-ai/api/constrained-sampling");
+type ResponsesSharedModule = typeof import("@earendil-works/pi-ai/api/openai-responses-shared");
+type CodingAgentModule = typeof import("@earendil-works/pi-coding-agent");
+type PrivateRuntime = {
+  createGrammarToolInputProperties: ConstrainedSamplingModule["createGrammarToolInputProperties"];
+  convertResponsesMessages: ResponsesSharedModule["convertResponsesMessages"];
+  buildContextEntries: CodingAgentModule["buildContextEntries"];
+  convertToLlm: CodingAgentModule["convertToLlm"];
+  sessionEntryToContextMessages: CodingAgentModule["sessionEntryToContextMessages"];
+};
+
+async function loadPrivateRuntime(): Promise<PrivateRuntime | undefined> {
+  try {
+    const runtimeEntry = import.meta.resolve("@earendil-works/pi-ai");
+    const [constrainedSampling, responsesShared, codingAgent] = await Promise.all([
+      import(
+        new URL("./api/constrained-sampling.js", runtimeEntry).href
+      ) as Promise<ConstrainedSamplingModule>,
+      import(
+        new URL("./api/openai-responses-shared.js", runtimeEntry).href
+      ) as Promise<ResponsesSharedModule>,
+      import("@earendil-works/pi-coding-agent") as Promise<CodingAgentModule>,
+    ]);
+    const { createGrammarToolInputProperties } = constrainedSampling;
+    const { convertResponsesMessages } = responsesShared;
+    const { buildContextEntries, convertToLlm, sessionEntryToContextMessages } = codingAgent;
+    if (
+      typeof createGrammarToolInputProperties !== "function" ||
+      typeof convertResponsesMessages !== "function" ||
+      typeof buildContextEntries !== "function" ||
+      typeof convertToLlm !== "function" ||
+      typeof sessionEntryToContextMessages !== "function"
+    ) {
+      return undefined;
+    }
+    return {
+      createGrammarToolInputProperties,
+      convertResponsesMessages,
+      buildContextEntries,
+      convertToLlm,
+      sessionEntryToContextMessages,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+const privateRuntime = await loadPrivateRuntime();
 
 const NATIVE_COMPACTION_KIND = "sub2api-codex-native-compaction";
 const NATIVE_COMPACTION_VERSION = 1;
@@ -207,7 +246,12 @@ function toTools(pi: ExtensionAPI): Tool[] {
   }));
 }
 
-function serializeMessages(pi: ExtensionAPI, model: Model<any>, entries: readonly SessionEntry[]) {
+function serializeMessages(
+  rt: PrivateRuntime,
+  pi: ExtensionAPI,
+  model: Model<any>,
+  entries: readonly SessionEntry[],
+) {
   const allTools = toTools(pi);
   const activeNames = new Set(pi.getActiveTools());
   const activeTools = allTools.filter((tool) => activeNames.has(tool.name));
@@ -219,19 +263,19 @@ function serializeMessages(pi: ExtensionAPI, model: Model<any>, entries: readonl
       }
     | undefined;
   const supportsGrammarTools = compat?.supportsOpenAIGrammarTools ?? false;
-  const messages = entries.flatMap((entry) => sessionEntryToContextMessages(entry));
+  const messages = entries.flatMap((entry) => rt.sessionEntryToContextMessages(entry));
   return structuredClone(
-    convertResponsesMessages(
+    rt.convertResponsesMessages(
       model,
       {
         systemPrompt: "",
-        messages: convertToLlm(messages),
+        messages: rt.convertToLlm(messages),
         tools: activeTools,
       },
       CODEX_TOOL_CALL_PROVIDERS,
       {
         includeSystemPrompt: false,
-        grammarToolInputProperties: createGrammarToolInputProperties(
+        grammarToolInputProperties: rt.createGrammarToolInputProperties(
           activeTools,
           supportsGrammarTools,
         ),
@@ -249,6 +293,7 @@ function serializeMessages(pi: ExtensionAPI, model: Model<any>, entries: readonl
 }
 
 function buildCompactionInput(
+  rt: PrivateRuntime,
   pi: ExtensionAPI,
   model: Model<any>,
   relay: CodexCompactionRelay,
@@ -260,14 +305,14 @@ function buildCompactionInput(
     return {
       input: [
         ...cloneItems(checkpoint.checkpoint.details.compactedWindow),
-        ...serializeMessages(pi, model, branch.slice(checkpoint.checkpoint.index + 1)),
+        ...serializeMessages(rt, pi, model, branch.slice(checkpoint.checkpoint.index + 1)),
       ],
     };
   }
 
   const leafId = branch.at(-1)?.id ?? null;
   return {
-    input: serializeMessages(pi, model, buildContextEntries(branch, leafId)),
+    input: serializeMessages(rt, pi, model, rt.buildContextEntries(branch, leafId)),
   };
 }
 
@@ -449,6 +494,7 @@ function findUniqueSequence(items: unknown[], sequence: unknown[]) {
 }
 
 function rewriteProviderPayload(
+  rt: PrivateRuntime,
   pi: ExtensionAPI,
   ctx: ExtensionContext,
   relay: CodexCompactionRelay,
@@ -472,7 +518,7 @@ function rewriteProviderPayload(
   if (firstKeptIndex < 0) return undefined;
 
   const prefixEntries = [entry, ...branch.slice(firstKeptIndex, index)];
-  const expectedPrefix = serializeMessages(pi, model, prefixEntries);
+  const expectedPrefix = serializeMessages(rt, pi, model, prefixEntries);
   const prefixIndex = findUniqueSequence(payload.input, expectedPrefix);
   if (prefixIndex === undefined) return undefined;
   const tailIndex = prefixIndex + expectedPrefix.length;
@@ -506,6 +552,11 @@ export function registerCodexCompaction(
   pi: ExtensionAPI,
   getRelay: (provider: string) => CodexCompactionRelay | undefined,
 ) {
+  const rt = privateRuntime;
+  // Hosts without pi's private serializer modules (OMP's compat shim) keep their own
+  // compaction path; native Codex compaction is a pi-only enhancement.
+  if (!rt) return;
+
   pi.on("session_before_compact", async (event: SessionBeforeCompactEvent, ctx) => {
     const relay = supportedRelay(ctx, getRelay);
     const model = ctx.model;
@@ -524,7 +575,13 @@ export function registerCodexCompaction(
     }
     const hasNativeCheckpoint = priorCheckpoint.status === "valid";
     try {
-      const built = buildCompactionInput(pi, model, relay, event.branchEntries as SessionEntry[]);
+      const built = buildCompactionInput(
+        rt,
+        pi,
+        model,
+        relay,
+        event.branchEntries as SessionEntry[],
+      );
       const compacted = await compactRemotely({
         relay,
         model,
@@ -571,6 +628,6 @@ export function registerCodexCompaction(
   pi.on("before_provider_request", (event, ctx) => {
     const relay = supportedRelay(ctx, getRelay);
     if (!relay) return undefined;
-    return rewriteProviderPayload(pi, ctx, relay, event.payload);
+    return rewriteProviderPayload(rt, pi, ctx, relay, event.payload);
   });
 }

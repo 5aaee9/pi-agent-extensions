@@ -1,7 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
-import { openAICodexResponsesApi } from "@earendil-works/pi-ai/compat";
 import { getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
 import {
   createAssistantMessageEventStream,
@@ -12,6 +11,7 @@ import {
   type Context,
   type Model,
   type ModelCost,
+  type ProviderStreams,
   type SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
 import type {
@@ -22,6 +22,8 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { registerCodexCompaction } from "./codex-compaction.ts";
+
+type CompatModule = typeof import("@earendil-works/pi-ai/compat");
 
 const CONFIG_FILENAME = "sub2api.json";
 const REQUEST_TIMEOUT_MS = 5_000;
@@ -34,8 +36,22 @@ const CODEX_STREAM_RETRY_HEARTBEAT_MS = 30_000;
 const MAX_RESPONSE_BYTES = 1024 * 1024;
 const MAX_MODEL_TOKEN_LIMIT = 10_000_000;
 const USAGE_FOOTER_KEY = "sub2api-usage";
-const CODEX_API = openAICodexResponsesApi();
+// OMP's pi-compat shim does not export pi's Codex adapter; without it the provider
+// registers plain `openai-responses` models (the relay speaks both) and lets the host
+// stream natively. Availability depends on the host runtime, so the probe must stay
+// dynamic.
+async function loadCodexApi(): Promise<ProviderStreams | undefined> {
+  try {
+    const compat = (await import("@earendil-works/pi-ai/compat")) as CompatModule;
+    if (typeof compat.openAICodexResponsesApi !== "function") return undefined;
+    return compat.openAICodexResponsesApi();
+  } catch {
+    return undefined;
+  }
+}
+
 const ANSI_ESCAPE = new RegExp(`${String.fromCharCode(27)}\\[[0-?]*[ -/]*[@-~]`, "g");
+const CODEX_API = await loadCodexApi();
 
 // Models that are not chat / reasoning models (e.g. image generators).
 const EXCLUDED = /^gpt-image/i;
@@ -471,11 +487,13 @@ function createRelayFetch(
 }
 
 function getModelApi(modelId: string, configuredApi?: SupportedApi): SupportedApi {
+  if (!CODEX_API && configuredApi === "openai-codex-responses") return "openai-responses";
   if (configuredApi) return configuredApi;
   if (CLAUDE.test(modelId)) return "anthropic-messages";
   // OpenAI models use pi's Codex adapter for its Codex-shaped requests; the
   // relay fetch rewrites them to the standard /v1/responses endpoint.
-  if (OPENAI.test(modelId)) return "openai-codex-responses";
+  // Hosts without pi's adapter (OMP) take the plain Responses API instead.
+  if (OPENAI.test(modelId)) return CODEX_API ? "openai-codex-responses" : "openai-responses";
   return "openai-responses";
 }
 
@@ -678,6 +696,7 @@ function streamCodexWithRetry(
   context: Context,
   options: SimpleStreamOptions,
 ): AssistantMessageEventStream {
+  if (!CODEX_API) throw new Error("pi Codex adapter unavailable on this host");
   const stream = createAssistantMessageEventStream();
   let streamStarted = false;
   let streamPartial: AssistantMessage | undefined;
@@ -774,6 +793,7 @@ function streamCodex(
   options: SimpleStreamOptions = {},
 ): AssistantMessageEventStream {
   const relay = relaysByProvider.get(model.provider);
+  if (!CODEX_API) throw new Error("pi Codex adapter unavailable on this host");
   if (!relay) return CODEX_API.streamSimple(model, context, options);
 
   const upstreamFetch = options.fetch ?? globalThis.fetch;
@@ -1718,10 +1738,17 @@ export default async function (pi: ExtensionAPI) {
     requestFooterRender?.();
   };
   const installUsageFooter = (ctx: ExtensionContext) => {
-    if (!ctx.hasUI) return;
+    // OMP's UI context may lack pi's footer API; skip the quota footer there.
+    if (!ctx.hasUI || typeof ctx.ui.setFooter !== "function") return;
     ctx.ui.setFooter((tui, theme, footerData) => {
+      if (
+        typeof footerData.onBranchChange !== "function" ||
+        typeof footerData.getGitBranch !== "function" ||
+        typeof footerData.getExtensionStatuses !== "function"
+      ) {
+        return { dispose() {}, invalidate() {}, render: (_width: number) => [] };
+      }
       const requestRender = () => tui.requestRender();
-      requestFooterRender = requestRender;
       const unsubscribe = footerData.onBranchChange(requestRender);
       return {
         dispose() {
