@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.16 - 2026-08-20
+
 - Map Pi's `max` thinking level to the upstream `ultra` reasoning effort when advertised, while preserving `max` for models that use that wire value.
 
 ## 0.1.15 - 2026-08-20
