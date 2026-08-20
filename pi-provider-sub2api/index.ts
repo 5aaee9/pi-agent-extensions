@@ -531,7 +531,7 @@ function getThinkingLevelMap(
     medium: supported.has("medium") ? "medium" : null,
     high: supported.has("high") ? "high" : null,
     xhigh: supported.has("xhigh") ? "xhigh" : null,
-    max: supported.has("max") ? "max" : null,
+    max: supported.has("ultra") ? "ultra" : supported.has("max") ? "max" : null,
   };
 }
 
@@ -925,7 +925,7 @@ function pickRemoteThinkingLevels(model: Record<string, unknown>) {
     const normalized = effort.trim().toLowerCase();
     if (normalized === "none") {
       recognized = true;
-    } else if (["minimal", "low", "medium", "high", "xhigh", "max"].includes(normalized)) {
+    } else if (["minimal", "low", "medium", "high", "xhigh", "max", "ultra"].includes(normalized)) {
       supported.add(normalized);
       recognized = true;
     }

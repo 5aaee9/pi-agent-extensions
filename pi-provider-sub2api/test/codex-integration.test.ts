@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { zstdDecompressSync } from "node:zlib";
 import type { ExtensionAPI, ProviderConfig } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import extension from "../index.ts";
@@ -32,7 +33,23 @@ describe("real Codex adapter integration", () => {
       }),
     );
 
-    vi.stubGlobal("fetch", async () => Response.json({ data: [{ id: "gpt-5.5" }] }));
+    vi.stubGlobal("fetch", async (input: URL | RequestInfo) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (url === "https://codex-integration.example/v1/models") {
+        return Response.json({ data: [{ id: "gpt-5.6" }] });
+      }
+      if (url === "https://codex-integration.example/backend-api/codex/models") {
+        return Response.json({
+          models: [
+            {
+              slug: "gpt-5.6-sol",
+              supported_reasoning_levels: ["low", "medium", "high", "xhigh", "max", "ultra"],
+            },
+          ],
+        });
+      }
+      return new Response(null, { status: 404 });
+    });
     let providerConfig: ProviderConfig | undefined;
     await extension({
       registerProvider(_name: string, config: ProviderConfig) {
@@ -47,13 +64,28 @@ describe("real Codex adapter integration", () => {
     expect(modelConfig).toBeDefined();
 
     const controller = new AbortController();
-    const transportCalls: Array<{ url: string; headers: Headers; redirect?: RequestRedirect }> = [];
+    const transportCalls: Array<{
+      url: string;
+      headers: Headers;
+      redirect?: RequestRedirect;
+      body?: unknown;
+    }> = [];
     const transportFetch: typeof globalThis.fetch = async (input, init) => {
       const request = input instanceof Request ? input : undefined;
+      const headers = new Headers(init?.headers ?? request?.headers);
+      const bodyText =
+        headers.get("content-encoding") === "zstd" && init?.body instanceof Uint8Array
+          ? zstdDecompressSync(init.body).toString()
+          : init?.body
+            ? await new Response(init.body).text()
+            : request
+              ? await request.clone().text()
+              : "";
       transportCalls.push({
         url: request?.url ?? String(input),
-        headers: new Headers(init?.headers ?? request?.headers),
+        headers,
         redirect: init?.redirect,
+        body: bodyText ? JSON.parse(bodyText) : undefined,
       });
       controller.abort();
       return Response.json(
@@ -66,7 +98,7 @@ describe("real Codex adapter integration", () => {
     const stream = providerConfig!.streamSimple!(
       { ...modelConfig, provider: "codex" } as never,
       { messages: [] } as never,
-      { fetch: transportFetch, signal: controller.signal },
+      { fetch: transportFetch, signal: controller.signal, reasoning: "max" },
     );
     for await (const event of stream) events.push(event);
 
@@ -76,5 +108,9 @@ describe("real Codex adapter integration", () => {
     expect(transportCalls[0]!.headers.get("authorization")).toBe("Bearer integration-relay-token");
     expect(transportCalls[0]!.headers.get("chatgpt-account-id")).toBeNull();
     expect(transportCalls[0]!.redirect).toBe("error");
+    expect(transportCalls[0]!.body).toMatchObject({
+      model: "gpt-5.6",
+      reasoning: { effort: "ultra" },
+    });
   });
 });

@@ -79,6 +79,7 @@ describe("model metadata discovery", () => {
                 { effort: "medium" },
                 { effort: "high" },
                 { effort: "xhigh" },
+                { effort: "max" },
               ],
             },
             { slug: "gpt-5.6", max_tokens: 0, supported_reasoning_levels: ["unknown"] },
@@ -92,7 +93,8 @@ describe("model metadata discovery", () => {
                 { effort: "high" },
                 { effort: "xhigh" },
                 { effort: "max" },
-                { effort: "MAX" },
+                { effort: "ultra" },
+                { effort: "ULTRA" },
               ],
             },
             { slug: "gpt-5.3-codex-spark", context_window: 128000 },
@@ -169,7 +171,7 @@ describe("model metadata discovery", () => {
       medium: "medium",
       high: "high",
       xhigh: "xhigh",
-      max: null,
+      max: "max",
     });
     expect(autoModels[1]!.thinkingLevelMap).toEqual({
       off: "none",
@@ -178,7 +180,7 @@ describe("model metadata discovery", () => {
       medium: "medium",
       high: "high",
       xhigh: "xhigh",
-      max: "max",
+      max: "ultra",
     });
 
     const responsesModel = registrations.find(({ name }) => name === "responses")!.config

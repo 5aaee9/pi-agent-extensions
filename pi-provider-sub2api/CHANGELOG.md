@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Map Pi's `max` thinking level to the upstream `ultra` reasoning effort when advertised, while preserving `max` for models that use that wire value.
+
 ## 0.1.15 - 2026-08-20
 
 - Discover per-model reasoning efforts from upstream `supported_reasoning_levels`, including `max` for the `gpt-5.6`/`gpt-5.6-sol` alias when advertised.
