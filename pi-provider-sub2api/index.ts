@@ -89,11 +89,16 @@ interface DiscoveredModel {
   name: string;
   contextWindow?: number;
   maxTokens?: number;
+  supportedThinkingLevels?: string[];
 }
 
 interface ModelTokenLimits {
   contextWindow?: number;
   maxTokens?: number;
+}
+
+interface ModelCapabilities extends ModelTokenLimits {
+  supportedThinkingLevels?: string[];
 }
 
 interface BuiltinModelMetadata extends ModelTokenLimits {
@@ -501,16 +506,33 @@ function getApiBaseUrl(relay: RelayConfig, api: SupportedApi) {
   return api === "anthropic-messages" ? relay.anthropicBaseUrl : relay.baseUrl;
 }
 
-function getThinkingLevelMap(modelId: string, api: SupportedApi) {
+function getThinkingLevelMap(
+  modelId: string,
+  api: SupportedApi,
+  supportedThinkingLevels?: string[],
+) {
   if (!REASONING.test(modelId)) return undefined;
   if (api === "anthropic-messages") return { xhigh: "max" };
   // Relayed Codex backends reject the "none" and "minimal" efforts with
   // upstream 5xx errors, so clamp minimal to low. The Codex adapter omits the
   // reasoning field entirely when thinking is off, while the plain Responses
   // adapter requires off to be unselectable (null) to do the same.
-  return api === "openai-codex-responses"
-    ? { off: "none", minimal: "low", xhigh: "xhigh" }
-    : { off: null, minimal: "low", xhigh: "xhigh" };
+  const map =
+    api === "openai-codex-responses"
+      ? { off: "none", minimal: "low", xhigh: "xhigh" }
+      : { off: null, minimal: "low", xhigh: "xhigh" };
+  if (!supportedThinkingLevels) return map;
+
+  const supported = new Set(supportedThinkingLevels);
+  return {
+    ...map,
+    minimal: supported.has("low") ? "low" : null,
+    low: supported.has("low") ? "low" : null,
+    medium: supported.has("medium") ? "medium" : null,
+    high: supported.has("high") ? "high" : null,
+    xhigh: supported.has("xhigh") ? "xhigh" : null,
+    max: supported.has("max") ? "max" : null,
+  };
 }
 
 function getModelCompat(modelId: string, api: SupportedApi) {
@@ -891,6 +913,26 @@ function pickRemoteMaxTokens(model: Record<string, unknown>) {
   );
 }
 
+function pickRemoteThinkingLevels(model: Record<string, unknown>) {
+  const raw = model.supported_reasoning_levels ?? model.supportedReasoningLevels;
+  if (!Array.isArray(raw)) return undefined;
+
+  const supported = new Set<string>();
+  let recognized = raw.length === 0;
+  for (const value of raw) {
+    const effort = typeof value === "string" ? value : asRecord(value)?.effort;
+    if (typeof effort !== "string") continue;
+    const normalized = effort.trim().toLowerCase();
+    if (normalized === "none") {
+      recognized = true;
+    } else if (["minimal", "low", "medium", "high", "xhigh", "max"].includes(normalized)) {
+      supported.add(normalized);
+      recognized = true;
+    }
+  }
+  return recognized ? [...supported] : undefined;
+}
+
 async function fetchModelInventory(relay: RelayConfig): Promise<DiscoveredModel[]> {
   try {
     const result = await fetchTextWithRetry(`${relay.baseUrl}/models`, {
@@ -928,6 +970,7 @@ async function fetchModelInventory(relay: RelayConfig): Promise<DiscoveredModel[
           name: displayName || model.id,
           contextWindow: pickRemoteContextWindow(model),
           maxTokens: pickRemoteMaxTokens(model),
+          supportedThinkingLevels: pickRemoteThinkingLevels(model),
         };
       });
   } catch (error) {
@@ -937,7 +980,7 @@ async function fetchModelInventory(relay: RelayConfig): Promise<DiscoveredModel[
 }
 
 async function fetchCodexManifest(relay: RelayConfig) {
-  const metadata = new Map<string, ModelTokenLimits>();
+  const metadata = new Map<string, ModelCapabilities>();
   try {
     const result = await fetchTextWithRetry(`${relay.anthropicBaseUrl}/backend-api/codex/models`, {
       headers: { Authorization: `Bearer ${relay.apiKey}`, Accept: "application/json" },
@@ -957,6 +1000,7 @@ async function fetchCodexManifest(relay: RelayConfig) {
       metadata.set(model.slug, {
         contextWindow: pickRemoteContextWindow(model),
         maxTokens: pickRemoteMaxTokens(model),
+        supportedThinkingLevels: pickRemoteThinkingLevels(model),
       });
     }
   } catch {
@@ -974,7 +1018,8 @@ async function fetchModels(relay: RelayConfig): Promise<DiscoveredModel[]> {
       OPENAI.test(model.id) &&
       (model.contextWindow === undefined ||
         model.maxTokens === undefined ||
-        model.maxTokens > model.contextWindow),
+        model.maxTokens > model.contextWindow ||
+        (REASONING.test(model.id) && model.supportedThinkingLevels === undefined)),
   );
   if (!needsCodexMetadata) return models;
 
@@ -984,7 +1029,7 @@ async function fetchModels(relay: RelayConfig): Promise<DiscoveredModel[]> {
     if (!OPENAI.test(model.id)) return model;
     const metadata = getModelMetadataIds(model.id)
       .map((candidate) => manifest.get(candidate))
-      .filter((limits): limits is ModelTokenLimits => limits !== undefined);
+      .filter((limits): limits is ModelCapabilities => limits !== undefined);
     if (!metadata.length) return model;
     const contextWindow =
       model.contextWindow ??
@@ -994,10 +1039,15 @@ async function fetchModels(relay: RelayConfig): Promise<DiscoveredModel[]> {
       model.maxTokens,
       ...metadata.map((limits) => limits.maxTokens),
     );
+    const supportedThinkingLevels =
+      model.supportedThinkingLevels ??
+      metadata.find((limits) => limits.supportedThinkingLevels !== undefined)
+        ?.supportedThinkingLevels;
     return {
       ...model,
       contextWindow,
       maxTokens,
+      supportedThinkingLevels,
     };
   });
 }
@@ -1816,7 +1866,7 @@ export default async function (pi: ExtensionAPI) {
           api,
           baseUrl: getApiBaseUrl(relay, api),
           reasoning: REASONING.test(model.id),
-          thinkingLevelMap: getThinkingLevelMap(model.id, api),
+          thinkingLevelMap: getThinkingLevelMap(model.id, api, model.supportedThinkingLevels),
           input: ["text", "image"],
           cost: scaleModelCost(builtinMetadata?.cost, priceMultiplier),
           contextWindow,

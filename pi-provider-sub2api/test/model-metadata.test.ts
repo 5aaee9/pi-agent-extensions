@@ -71,9 +71,30 @@ describe("model metadata discovery", () => {
       if (url === "https://auto.example/backend-api/codex/models") {
         return Response.json({
           models: [
-            { slug: "gpt-5.5", context_window: 272000 },
-            { slug: "gpt-5.6", max_tokens: 0 },
-            { slug: "gpt-5.6-sol", context_window: 272000, max_output_tokens: 96000 },
+            {
+              slug: "gpt-5.5",
+              context_window: 272000,
+              supported_reasoning_levels: [
+                { effort: "low" },
+                { effort: "medium" },
+                { effort: "high" },
+                { effort: "xhigh" },
+              ],
+            },
+            { slug: "gpt-5.6", max_tokens: 0, supported_reasoning_levels: ["unknown"] },
+            {
+              slug: "gpt-5.6-sol",
+              context_window: 272000,
+              max_output_tokens: 96000,
+              supported_reasoning_levels: [
+                { effort: " low " },
+                { effort: "medium" },
+                { effort: "high" },
+                { effort: "xhigh" },
+                { effort: "max" },
+                { effort: "MAX" },
+              ],
+            },
             { slug: "gpt-5.3-codex-spark", context_window: 128000 },
             { slug: "codex-auto-review", context_window: 272000 },
             {
@@ -141,6 +162,24 @@ describe("model metadata discovery", () => {
       [122000, 12000],
     ]);
     expect(autoModels[0]!.cost.input).toBe(5);
+    expect(autoModels[0]!.thinkingLevelMap).toEqual({
+      off: "none",
+      minimal: "low",
+      low: "low",
+      medium: "medium",
+      high: "high",
+      xhigh: "xhigh",
+      max: null,
+    });
+    expect(autoModels[1]!.thinkingLevelMap).toEqual({
+      off: "none",
+      minimal: "low",
+      low: "low",
+      medium: "medium",
+      high: "high",
+      xhigh: "xhigh",
+      max: "max",
+    });
 
     const responsesModel = registrations.find(({ name }) => name === "responses")!.config
       .models![0]!;

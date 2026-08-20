@@ -386,14 +386,20 @@ describe("sub2api provider extension", () => {
       expect(call.init?.signal?.aborted).toBe(false);
       expect(call.init?.redirect).toBe("error");
     }
-    expect(metadataFetchCalls.map((call) => call.url)).toEqual([
-      "https://responses.example/backend-api/codex/models",
-    ]);
-    expect(new Headers(metadataFetchCalls[0]!.init?.headers).get("authorization")).toBe(
-      "Bearer sk-responses",
+    expect(
+      metadataFetchCalls
+        .map((call) => [call.url, new Headers(call.init?.headers).get("authorization")])
+        .sort(),
+    ).toEqual(
+      [
+        ["https://fallback.example/backend-api/codex/models", "Bearer sk-fallback"],
+        ["https://responses.example/backend-api/codex/models", "Bearer sk-responses"],
+      ].sort(),
     );
-    expect(metadataFetchCalls[0]!.init?.signal).toBeInstanceOf(AbortSignal);
-    expect(metadataFetchCalls[0]!.init?.redirect).toBe("error");
+    for (const call of metadataFetchCalls) {
+      expect(call.init?.signal).toBeInstanceOf(AbortSignal);
+      expect(call.init?.redirect).toBe("error");
+    }
     expect(billingFetchCalls).toHaveLength(Object.keys(relayDefinitions).length);
     for (const call of billingFetchCalls) {
       expect(new Headers(call.init?.headers).get("authorization")).toMatch(/^Bearer /);

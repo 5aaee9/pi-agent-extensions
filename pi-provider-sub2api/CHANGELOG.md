@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Discover per-model reasoning efforts from upstream `supported_reasoning_levels`, including `max` for the `gpt-5.6`/`gpt-5.6-sol` alias when advertised.
+
 ## 0.1.14 - 2026-08-16
 
 - Load under OMP (oh-my-pi): probe pi's Codex adapter, `buildContextEntries`, and the private serializer runtime optionally instead of importing them statically, degrade Codex-shaped models to plain `openai-responses` and skip native compaction when the host cannot provide them, and guard the footer API. Pi behavior is unchanged.
