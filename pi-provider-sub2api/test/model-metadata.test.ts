@@ -180,7 +180,7 @@ describe("model metadata discovery", () => {
       medium: "medium",
       high: "high",
       xhigh: "xhigh",
-      max: "ultra",
+      max: "max",
     });
 
     const responsesModel = registrations.find(({ name }) => name === "responses")!.config
@@ -206,6 +206,53 @@ describe("model metadata discovery", () => {
       expect(call.init?.redirect).toBe("error");
       expect(call.init?.signal).toBeInstanceOf(AbortSignal);
     }
+  });
+
+  it("keeps max as the default when the manifest also advertises ultra", async () => {
+    writeFileSync(
+      join(stateDir, "sub2api.json"),
+      JSON.stringify({
+        relay: { baseURL: "https://partial-capabilities.example", token: "sk-partial" },
+      }),
+    );
+
+    vi.stubGlobal("fetch", async (input: URL | RequestInfo) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (url === "https://partial-capabilities.example/v1/models") {
+        return Response.json({
+          data: [
+            {
+              id: "gpt-5.6",
+              supported_reasoning_levels: ["low", "medium", "high", "xhigh", "max"],
+            },
+          ],
+        });
+      }
+      if (url === "https://partial-capabilities.example/backend-api/codex/models") {
+        return Response.json({
+          models: [
+            {
+              slug: "gpt-5.6-sol",
+              supported_reasoning_levels: ["low", "medium", "high", "xhigh", "max", "ultra"],
+            },
+          ],
+        });
+      }
+      return new Response(null, { status: 404 });
+    });
+
+    const registrations: Registration[] = [];
+    await extension({
+      registerProvider(name: string, config: ProviderConfig) {
+        registrations.push({ name, config });
+      },
+      on() {},
+      registerCommand() {},
+    } as unknown as ExtensionAPI);
+
+    expect(registrations[0]!.config.models![0]!.thinkingLevelMap).toMatchObject({
+      max: "max",
+    });
   });
 
   it("keeps catalog-backed models when the optional Codex manifest endpoint is absent", async () => {

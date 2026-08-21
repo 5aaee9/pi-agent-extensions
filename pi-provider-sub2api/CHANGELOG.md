@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.1.17 - 2026-08-21
+
+- Add `/toggle-ultra` to switch max-thinking requests between the upstream `max` and `ultra` efforts, and mark the enabled state in the usage footer.
+- Merge reasoning capabilities from the relay inventory and Codex manifest so a manifest-only `ultra` effort is not hidden by a lower `max` inventory entry.
+
 ## 0.1.16 - 2026-08-20
 
 - Map Pi's `max` thinking level to the upstream `ultra` reasoning effort when advertised, while preserving `max` for models that use that wire value.

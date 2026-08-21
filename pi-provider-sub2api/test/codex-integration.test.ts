@@ -21,7 +21,7 @@ afterEach(() => {
 });
 
 describe("real Codex adapter integration", () => {
-  it("rewrites the Codex request to the Responses endpoint and injects the relay token", async () => {
+  it("rewrites max to max by default and to ultra after /toggle-ultra", async () => {
     writeFileSync(
       join(stateDir, "sub2api.json"),
       JSON.stringify({
@@ -36,7 +36,14 @@ describe("real Codex adapter integration", () => {
     vi.stubGlobal("fetch", async (input: URL | RequestInfo) => {
       const url = input instanceof Request ? input.url : String(input);
       if (url === "https://codex-integration.example/v1/models") {
-        return Response.json({ data: [{ id: "gpt-5.6" }] });
+        return Response.json({
+          data: [
+            {
+              id: "gpt-5.6",
+              supported_reasoning_levels: ["low", "medium", "high", "xhigh", "max"],
+            },
+          ],
+        });
       }
       if (url === "https://codex-integration.example/backend-api/codex/models") {
         return Response.json({
@@ -51,19 +58,24 @@ describe("real Codex adapter integration", () => {
       return new Response(null, { status: 404 });
     });
     let providerConfig: ProviderConfig | undefined;
+    let toggleUltra: ((args: string, ctx: any) => unknown) | undefined;
+    const setThinkingLevel = vi.fn<() => void>();
     await extension({
       registerProvider(_name: string, config: ProviderConfig) {
         providerConfig = config;
       },
       on() {},
-      registerCommand() {},
+      registerCommand(name: string, options: { handler: (args: string, ctx: any) => unknown }) {
+        if (name === "toggle-ultra") toggleUltra = options.handler;
+      },
+      setThinkingLevel,
     } as unknown as ExtensionAPI);
 
     expect(providerConfig?.streamSimple).toBeTypeOf("function");
     const modelConfig = providerConfig?.models?.[0];
     expect(modelConfig).toBeDefined();
 
-    const controller = new AbortController();
+    let controller = new AbortController();
     const transportCalls: Array<{
       url: string;
       headers: Headers;
@@ -109,6 +121,26 @@ describe("real Codex adapter integration", () => {
     expect(transportCalls[0]!.headers.get("chatgpt-account-id")).toBeNull();
     expect(transportCalls[0]!.redirect).toBe("error");
     expect(transportCalls[0]!.body).toMatchObject({
+      model: "gpt-5.6",
+      reasoning: { effort: "max" },
+    });
+
+    expect(toggleUltra).toBeTypeOf("function");
+    await toggleUltra!("", { ui: { notify() {} }, model: { reasoning: true } });
+    expect(setThinkingLevel).toHaveBeenCalledWith("max");
+
+    controller = new AbortController();
+    const ultraModelConfig = providerConfig?.models?.[0];
+    expect(ultraModelConfig?.thinkingLevelMap).toMatchObject({ max: "ultra" });
+    const ultraStream = providerConfig!.streamSimple!(
+      { ...ultraModelConfig, provider: "codex" } as never,
+      { messages: [] } as never,
+      { fetch: transportFetch, signal: controller.signal, reasoning: "max" },
+    );
+    for await (const event of ultraStream) events.push(event);
+
+    expect(transportCalls).toHaveLength(2);
+    expect(transportCalls[1]!.body).toMatchObject({
       model: "gpt-5.6",
       reasoning: { effort: "ultra" },
     });

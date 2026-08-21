@@ -71,6 +71,7 @@ function createFooterHarness(statuses: ReadonlyMap<string, string> = new Map()) 
         component?.dispose?.();
         component = factory?.({ requestRender() {} }, theme, footerData);
       },
+      notify() {},
     },
     render() {
       return (component?.render(200) ?? []).map((line) => line.trimEnd());
@@ -1153,7 +1154,11 @@ describe("sub2api provider extension", () => {
 
     const registrations: Registration[] = [];
     const handlers = new Map<string, (event: any, context: any) => unknown>();
-    const registerCommand = vi.fn<() => void>();
+    const registerCommand =
+      vi.fn<
+        (name: string, options: { handler: (args: string, context: any) => unknown }) => void
+      >();
+    const setThinkingLevel = vi.fn<() => void>();
     await extension({
       registerProvider(name: string, config: ProviderConfig) {
         registrations.push({ name, config });
@@ -1162,6 +1167,7 @@ describe("sub2api provider extension", () => {
         handlers.set(name, handler);
       },
       registerCommand,
+      setThinkingLevel,
     } as unknown as ExtensionAPI);
 
     expect(registrations).toHaveLength(1);
@@ -1177,7 +1183,10 @@ describe("sub2api provider extension", () => {
       "turn_end",
       "session_shutdown",
     ]);
-    expect(registerCommand).not.toHaveBeenCalled();
+    expect(registerCommand).toHaveBeenCalledWith(
+      "toggle-ultra",
+      expect.objectContaining({ handler: expect.any(Function) }),
+    );
 
     const footer = createFooterHarness(new Map([["mcp", "mcp connected"]]));
     const activeModel = { provider: "quota-relay", id: "grok-quota" };
@@ -1196,6 +1205,15 @@ describe("sub2api provider extension", () => {
     handlers.get("turn_end")!({}, context);
     await vi.waitFor(() => expect(footer.render().at(-1)).toContain("5h 30%"));
     expect(quotaVersion).toBe(3);
+
+    const toggleUltra = registerCommand.mock.calls.find(([name]) => name === "toggle-ultra")?.[1]
+      .handler;
+    expect(toggleUltra).toBeTypeOf("function");
+    await toggleUltra!("", context);
+    expect(setThinkingLevel).toHaveBeenCalledWith("max");
+    expect(footer.render().at(-1)).toBe("quota-relay · 5h 30% · d 10% [ULTRA ENABLED]");
+    await toggleUltra!("", context);
+    expect(footer.render().at(-1)).toBe("quota-relay · 5h 30% · d 10%");
 
     const usageCalls = fetchCalls.filter((call) => call.url.endsWith("/usage"));
     expect(usageCalls.map((call) => call.url)).toEqual([
@@ -1235,6 +1253,7 @@ describe("sub2api provider extension", () => {
     const handlers = new Map<string, (event: any, context: any) => unknown>();
     await extension({
       registerProvider() {},
+      registerCommand() {},
       on(name: string, handler: (event: any, context: any) => unknown) {
         handlers.set(name, handler);
       },
@@ -1288,6 +1307,7 @@ describe("sub2api provider extension", () => {
     const handlers = new Map<string, (event: any, context: any) => unknown>();
     await extension({
       registerProvider() {},
+      registerCommand() {},
       on(name: string, handler: (event: any, context: any) => unknown) {
         handlers.set(name, handler);
       },
@@ -1395,6 +1415,7 @@ describe("sub2api provider extension", () => {
       registerProvider(name: string, config: ProviderConfig) {
         registrations.push({ name, config });
       },
+      registerCommand() {},
       on(name: string, handler: (event: any, context: any) => unknown) {
         handlers.set(name, handler);
       },

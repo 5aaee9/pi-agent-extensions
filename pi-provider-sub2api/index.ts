@@ -510,6 +510,7 @@ function getThinkingLevelMap(
   modelId: string,
   api: SupportedApi,
   supportedThinkingLevels?: string[],
+  ultraEnabled = false,
 ) {
   if (!REASONING.test(modelId)) return undefined;
   if (api === "anthropic-messages") return { xhigh: "max" };
@@ -531,7 +532,14 @@ function getThinkingLevelMap(
     medium: supported.has("medium") ? "medium" : null,
     high: supported.has("high") ? "high" : null,
     xhigh: supported.has("xhigh") ? "xhigh" : null,
-    max: supported.has("ultra") ? "ultra" : supported.has("max") ? "max" : null,
+    max:
+      ultraEnabled && supported.has("ultra")
+        ? "ultra"
+        : supported.has("max")
+          ? "max"
+          : supported.has("ultra")
+            ? "ultra"
+            : null,
   };
 }
 
@@ -933,6 +941,14 @@ function pickRemoteThinkingLevels(model: Record<string, unknown>) {
   return recognized ? [...supported] : undefined;
 }
 
+function mergeSupportedThinkingLevels(...levels: (string[] | undefined)[]) {
+  const supported = new Set(levels.flatMap((values) => values ?? []));
+  if (!levels.some((values) => values !== undefined)) return undefined;
+  return ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"].filter((level) =>
+    supported.has(level),
+  );
+}
+
 async function fetchModelInventory(relay: RelayConfig): Promise<DiscoveredModel[]> {
   try {
     const result = await fetchTextWithRetry(`${relay.baseUrl}/models`, {
@@ -1019,7 +1035,7 @@ async function fetchModels(relay: RelayConfig): Promise<DiscoveredModel[]> {
       (model.contextWindow === undefined ||
         model.maxTokens === undefined ||
         model.maxTokens > model.contextWindow ||
-        (REASONING.test(model.id) && model.supportedThinkingLevels === undefined)),
+        (REASONING.test(model.id) && !model.supportedThinkingLevels?.includes("ultra"))),
   );
   if (!needsCodexMetadata) return models;
 
@@ -1039,10 +1055,10 @@ async function fetchModels(relay: RelayConfig): Promise<DiscoveredModel[]> {
       model.maxTokens,
       ...metadata.map((limits) => limits.maxTokens),
     );
-    const supportedThinkingLevels =
-      model.supportedThinkingLevels ??
-      metadata.find((limits) => limits.supportedThinkingLevels !== undefined)
-        ?.supportedThinkingLevels;
+    const supportedThinkingLevels = mergeSupportedThinkingLevels(
+      model.supportedThinkingLevels,
+      ...metadata.map((limits) => limits.supportedThinkingLevels),
+    );
     return {
       ...model,
       contextWindow,
@@ -1690,6 +1706,7 @@ function renderUsageFooter(
   footerData: ReadonlyFooterDataProvider,
   theme: FooterTheme,
   usageLine: UsageFooterLine | undefined,
+  ultraEnabled: boolean,
   width: number,
 ) {
   let cwd = formatFooterCwd(ctx.cwd, homedir());
@@ -1710,7 +1727,8 @@ function renderUsageFooter(
     lines.push(truncateToWidth(otherStatuses.join(" "), width, theme.fg("dim", "...")));
   }
   if (usageLine) {
-    lines.push(theme.fg(usageLine.color, truncateToWidth(usageLine.text, width, "...")));
+    const text = ultraEnabled ? `${usageLine.text} [ULTRA ENABLED]` : usageLine.text;
+    lines.push(theme.fg(usageLine.color, truncateToWidth(text, width, "...")));
   }
   return lines;
 }
@@ -1773,6 +1791,7 @@ export default async function (pi: ExtensionAPI) {
 
   let usageFooterLine: UsageFooterLine | undefined;
   let requestFooterRender: (() => void) | undefined;
+  let ultraEnabled = false;
   const setUsageLine = (
     ctx: ExtensionContext,
     provider: string,
@@ -1799,6 +1818,7 @@ export default async function (pi: ExtensionAPI) {
         return { dispose() {}, invalidate() {}, render: (_width: number) => [] };
       }
       const requestRender = () => tui.requestRender();
+      requestFooterRender = requestRender;
       const unsubscribe = footerData.onBranchChange(requestRender);
       return {
         dispose() {
@@ -1807,7 +1827,7 @@ export default async function (pi: ExtensionAPI) {
         },
         invalidate() {},
         render: (width: number) =>
-          renderUsageFooter(ctx, footerData, theme, usageFooterLine, width),
+          renderUsageFooter(ctx, footerData, theme, usageFooterLine, ultraEnabled, width),
       };
     });
   };
@@ -1866,7 +1886,12 @@ export default async function (pi: ExtensionAPI) {
           api,
           baseUrl: getApiBaseUrl(relay, api),
           reasoning: REASONING.test(model.id),
-          thinkingLevelMap: getThinkingLevelMap(model.id, api, model.supportedThinkingLevels),
+          thinkingLevelMap: getThinkingLevelMap(
+            model.id,
+            api,
+            model.supportedThinkingLevels,
+            ultraEnabled,
+          ),
           input: ["text", "image"],
           cost: scaleModelCost(builtinMetadata?.cost, priceMultiplier),
           contextWindow,
@@ -1899,6 +1924,19 @@ export default async function (pi: ExtensionAPI) {
   for (const { relay, models } of providers) {
     registerRelayProvider(relay, models);
   }
+
+  pi.registerCommand("toggle-ultra", {
+    description: "Toggle upstream ultra reasoning for max thinking requests",
+    handler: async (_args, ctx) => {
+      ultraEnabled = !ultraEnabled;
+      for (const { relay, models } of providers) {
+        registerRelayProvider(relay, models);
+      }
+      pi.setThinkingLevel("max");
+      requestFooterRender?.();
+      ctx.ui.notify(ultraEnabled ? "Ultra reasoning enabled" : "Ultra reasoning disabled", "info");
+    },
+  });
 
   const syncRelayProviderPricing = (relay: RelayConfig) => {
     if (!isCurrent()) return;
