@@ -29,6 +29,7 @@ describe("real Codex adapter integration", () => {
           baseURL: "https://codex-integration.example",
           token: "integration-relay-token",
           api: "openai-codex-responses",
+          serverTools: { responses: [{ type: "web_search" }] },
         },
       }),
     );
@@ -60,16 +61,21 @@ describe("real Codex adapter integration", () => {
     let providerConfig: ProviderConfig | undefined;
     let toggleUltra: ((args: string, ctx: any) => unknown) | undefined;
     let toggleFast: ((args: string, ctx: any) => unknown) | undefined;
-    let beforeProviderRequest:
-      | ((event: { payload: unknown }, ctx: { model: Record<string, unknown> }) => unknown)
-      | undefined;
+    type BeforeRequestHandler = (
+      event: { payload: unknown },
+      ctx: {
+        model: Record<string, unknown>;
+        sessionManager: { getBranch(): unknown[] };
+      },
+    ) => unknown | Promise<unknown>;
+    const beforeProviderRequestHandlers: BeforeRequestHandler[] = [];
     const setThinkingLevel = vi.fn<() => void>();
     await extension({
       registerProvider(_name: string, config: ProviderConfig) {
         providerConfig = config;
       },
-      on(name: string, handler: typeof beforeProviderRequest) {
-        if (name === "before_provider_request") beforeProviderRequest = handler;
+      on(name: string, handler: BeforeRequestHandler) {
+        if (name === "before_provider_request") beforeProviderRequestHandlers.push(handler);
       },
       registerCommand(name: string, options: { handler: (args: string, ctx: any) => unknown }) {
         if (name === "toggle-ultra") toggleUltra = options.handler;
@@ -115,13 +121,25 @@ describe("real Codex adapter integration", () => {
 
     const events = [];
     const model = { ...modelConfig, provider: "codex" };
-    const applyProviderRequestHooks = (payload: unknown) =>
-      beforeProviderRequest?.({ payload }, { model });
+    const applyProviderRequestHooks = async (
+      payload: unknown,
+      activeModel: Record<string, unknown>,
+    ) => {
+      let currentPayload = payload;
+      for (const handler of beforeProviderRequestHandlers) {
+        const nextPayload = await handler(
+          { payload: currentPayload },
+          { model: activeModel, sessionManager: { getBranch: () => [] } },
+        );
+        if (nextPayload !== undefined) currentPayload = nextPayload;
+      }
+      return currentPayload;
+    };
     const stream = providerConfig!.streamSimple!(model as never, { messages: [] } as never, {
       fetch: transportFetch,
       signal: controller.signal,
       reasoning: "max",
-      onPayload: applyProviderRequestHooks,
+      onPayload: (payload) => applyProviderRequestHooks(payload, model),
     });
     for await (const event of stream) events.push(event);
 
@@ -134,6 +152,9 @@ describe("real Codex adapter integration", () => {
     expect(transportCalls[0]!.body).toMatchObject({
       model: "gpt-5.6",
       reasoning: { effort: "max" },
+    });
+    expect(transportCalls[0]!.body).toMatchObject({
+      tools: expect.arrayContaining([{ type: "web_search" }]),
     });
     expect(transportCalls[0]!.body).not.toHaveProperty("service_tier");
 
@@ -155,7 +176,7 @@ describe("real Codex adapter integration", () => {
         fetch: transportFetch,
         signal: controller.signal,
         reasoning: "max",
-        onPayload: (payload) => beforeProviderRequest?.({ payload }, { model: ultraModel }),
+        onPayload: (payload) => applyProviderRequestHooks(payload, ultraModel),
       },
     );
     for await (const event of ultraStream) events.push(event);
@@ -165,6 +186,9 @@ describe("real Codex adapter integration", () => {
       model: "gpt-5.6",
       reasoning: { effort: "ultra" },
       service_tier: "priority",
+    });
+    expect(transportCalls[1]!.body).toMatchObject({
+      tools: expect.arrayContaining([{ type: "web_search" }]),
     });
   });
 });

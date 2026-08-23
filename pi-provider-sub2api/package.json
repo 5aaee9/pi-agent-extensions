@@ -1,6 +1,6 @@
 {
   "name": "@indexyz/pi-provider-sub2api",
-  "version": "0.1.17",
+  "version": "0.1.18",
   "description": "A pi provider extension for Sub2API-compatible relays with model discovery and quota reporting",
   "keywords": [
     "llm",

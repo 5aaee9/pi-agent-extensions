@@ -662,6 +662,175 @@ describe("sub2api provider extension", () => {
     ]);
   });
 
+  it("merges protocol-specific server tools without replacing Pi tools", async () => {
+    const responsesTools = [
+      { type: "web_search" },
+      { type: "web_search_preview", search_context_size: "low" },
+      { type: "file_search", vector_store_ids: ["vs_docs"] },
+      { type: "code_interpreter", container: { type: "auto" } },
+      {
+        type: "shell",
+        environment: { type: "container_auto", memory_limit: "4g" },
+      },
+      {
+        type: "mcp",
+        server_label: "docs",
+        server_url: "https://mcp.example/sse",
+        require_approval: "never",
+      },
+      {
+        type: "tool_search",
+        execution: "server",
+        description: "Load hosted tools only when needed",
+      },
+      { type: "future_responses_hosted_tool", option: { enabled: true } },
+    ];
+    const anthropicTools = [
+      {
+        type: "web_search_20250305",
+        name: "web_search",
+        max_uses: 4,
+      },
+      {
+        type: "web_fetch_20250910",
+        name: "web_fetch",
+        max_uses: 2,
+      },
+      {
+        type: "code_execution_20260120",
+        name: "code_execution",
+      },
+      {
+        type: "tool_search_tool_regex_20251119",
+        name: "tool_search_tool_regex",
+      },
+      {
+        type: "tool_search_tool_bm25_20251119",
+        name: "tool_search_tool_bm25",
+      },
+      { type: "future_anthropic_server_tool", name: "future_tool" },
+    ];
+    writeFileSync(
+      join(stateDir, "sub2api.json"),
+      JSON.stringify({
+        "responses-tools": {
+          baseURL: "https://responses-tools.example",
+          token: "sk-responses-tools",
+          api: "openai-responses",
+          serverTools: { responses: responsesTools },
+        },
+        "anthropic-tools": {
+          baseURL: "https://anthropic-tools.example",
+          token: "sk-anthropic-tools",
+          api: "anthropic-messages",
+          serverTools: { anthropic: anthropicTools },
+        },
+      }),
+    );
+    vi.stubGlobal("fetch", async (input: URL | RequestInfo) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (url === "https://responses-tools.example/v1/models") {
+        return Response.json({ data: [{ id: "gpt-5.6" }] });
+      }
+      if (url === "https://anthropic-tools.example/v1/models") {
+        return Response.json({ data: [{ id: "claude-opus-4-6" }] });
+      }
+      return new Response(null, { status: 404 });
+    });
+
+    type BeforeRequestHandler = (
+      event: { payload: unknown },
+      context: {
+        model: Record<string, any>;
+        sessionManager: { getBranch(): unknown[] };
+      },
+    ) => unknown | Promise<unknown>;
+    const registrations: Registration[] = [];
+    const beforeRequestHandlers: BeforeRequestHandler[] = [];
+    await extension({
+      registerProvider(name: string, config: ProviderConfig) {
+        registrations.push({ name, config });
+      },
+      on(name: string, handler: BeforeRequestHandler) {
+        if (name === "before_provider_request") beforeRequestHandlers.push(handler);
+      },
+      registerCommand() {},
+    } as unknown as ExtensionAPI);
+
+    expect(beforeRequestHandlers).toHaveLength(3);
+    const applyRequestHooks = async (payload: unknown, model: Record<string, any>) => {
+      let currentPayload = payload;
+      for (const handler of beforeRequestHandlers) {
+        const nextPayload = await handler(
+          { payload: currentPayload },
+          { model, sessionManager: { getBranch: () => [] } },
+        );
+        if (nextPayload !== undefined) currentPayload = nextPayload;
+      }
+      return currentPayload;
+    };
+
+    const responsesRegistration = registrations.find(
+      (registration) => registration.name === "responses-tools",
+    )!;
+    const responsesModel = {
+      ...modelConfigs(responsesRegistration)[0]!,
+      provider: responsesRegistration.name,
+    };
+    const piFunction = {
+      type: "function",
+      name: "read",
+      description: "Read a file",
+      parameters: { type: "object", properties: {} },
+    };
+    const responsesPayload = {
+      model: responsesModel.id,
+      tools: [piFunction, { type: "web_search" }],
+      stream: true,
+    };
+    expect(await applyRequestHooks(responsesPayload, responsesModel)).toEqual({
+      ...responsesPayload,
+      tools: [piFunction, ...responsesTools],
+    });
+    expect(responsesPayload.tools).toEqual([piFunction, { type: "web_search" }]);
+
+    const anthropicRegistration = registrations.find(
+      (registration) => registration.name === "anthropic-tools",
+    )!;
+    const anthropicModel = {
+      ...modelConfigs(anthropicRegistration)[0]!,
+      provider: anthropicRegistration.name,
+    };
+    const anthropicPayload = {
+      model: anthropicModel.id,
+      tools: [
+        {
+          name: "read",
+          description: "Read a file",
+          input_schema: { type: "object", properties: {} },
+        },
+      ],
+    };
+    expect(await applyRequestHooks(anthropicPayload, anthropicModel)).toEqual({
+      ...anthropicPayload,
+      tools: [...anthropicPayload.tools, ...anthropicTools],
+    });
+    expect(anthropicPayload.tools).toHaveLength(1);
+
+    expect(
+      await applyRequestHooks(
+        { model: responsesModel.id, tools: [] },
+        { ...responsesModel, provider: "other-provider" },
+      ),
+    ).toEqual({ model: responsesModel.id, tools: [] });
+    expect(
+      await applyRequestHooks(
+        { model: responsesModel.id, tools: [] },
+        { ...responsesModel, api: "openai-completions" },
+      ),
+    ).toEqual({ model: responsesModel.id, tools: [] });
+  });
+
   it("publishes the Codex stream start before generation finishes", async () => {
     writeFileSync(
       join(stateDir, "sub2api.json"),
@@ -1644,6 +1813,135 @@ describe("sub2api provider extension", () => {
       expect.stringContaining("failed to fetch models"),
       expect.objectContaining({ message: expect.stringContaining("response exceeds") }),
     );
+  });
+
+  it.each([
+    {
+      label: "non-object container",
+      entry: { serverTools: true },
+      message: "serverTools must be an object",
+    },
+    {
+      label: "unknown protocol group",
+      entry: { serverTools: { chat: [] } },
+      message: "unsupported serverTools group",
+    },
+    {
+      label: "non-array protocol list",
+      entry: { serverTools: { responses: { type: "web_search" } } },
+      message: "serverTools.responses must be an array",
+    },
+    {
+      label: "missing tool type",
+      entry: { serverTools: { responses: [{}] } },
+      message: "must have a valid non-empty type",
+    },
+    {
+      label: "client-executed Responses function",
+      entry: { serverTools: { responses: [{ type: "function", name: "local" }] } },
+      message: "requires client-side handling",
+    },
+    {
+      label: "unrepresentable Responses image output",
+      entry: { serverTools: { responses: [{ type: "image_generation" }] } },
+      message: "output Pi cannot retain",
+    },
+    {
+      label: "file search without vector stores",
+      entry: { serverTools: { responses: [{ type: "file_search", vector_store_ids: [] }] } },
+      message: "requires non-empty vector_store_ids",
+    },
+    {
+      label: "code interpreter without a hosted container",
+      entry: { serverTools: { responses: [{ type: "code_interpreter" }] } },
+      message: "requires a container ID",
+    },
+    {
+      label: "shell with a local environment",
+      entry: {
+        serverTools: { responses: [{ type: "shell", environment: { type: "local" } }] },
+      },
+      message: "requires a hosted container environment",
+    },
+    {
+      label: "client-executed tool search",
+      entry: {
+        serverTools: { responses: [{ type: "tool_search", execution: "client" }] },
+      },
+      message: 'requires execution "server"',
+    },
+    {
+      label: "interactive MCP approval",
+      entry: {
+        serverTools: {
+          responses: [
+            {
+              type: "mcp",
+              server_label: "docs",
+              server_url: "https://mcp.example/sse",
+              authorization: "mcp-secret",
+              require_approval: "always",
+            },
+          ],
+        },
+      },
+      message: 'requires require_approval "never"',
+    },
+    {
+      label: "client-executed Anthropic bash",
+      entry: {
+        api: "anthropic-messages",
+        serverTools: { anthropic: [{ type: "bash_20250124", name: "bash" }] },
+      },
+      message: "requires client-side handling",
+    },
+    {
+      label: "invalid Anthropic built-in name",
+      entry: {
+        api: "anthropic-messages",
+        serverTools: {
+          anthropic: [{ type: "web_search_20250305", name: "wrong_name" }],
+        },
+      },
+      message: "requires name web_search",
+    },
+    {
+      label: "protocol mismatch",
+      entry: {
+        api: "anthropic-messages",
+        serverTools: { responses: [{ type: "web_search" }] },
+      },
+      message: "cannot use serverTools.responses",
+    },
+    {
+      label: "Completions protocol",
+      entry: {
+        api: "openai-completions",
+        serverTools: { responses: [{ type: "web_search" }] },
+      },
+      message: "cannot use serverTools with api openai-completions",
+    },
+  ])("rejects $label server tool configuration", async ({ entry, message }) => {
+    writeFileSync(
+      join(stateDir, "sub2api.json"),
+      JSON.stringify({
+        invalid: {
+          baseURL: "https://invalid-tools.example",
+          token: "config-secret",
+          ...entry,
+        },
+      }),
+    );
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    const registrations = await registerProviders();
+
+    expect(registrations).toHaveLength(0);
+    const error = consoleError.mock.calls[0]?.[1];
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain(message);
+    expect((error as Error).message).not.toContain("config-secret");
+    expect((error as Error).message).not.toContain("mcp-secret");
   });
 
   it("rejects an unsupported configured API before registering providers", async () => {

@@ -29,12 +29,23 @@ Create `~/.pi/agent/sub2api.json`:
   "my-relay": {
     "baseURL": "https://relay.example.com",
     "token": "replace-with-your-token",
-    "api": "anthropic-messages"
+    "api": "anthropic-messages",
+    "serverTools": {
+      "anthropic": [
+        {
+          "type": "web_search_20260209",
+          "name": "web_search"
+        }
+      ]
+    }
   },
   "another-relay": {
     "baseURL": "https://another.example.com/v1",
     "token": "replace-with-another-token",
-    "api": "openai-codex-responses"
+    "api": "openai-codex-responses",
+    "serverTools": {
+      "responses": [{ "type": "web_search" }]
+    }
   },
   "responses-relay": {
     "baseURL": "https://responses.example.com/v1",
@@ -54,6 +65,101 @@ Each top-level key becomes the provider name shown by pi. `baseURL` may include 
 The configuration directory follows `PI_CODING_AGENT_DIR` when that environment variable is set. Otherwise it defaults to `~/.pi/agent`.
 
 Restart pi after creating the file, or run `/reload` in an interactive session. Then use `/model` to select a discovered model under the configured provider.
+
+### Provider-hosted tools
+
+Use the optional `serverTools` object to append provider-executed tools to every matching model request:
+
+```json
+{
+  "openai-tools": {
+    "baseURL": "https://relay.example.com/v1",
+    "token": "replace-with-token",
+    "api": "openai-responses",
+    "serverTools": {
+      "responses": [
+        { "type": "web_search" },
+        {
+          "type": "file_search",
+          "vector_store_ids": ["vs_replace_me"]
+        },
+        {
+          "type": "code_interpreter",
+          "container": { "type": "auto" }
+        },
+        {
+          "type": "shell",
+          "environment": { "type": "container_auto" }
+        },
+        {
+          "type": "mcp",
+          "server_label": "docs",
+          "server_url": "https://mcp.example.com/sse",
+          "require_approval": "never"
+        },
+        {
+          "type": "tool_search",
+          "execution": "server",
+          "description": "Load hosted tools only when needed"
+        }
+      ]
+    }
+  },
+  "claude-tools": {
+    "baseURL": "https://relay.example.com/v1",
+    "token": "replace-with-token",
+    "api": "anthropic-messages",
+    "serverTools": {
+      "anthropic": [
+        {
+          "type": "web_search_20260209",
+          "name": "web_search",
+          "max_uses": 5
+        },
+        {
+          "type": "web_fetch_20260309",
+          "name": "web_fetch",
+          "max_uses": 3
+        },
+        {
+          "type": "code_execution_20260120",
+          "name": "code_execution"
+        },
+        {
+          "type": "tool_search_tool_regex_20251119",
+          "name": "tool_search_tool_regex"
+        }
+      ]
+    }
+  }
+}
+```
+
+`serverTools.responses` applies to `openai-responses` and `openai-codex-responses`. Supported provider-hosted families are:
+
+- Web search: `web_search`, `web_search_2025_08_26`, `web_search_preview`, and `web_search_preview_2025_03_11`.
+- File search: `file_search`; `vector_store_ids` must contain at least one ID.
+- Hosted Python: `code_interpreter`; set `container` to a container ID or `{ "type": "auto" }`.
+- Hosted shell: `shell`; `environment` must be `container_auto` or `container_reference`. Container skills and network policies may be nested in that environment.
+- Remote MCP/connectors: `mcp`; set `server_label`, either `server_url` or `connector_id`, and `require_approval` to `"never"`. Pi cannot answer an upstream MCP approval prompt.
+- Deferred hosted tool discovery: `tool_search`; `execution` must be `"server"`.
+
+`serverTools.anthropic` applies to `anthropic-messages`. Supported provider-hosted families are Anthropic's versioned `web_search_*`, `web_fetch_*`, `code_execution_*`, `tool_search_tool_regex*`, and `tool_search_tool_bm25*` definitions. Their required `name` is validated. The exact version must be supported by the selected model, relay, and upstream account.
+
+Definitions are appended verbatim after Pi's normal function tools; exact duplicates are not appended. The extension accepts unknown future tool types so new provider-hosted definitions do not require an extension release. Upstream schema, model eligibility, account permissions, billing, and regional restrictions still apply.
+
+This is intentionally not an `enable-tool` boolean: neither protocol defines a safe “enable every tool” request. File search needs vector-store IDs, MCP may need credentials, hosted containers have resource and network policy, and Anthropic tool versions are model-specific. Explicit definitions make those capabilities and costs reviewable.
+
+Safety and compatibility limits:
+
+- `openai-completions` has no provider-hosted tool injection.
+- Responses `function`, `custom`, `namespace`, `local_shell`, `apply_patch`, and computer-use tools require Pi-side execution and are rejected here. Pi already supplies its own function tools.
+- Responses `image_generation` is rejected because Pi's current Responses adapter cannot retain its image output.
+- Anthropic `bash_*`, `computer_*`, `memory_*`, and `text_editor_*` definitions require a client-side execution loop and are rejected.
+- Provider-specific call/result blocks and citation metadata are not persisted as Pi tool calls. The provider executes the configured tool inside the model request, and Pi retains the final assistant text. Generated files and other provider-only artifacts may therefore be unavailable.
+- MCP `authorization`, custom MCP headers, and other secrets are sent unchanged and stored as clear text in `sub2api.json`; protect the file accordingly.
+
+When `api` is fixed, only its matching `serverTools` group is accepted. An auto-routed relay may configure both groups; each discovered model receives only the group matching its selected API.
 
 ## Routing behavior
 

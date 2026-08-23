@@ -2,7 +2,10 @@
 
 ## Unreleased
 
+## 0.1.18 - 2026-08-24
+
 - Add `/toggle-fast` to send OpenAI requests with `service_tier: "priority"` and show `[FAST]` in the usage footer while enabled.
+- Add protocol-specific `serverTools.responses` and `serverTools.anthropic` configuration for provider-hosted tools, with request merging, compatibility checks, and explicit rejection of tools that require Pi-side execution or unsupported output handling.
 
 ## 0.1.17 - 2026-08-21
 
