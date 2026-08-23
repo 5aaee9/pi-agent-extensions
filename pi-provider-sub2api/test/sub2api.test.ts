@@ -1092,7 +1092,7 @@ describe("sub2api provider extension", () => {
     expect(codexApiMock.streamSimple).toHaveBeenCalledTimes(3);
   });
 
-  it("refreshes a dedicated final footer row across lifecycle events", async () => {
+  it("refreshes a dedicated final footer row and shows active mode badges", async () => {
     writeFileSync(
       join(stateDir, "sub2api.json"),
       JSON.stringify({
@@ -1187,6 +1187,10 @@ describe("sub2api provider extension", () => {
       "toggle-ultra",
       expect.objectContaining({ handler: expect.any(Function) }),
     );
+    expect(registerCommand).toHaveBeenCalledWith(
+      "toggle-fast",
+      expect.objectContaining({ handler: expect.any(Function) }),
+    );
 
     const footer = createFooterHarness(new Map([["mcp", "mcp connected"]]));
     const activeModel = { provider: "quota-relay", id: "grok-quota" };
@@ -1208,9 +1212,52 @@ describe("sub2api provider extension", () => {
 
     const toggleUltra = registerCommand.mock.calls.find(([name]) => name === "toggle-ultra")?.[1]
       .handler;
+    const toggleFast = registerCommand.mock.calls.find(([name]) => name === "toggle-fast")?.[1]
+      .handler;
+    const beforeProviderRequest = handlers.get("before_provider_request")!;
+    const fastModel = {
+      provider: "quota-relay",
+      id: "gpt-5.6",
+      api: "openai-codex-responses",
+    };
+    const fastContext = { ...context, model: fastModel };
+    const requestPayload = { model: fastModel.id, stream: true, service_tier: "default" };
+
     expect(toggleUltra).toBeTypeOf("function");
+    expect(toggleFast).toBeTypeOf("function");
+    expect(beforeProviderRequest({ payload: requestPayload }, fastContext)).toBeUndefined();
+
+    await toggleFast!("", context);
+    expect(footer.render().at(-1)).toBe("quota-relay · 5h 30% · d 10% [FAST]");
+    expect(beforeProviderRequest({ payload: requestPayload }, fastContext)).toEqual({
+      ...requestPayload,
+      service_tier: "priority",
+    });
+    expect(requestPayload.service_tier).toBe("default");
+    expect(
+      beforeProviderRequest(
+        { payload: { model: "claude-opus-4-6" } },
+        {
+          ...fastContext,
+          model: {
+            provider: "quota-relay",
+            id: "claude-opus-4-6",
+            api: "anthropic-messages",
+          },
+        },
+      ),
+    ).toBeUndefined();
+    expect(
+      beforeProviderRequest(
+        { payload: { model: fastModel.id } },
+        { ...fastContext, model: { ...fastModel, provider: "other" } },
+      ),
+    ).toBeUndefined();
+
     await toggleUltra!("", context);
     expect(setThinkingLevel).toHaveBeenCalledWith("max");
+    expect(footer.render().at(-1)).toBe("quota-relay · 5h 30% · d 10% [ULTRA ENABLED] [FAST]");
+    await toggleFast!("", context);
     expect(footer.render().at(-1)).toBe("quota-relay · 5h 30% · d 10% [ULTRA ENABLED]");
     await toggleUltra!("", context);
     expect(footer.render().at(-1)).toBe("quota-relay · 5h 30% · d 10%");

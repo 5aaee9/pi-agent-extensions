@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add `/toggle-fast` to send OpenAI requests with `service_tier: "priority"` and show `[FAST]` in the usage footer while enabled.
+
 ## 0.1.17 - 2026-08-21
 
 - Add `/toggle-ultra` to switch max-thinking requests between the upstream `max` and `ultra` efforts, and mark the enabled state in the usage footer.

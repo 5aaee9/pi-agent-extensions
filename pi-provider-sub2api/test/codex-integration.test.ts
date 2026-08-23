@@ -21,7 +21,7 @@ afterEach(() => {
 });
 
 describe("real Codex adapter integration", () => {
-  it("rewrites max to max by default and to ultra after /toggle-ultra", async () => {
+  it("rewrites ultra reasoning and Fast mode into the relayed request", async () => {
     writeFileSync(
       join(stateDir, "sub2api.json"),
       JSON.stringify({
@@ -59,14 +59,21 @@ describe("real Codex adapter integration", () => {
     });
     let providerConfig: ProviderConfig | undefined;
     let toggleUltra: ((args: string, ctx: any) => unknown) | undefined;
+    let toggleFast: ((args: string, ctx: any) => unknown) | undefined;
+    let beforeProviderRequest:
+      | ((event: { payload: unknown }, ctx: { model: Record<string, unknown> }) => unknown)
+      | undefined;
     const setThinkingLevel = vi.fn<() => void>();
     await extension({
       registerProvider(_name: string, config: ProviderConfig) {
         providerConfig = config;
       },
-      on() {},
+      on(name: string, handler: typeof beforeProviderRequest) {
+        if (name === "before_provider_request") beforeProviderRequest = handler;
+      },
       registerCommand(name: string, options: { handler: (args: string, ctx: any) => unknown }) {
         if (name === "toggle-ultra") toggleUltra = options.handler;
+        if (name === "toggle-fast") toggleFast = options.handler;
       },
       setThinkingLevel,
     } as unknown as ExtensionAPI);
@@ -107,11 +114,15 @@ describe("real Codex adapter integration", () => {
     };
 
     const events = [];
-    const stream = providerConfig!.streamSimple!(
-      { ...modelConfig, provider: "codex" } as never,
-      { messages: [] } as never,
-      { fetch: transportFetch, signal: controller.signal, reasoning: "max" },
-    );
+    const model = { ...modelConfig, provider: "codex" };
+    const applyProviderRequestHooks = (payload: unknown) =>
+      beforeProviderRequest?.({ payload }, { model });
+    const stream = providerConfig!.streamSimple!(model as never, { messages: [] } as never, {
+      fetch: transportFetch,
+      signal: controller.signal,
+      reasoning: "max",
+      onPayload: applyProviderRequestHooks,
+    });
     for await (const event of stream) events.push(event);
 
     expect(events.at(-1)).toMatchObject({ type: "error" });
@@ -124,18 +135,28 @@ describe("real Codex adapter integration", () => {
       model: "gpt-5.6",
       reasoning: { effort: "max" },
     });
+    expect(transportCalls[0]!.body).not.toHaveProperty("service_tier");
 
     expect(toggleUltra).toBeTypeOf("function");
-    await toggleUltra!("", { ui: { notify() {} }, model: { reasoning: true } });
+    expect(toggleFast).toBeTypeOf("function");
+    const commandContext = { ui: { notify() {} }, model: { reasoning: true } };
+    await toggleUltra!("", commandContext);
+    await toggleFast!("", commandContext);
     expect(setThinkingLevel).toHaveBeenCalledWith("max");
 
     controller = new AbortController();
     const ultraModelConfig = providerConfig?.models?.[0];
     expect(ultraModelConfig?.thinkingLevelMap).toMatchObject({ max: "ultra" });
+    const ultraModel = { ...ultraModelConfig, provider: "codex" };
     const ultraStream = providerConfig!.streamSimple!(
-      { ...ultraModelConfig, provider: "codex" } as never,
+      ultraModel as never,
       { messages: [] } as never,
-      { fetch: transportFetch, signal: controller.signal, reasoning: "max" },
+      {
+        fetch: transportFetch,
+        signal: controller.signal,
+        reasoning: "max",
+        onPayload: (payload) => beforeProviderRequest?.({ payload }, { model: ultraModel }),
+      },
     );
     for await (const event of ultraStream) events.push(event);
 
@@ -143,6 +164,7 @@ describe("real Codex adapter integration", () => {
     expect(transportCalls[1]!.body).toMatchObject({
       model: "gpt-5.6",
       reasoning: { effort: "ultra" },
+      service_tier: "priority",
     });
   });
 });

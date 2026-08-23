@@ -65,6 +65,11 @@ const SUPPORTED_APIS = [
   "openai-completions",
 ] as const;
 type SupportedApi = (typeof SUPPORTED_APIS)[number];
+const FAST_MODE_APIS = new Set<SupportedApi>([
+  "openai-codex-responses",
+  "openai-responses",
+  "openai-completions",
+]);
 
 // Models that support extended thinking / reasoning.
 const REASONING = /(claude|codex|gpt-5)/i;
@@ -839,6 +844,20 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : undefined;
+}
+
+function addFastServiceTier(payload: unknown, model: Model<any> | undefined) {
+  if (
+    !model ||
+    !relaysByProvider.has(model.provider) ||
+    !OPENAI.test(model.id) ||
+    !FAST_MODE_APIS.has(model.api as SupportedApi)
+  ) {
+    return undefined;
+  }
+  const request = asRecord(payload);
+  if (!request || request.model !== model.id) return undefined;
+  return { ...request, service_tier: "priority" };
 }
 
 function discardResponse(response: Response) {
@@ -1707,6 +1726,7 @@ function renderUsageFooter(
   theme: FooterTheme,
   usageLine: UsageFooterLine | undefined,
   ultraEnabled: boolean,
+  fastEnabled: boolean,
   width: number,
 ) {
   let cwd = formatFooterCwd(ctx.cwd, homedir());
@@ -1727,7 +1747,8 @@ function renderUsageFooter(
     lines.push(truncateToWidth(otherStatuses.join(" "), width, theme.fg("dim", "...")));
   }
   if (usageLine) {
-    const text = ultraEnabled ? `${usageLine.text} [ULTRA ENABLED]` : usageLine.text;
+    let text = ultraEnabled ? `${usageLine.text} [ULTRA ENABLED]` : usageLine.text;
+    if (fastEnabled) text += " [FAST]";
     lines.push(theme.fg(usageLine.color, truncateToWidth(text, width, "...")));
   }
   return lines;
@@ -1792,6 +1813,7 @@ export default async function (pi: ExtensionAPI) {
   let usageFooterLine: UsageFooterLine | undefined;
   let requestFooterRender: (() => void) | undefined;
   let ultraEnabled = false;
+  let fastEnabled = false;
   const setUsageLine = (
     ctx: ExtensionContext,
     provider: string,
@@ -1827,7 +1849,15 @@ export default async function (pi: ExtensionAPI) {
         },
         invalidate() {},
         render: (width: number) =>
-          renderUsageFooter(ctx, footerData, theme, usageFooterLine, ultraEnabled, width),
+          renderUsageFooter(
+            ctx,
+            footerData,
+            theme,
+            usageFooterLine,
+            ultraEnabled,
+            fastEnabled,
+            width,
+          ),
       };
     });
   };
@@ -1936,6 +1966,20 @@ export default async function (pi: ExtensionAPI) {
       requestFooterRender?.();
       ctx.ui.notify(ultraEnabled ? "Ultra reasoning enabled" : "Ultra reasoning disabled", "info");
     },
+  });
+
+  pi.registerCommand("toggle-fast", {
+    description: "Toggle OpenAI priority service tier for faster responses",
+    handler: async (_args, ctx) => {
+      fastEnabled = !fastEnabled;
+      requestFooterRender?.();
+      ctx.ui.notify(fastEnabled ? "Fast mode enabled" : "Fast mode disabled", "info");
+    },
+  });
+
+  pi.on("before_provider_request", (event, ctx) => {
+    if (!fastEnabled) return;
+    return addFastServiceTier(event.payload, ctx.model);
   });
 
   const syncRelayProviderPricing = (relay: RelayConfig) => {
