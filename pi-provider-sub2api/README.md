@@ -249,11 +249,11 @@ npm run pack:sub2api
 
 ## Release checklist
 
-Releases use npm trusted publishing through [`.github/workflows/publish.yml`](https://github.com/5aaee9/pi-agent-extensions/blob/main/.github/workflows/publish.yml); no long-lived npm token is stored in GitHub.
+Releases use npm trusted publishing through [`.github/workflows/publish.yml`](https://github.com/5aaee9/pi-agent-extensions/blob/main/.github/workflows/publish.yml); no long-lived npm token is stored in GitHub. A release run checks every workspace and publishes each local package version that does not already exist on npm, so `pi-provider-sub2api` and `pi-continue` can ship together or independently from the same workflow.
 
 ### Trusted publisher setup
 
-The npm package's GitHub Actions trusted publisher is configured with:
+Each npm package's GitHub Actions trusted publisher is configured with:
 
 - Organization or user: `5aaee9`
 - Repository: `pi-agent-extensions`
@@ -262,13 +262,13 @@ The npm package's GitHub Actions trusted publisher is configured with:
 
 For each release:
 
-1. Update the child package version and `CHANGELOG.md`.
-2. Run `npm run check` and inspect `npm run pack:sub2api`.
+1. Update the version and `CHANGELOG.md` for each package being released.
+2. Run `npm run check` and inspect the corresponding `npm run pack:*` commands.
 3. Commit and push the release commit to `main`.
-4. Create and push a matching `v<version>` tag, such as `v0.1.2`.
-5. Confirm the **Publish Package** workflow completed, then create the matching GitHub release.
+4. Create and push the next repository `v*` release tag.
+5. Confirm the **Publish Packages** workflow completed, then create the matching GitHub release.
 
-The workflow requires the tag to exactly match the package version and publishes from a GitHub-hosted runner using npm's short-lived OIDC credentials.
+The workflow fails when every local workspace version is already published. Otherwise it skips existing versions and publishes only unpublished ones from a GitHub-hosted runner using npm's short-lived OIDC credentials.
 
 ## Acknowledgements
 

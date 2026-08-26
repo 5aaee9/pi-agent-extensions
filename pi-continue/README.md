@@ -37,6 +37,10 @@ npm install
 npm run check --workspace @indexyz/pi-continue
 ```
 
+## Release
+
+The repository's `v*` tag workflow checks all workspaces and publishes every local version that is not already on npm. Configure `@indexyz/pi-continue` as an npm trusted publisher for `5aaee9/pi-agent-extensions` and `.github/workflows/publish.yml`; the workflow uses short-lived OIDC credentials instead of a stored npm token.
+
 ## License
 
 MIT
