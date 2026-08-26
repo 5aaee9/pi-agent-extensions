@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.20 - 2026-08-27
+
+- Retry interrupted or failed turns directly without appending a synthetic user prompt.
+
 ## 0.1.19 - 2026-08-26
 
 - Allow `/continue` to resume provider failures, including rate-limit errors, with the currently selected model.

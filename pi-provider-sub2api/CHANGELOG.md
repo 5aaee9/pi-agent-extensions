@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.1.20 - 2026-08-27
+
+- Synchronize the package version with `@indexyz/pi-continue` for coordinated workspace releases.
+
 ## 0.1.19 - 2026-08-26
 
 - Synchronize the package version with `@indexyz/pi-continue` for coordinated workspace releases.
