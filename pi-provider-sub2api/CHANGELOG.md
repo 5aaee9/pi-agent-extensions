@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.1.19 - 2026-08-26
+
+- Synchronize the package version with `@indexyz/pi-continue` for coordinated workspace releases.
+
 ## 0.1.18 - 2026-08-24
 
 - Add `/toggle-fast` to send OpenAI requests with `service_tier: "priority"` and show `[FAST]` in the usage footer while enabled.

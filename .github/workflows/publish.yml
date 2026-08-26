@@ -43,7 +43,16 @@ jobs:
             "pi-provider-sub2api"
             "pi-continue"
           )
-          published_count=0
+          release_version="${RELEASE_TAG#v}"
+
+          if [ -z "$release_version" ] || [ "$release_version" = "$RELEASE_TAG" ]; then
+            echo "Invalid release tag: $RELEASE_TAG" >&2
+            exit 1
+          fi
+
+          npm run check:versions -- "$release_version"
+
+          publish_directories=()
 
           for directory in "${package_directories[@]}"; do
             package_name="$(node -p "require('./$directory/package.json').name")"
@@ -65,11 +74,15 @@ jobs:
             fi
 
             rm -f "$view_stdout" "$view_stderr"
-            npm publish --workspace "$package_name" --access public
-            published_count=$((published_count + 1))
+            publish_directories+=("$directory")
           done
 
-          if [ "$published_count" -eq 0 ]; then
+          if [ "${#publish_directories[@]}" -eq 0 ]; then
             echo "Tag $RELEASE_TAG has no unpublished package versions" >&2
             exit 1
           fi
+
+          for directory in "${publish_directories[@]}"; do
+            package_name="$(node -p "require('./$directory/package.json').name")"
+            npm publish --workspace "$package_name" --access public
+          done

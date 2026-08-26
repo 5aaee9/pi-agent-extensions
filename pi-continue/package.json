@@ -1,7 +1,7 @@
 {
   "name": "@indexyz/pi-continue",
-  "version": "0.1.0",
-  "description": "Resume interrupted pi agent work with the currently selected model",
+  "version": "0.1.19",
+  "description": "Resume interrupted or failed pi agent work with the currently selected model",
   "keywords": [
     "continue",
     "llm",
