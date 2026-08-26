@@ -1,7 +1,6 @@
 import type { ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent";
 
-export const CONTINUATION_PROMPT =
-  "Continue the previously interrupted or failed task using the current model. Review the conversation and current workspace state, determine what completed before the interruption or failure, and resume from the first unfinished step. Verify state before repeating any unfinished tool action, do not redo completed work, and finish the original request.";
+const CONTINUATION_TRIGGER_TYPE = "pi-continue:retry";
 
 export interface InterruptedTurn {
   entryId: string;
@@ -16,6 +15,7 @@ export function findInterruptedTurn(entries: readonly SessionEntry[]): Interrupt
     if (entry.type !== "message") continue;
 
     const message = entry.message;
+    if (message.role === "custom" && message.customType === CONTINUATION_TRIGGER_TYPE) continue;
     if (
       message.role !== "assistant" ||
       (message.stopReason !== "aborted" && message.stopReason !== "error")
@@ -34,8 +34,34 @@ export function findInterruptedTurn(entries: readonly SessionEntry[]): Interrupt
 }
 
 export default function piContinue(pi: ExtensionAPI) {
+  // sendMessage() is the public extension seam for starting a turn without a user message.
+  // Remove its hidden marker and the paired incomplete assistant response before every LLM call,
+  // leaving the original user message or tool result as the retry boundary.
+  pi.on("context", (event) => {
+    const messages: typeof event.messages = [];
+    let changed = false;
+
+    for (const message of event.messages) {
+      if (message.role === "custom" && message.customType === CONTINUATION_TRIGGER_TYPE) {
+        const previous = messages[messages.length - 1];
+        if (
+          previous?.role === "assistant" &&
+          (previous.stopReason === "aborted" || previous.stopReason === "error")
+        ) {
+          messages.pop();
+        }
+        changed = true;
+        continue;
+      }
+
+      messages.push(message);
+    }
+
+    return changed ? { messages } : undefined;
+  });
+
   pi.registerCommand("continue", {
-    description: "Resume the interrupted or failed turn with the currently selected model",
+    description: "Retry the interrupted or failed turn with the currently selected model",
     handler: async (args, ctx) => {
       if (args.trim()) {
         ctx.ui.notify("Usage: /continue", "warning");
@@ -63,8 +89,16 @@ export default function piContinue(pi: ExtensionAPI) {
           ? currentModel
           : `${currentModel} (previously ${interruptedModel})`;
 
-      ctx.ui.notify(`Continuing interrupted or failed work with ${modelNote}`, "info");
-      pi.sendUserMessage(CONTINUATION_PROMPT);
+      ctx.ui.notify(`Retrying interrupted or failed work with ${modelNote}`, "info");
+      // The context hook removes this marker before it reaches the model.
+      pi.sendMessage(
+        {
+          customType: CONTINUATION_TRIGGER_TYPE,
+          content: [],
+          display: false,
+        },
+        { triggerTurn: true },
+      );
     },
   });
 }
