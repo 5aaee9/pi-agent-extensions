@@ -4,12 +4,6 @@ on:
   push:
     tags:
       - "v*"
-  workflow_dispatch:
-    inputs:
-      release_tag:
-        description: Release tag matching the synchronized package version
-        required: true
-        type: string
 
 permissions:
   contents: read
@@ -41,7 +35,7 @@ jobs:
 
       - name: Publish unpublished package versions
         env:
-          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+          RELEASE_TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
 
