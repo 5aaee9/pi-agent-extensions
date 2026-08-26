@@ -37,7 +37,7 @@ function userEntry(id: string, text = "Do the task"): SessionEntry {
 
 function assistantEntry(
   id: string,
-  stopReason: "stop" | "aborted",
+  stopReason: "stop" | "aborted" | "error",
   provider = "anthropic",
   model = "claude-sonnet",
 ): SessionEntry {
@@ -54,6 +54,7 @@ function assistantEntry(
       model,
       usage,
       stopReason,
+      ...(stopReason === "error" ? { errorMessage: "429: Provider returned error" } : {}),
       timestamp: 2,
     },
   };
@@ -159,7 +160,28 @@ describe("/continue", () => {
     expect(waitForIdle).toHaveBeenCalledOnce();
     expect(sendUserMessage).toHaveBeenCalledExactlyOnceWith(CONTINUATION_PROMPT);
     expect(notify).toHaveBeenCalledWith(
-      "Continuing interrupted work with openai/gpt-5.4 (interrupted on anthropic/claude-sonnet)",
+      "Continuing interrupted or failed work with openai/gpt-5.4 (previously anthropic/claude-sonnet)",
+      "info",
+    );
+  });
+
+  it("continues a provider error with the newly selected model", async () => {
+    const { command, sendUserMessage } = registerExtension();
+    const entries = [
+      userEntry("user"),
+      assistantEntry("rate-limited", "error", "openrouter", "stealth/ox-alpha"),
+      modelChangeEntry("model", "anthropic", "claude-sonnet"),
+    ];
+    const { ctx, notify } = commandContext(() => entries, {
+      provider: "anthropic",
+      id: "claude-sonnet",
+    });
+
+    await command.handler("", ctx);
+
+    expect(sendUserMessage).toHaveBeenCalledExactlyOnceWith(CONTINUATION_PROMPT);
+    expect(notify).toHaveBeenCalledWith(
+      "Continuing interrupted or failed work with anthropic/claude-sonnet (previously openrouter/stealth/ox-alpha)",
       "info",
     );
   });
@@ -200,7 +222,7 @@ describe("/continue", () => {
 
     await command.handler("", ctx);
 
-    expect(notify).toHaveBeenCalledWith("No interrupted turn to continue", "warning");
+    expect(notify).toHaveBeenCalledWith("No interrupted or failed turn to continue", "warning");
     expect(sendUserMessage).not.toHaveBeenCalled();
   });
 
