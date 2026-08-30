@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.21 - 2026-08-30
+
 - Migrate Codex native compaction from the retired unary `POST /v1/responses/compact` endpoint to Remote Compaction V2 over streamed `POST /v1/responses`, validate the compaction-item/completion event sequence, reconstruct a bounded replay window around the returned opaque item, and keep existing version-1 checkpoints replayable.
 
 ## 0.1.20 - 2026-08-27
