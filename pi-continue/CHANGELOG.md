@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.22 - 2026-08-30
+
+- Synchronize the package version with `@indexyz/pi-provider-sub2api` for coordinated workspace releases.
+
 ## 0.1.21 - 2026-08-30
 
 - Synchronize the package version with `@indexyz/pi-provider-sub2api` for coordinated workspace releases.

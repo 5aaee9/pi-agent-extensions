@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.22 - 2026-08-30
+
 - Retry transient Codex native compaction failures five times with one- through sixteen-second exponential backoff before falling back to Pi compaction.
 
 ## 0.1.21 - 2026-08-30
