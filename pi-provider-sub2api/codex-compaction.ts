@@ -64,14 +64,21 @@ async function loadPrivateRuntime(): Promise<PrivateRuntime | undefined> {
 const privateRuntime = await loadPrivateRuntime();
 
 const NATIVE_COMPACTION_KIND = "sub2api-codex-native-compaction";
-const NATIVE_COMPACTION_VERSION = 1;
+const LEGACY_NATIVE_COMPACTION_VERSION = 1;
+const NATIVE_COMPACTION_VERSION = 2;
 const NATIVE_COMPACTION_SUMMARY = "[OpenAI native compaction checkpoint]";
 const COMPACTION_TIMEOUT_MS = 180_000;
 const MAX_COMPACTION_RESPONSE_BYTES = 32 * 1024 * 1024;
+const MAX_RETAINED_COMPACTION_TOKENS = 64_000;
+const MAX_RETAINED_COMPACTION_BYTES = 16 * 1024 * 1024;
+const APPROXIMATE_CHARS_PER_TOKEN = 4;
+const ESTIMATED_IMAGE_TOKENS = 1_200;
+const UTF8_ENCODER = new TextEncoder();
 const CODEX_TOOL_CALL_PROVIDERS = new Set(["openai", "openai-codex", "opencode"]);
 // OpenAI documents `compaction`; some Codex relays emit `compaction_summary`.
 // Both are opaque replay items and must be persisted without normalization.
 const COMPACTION_ITEM_TYPES = new Set(["compaction", "compaction_summary"]);
+const RETAINED_COMPACTION_MESSAGE_ROLES = new Set(["user", "developer", "system"]);
 
 export interface CodexCompactionRelay {
   provider: string;
@@ -81,10 +88,13 @@ export interface CodexCompactionRelay {
 
 type JsonObject = Record<string, unknown>;
 type ResponseItem = JsonObject;
+type NativeCodexCompactionVersion =
+  | typeof LEGACY_NATIVE_COMPACTION_VERSION
+  | typeof NATIVE_COMPACTION_VERSION;
 
 export interface NativeCodexCompactionDetails {
   kind: typeof NATIVE_COMPACTION_KIND;
-  version: typeof NATIVE_COMPACTION_VERSION;
+  version: NativeCodexCompactionVersion;
   provider: string;
   api: "openai-codex-responses";
   model: string;
@@ -124,8 +134,9 @@ function isCompactionItem(value: unknown): value is ResponseItem {
     isJsonObject(value) &&
     typeof value.type === "string" &&
     COMPACTION_ITEM_TYPES.has(value.type) &&
-    typeof value.id === "string" &&
-    value.id.length > 0 &&
+    (value.id === undefined ||
+      value.id === null ||
+      (typeof value.id === "string" && value.id.length > 0)) &&
     typeof value.encrypted_content === "string" &&
     value.encrypted_content.length > 0
   );
@@ -155,7 +166,25 @@ function isCompactedUserMessage(value: unknown) {
   );
 }
 
-function parseCompactedWindow(value: unknown): ResponseItem[] | undefined {
+function isRetainedV2Message(value: unknown) {
+  if (
+    !isJsonObject(value) ||
+    (value.type !== undefined && value.type !== "message") ||
+    typeof value.role !== "string" ||
+    !RETAINED_COMPACTION_MESSAGE_ROLES.has(value.role)
+  ) {
+    return false;
+  }
+  return (
+    typeof value.content === "string" ||
+    (Array.isArray(value.content) && value.content.every(isCompactedMessageContent))
+  );
+}
+
+function parseCompactedWindow(
+  value: unknown,
+  version: NativeCodexCompactionVersion,
+): ResponseItem[] | undefined {
   if (!Array.isArray(value) || value.length === 0 || !value.every(isJsonObject)) return undefined;
   const compactionIndexes = value.flatMap((item, index) =>
     isJsonObject(item) && typeof item.type === "string" && COMPACTION_ITEM_TYPES.has(item.type)
@@ -166,13 +195,61 @@ function parseCompactedWindow(value: unknown): ResponseItem[] | undefined {
     return undefined;
   }
   if (!isCompactionItem(value.at(-1))) return undefined;
-  if (value.slice(0, -1).some((item) => !isCompactedUserMessage(item))) return undefined;
+  const isRetainedMessage =
+    version === LEGACY_NATIVE_COMPACTION_VERSION ? isCompactedUserMessage : isRetainedV2Message;
+  if (value.slice(0, -1).some((item) => !isRetainedMessage(item))) return undefined;
   return structuredClone(value) as ResponseItem[];
+}
+
+function estimateRetainedMessageTokens(item: ResponseItem) {
+  const content = item.content;
+  if (typeof content === "string") return Math.ceil(content.length / APPROXIMATE_CHARS_PER_TOKEN);
+  if (!Array.isArray(content)) return 0;
+  return content.reduce((tokens, part) => {
+    if (!isJsonObject(part)) return tokens;
+    if (part.type === "input_text" && typeof part.text === "string") {
+      return tokens + Math.ceil(part.text.length / APPROXIMATE_CHARS_PER_TOKEN);
+    }
+    return part.type === "input_image" ? tokens + ESTIMATED_IMAGE_TOKENS : tokens;
+  }, 0);
+}
+
+function retainedMessageBytes(item: ResponseItem) {
+  return UTF8_ENCODER.encode(JSON.stringify(item)).byteLength;
+}
+
+function selectRetainedV2Messages(input: ResponseItem[]) {
+  let remainingTokens = MAX_RETAINED_COMPACTION_TOKENS;
+  let remainingBytes = MAX_RETAINED_COMPACTION_BYTES;
+  const retainedReversed: ResponseItem[] = [];
+  const candidates = input.filter(isRetainedV2Message);
+  for (let index = candidates.length - 1; index >= 0; index -= 1) {
+    const item = candidates[index]!;
+    const tokens = estimateRetainedMessageTokens(item);
+    const bytes = retainedMessageBytes(item);
+    if (tokens > remainingTokens || bytes > remainingBytes) break;
+    retainedReversed.push(item);
+    remainingTokens -= tokens;
+    remainingBytes -= bytes;
+  }
+  retainedReversed.reverse();
+  return retainedReversed;
+}
+
+function buildV2CompactedWindow(input: ResponseItem[], compactionItem: ResponseItem) {
+  return parseCompactedWindow(
+    [...selectRetainedV2Messages(input), compactionItem],
+    NATIVE_COMPACTION_VERSION,
+  );
 }
 
 function parseNativeCompactionDetails(value: unknown): NativeCodexCompactionDetails | undefined {
   if (!isJsonObject(value)) return undefined;
-  if (value.kind !== NATIVE_COMPACTION_KIND || value.version !== NATIVE_COMPACTION_VERSION) {
+  if (
+    value.kind !== NATIVE_COMPACTION_KIND ||
+    (value.version !== LEGACY_NATIVE_COMPACTION_VERSION &&
+      value.version !== NATIVE_COMPACTION_VERSION)
+  ) {
     return undefined;
   }
   if (
@@ -185,11 +262,11 @@ function parseNativeCompactionDetails(value: unknown): NativeCodexCompactionDeta
   ) {
     return undefined;
   }
-  const compactedWindow = parseCompactedWindow(value.compactedWindow);
+  const compactedWindow = parseCompactedWindow(value.compactedWindow, value.version);
   if (!compactedWindow) return undefined;
   return {
     kind: NATIVE_COMPACTION_KIND,
-    version: NATIVE_COMPACTION_VERSION,
+    version: value.version,
     provider: value.provider,
     api: "openai-codex-responses",
     model: value.model,
@@ -402,6 +479,98 @@ function normalizeCreatedAt(value: unknown) {
   return new Date().toISOString();
 }
 
+function parseSseEvents(text: string) {
+  const events: JsonObject[] = [];
+  let dataLines: string[] = [];
+  const flush = () => {
+    if (dataLines.length === 0) return;
+    const data = dataLines.join("\n").trim();
+    dataLines = [];
+    if (!data || data === "[DONE]") return;
+    let event: unknown;
+    try {
+      event = JSON.parse(data);
+    } catch {
+      throw new Error("remote compaction stream returned invalid JSON");
+    }
+    if (!isJsonObject(event)) {
+      throw new Error("remote compaction stream returned an invalid event");
+    }
+    events.push(event);
+  };
+
+  for (const line of text.split(/\r\n|\r|\n/)) {
+    if (line === "") {
+      flush();
+      continue;
+    }
+    if (!line.startsWith("data:")) continue;
+    const data = line.slice("data:".length);
+    dataLines.push(data.startsWith(" ") ? data.slice(1) : data);
+  }
+  flush();
+  return events;
+}
+
+function remoteCompactionFailureMessage(event: JsonObject) {
+  const response = isJsonObject(event.response) ? event.response : undefined;
+  const error = response?.error ?? event.error;
+  if (typeof error === "string" && error.trim()) return error.trim();
+  if (isJsonObject(error) && typeof error.message === "string" && error.message.trim()) {
+    return error.message.trim();
+  }
+  if (typeof event.message === "string" && event.message.trim()) return event.message.trim();
+  return "upstream response failed";
+}
+
+function parseRemoteCompactionStream(text: string) {
+  let completedResponse: JsonObject | undefined;
+  let outputItemCount = 0;
+  const compactionItems: ResponseItem[] = [];
+
+  for (const event of parseSseEvents(text)) {
+    if (completedResponse) {
+      throw new Error("remote compaction stream returned an event after response.completed");
+    }
+    if (event.type === "error" || event.type === "response.failed") {
+      throw new Error(`remote compaction failed: ${remoteCompactionFailureMessage(event)}`);
+    }
+    if (event.type === "response.output_item.done") {
+      outputItemCount += 1;
+      if (isCompactionItem(event.item)) compactionItems.push(structuredClone(event.item));
+      continue;
+    }
+    if (event.type === "response.completed") {
+      if (completedResponse || !isJsonObject(event.response)) {
+        throw new Error("remote compaction stream returned an invalid completed event");
+      }
+      completedResponse = event.response;
+    }
+  }
+
+  if (!completedResponse) {
+    throw new Error("remote compaction stream closed before response.completed");
+  }
+  if (compactionItems.length !== 1) {
+    throw new Error(
+      `remote compaction expected exactly one compaction output item, got ${compactionItems.length} from ${outputItemCount} output items`,
+    );
+  }
+  if (typeof completedResponse.id !== "string" || completedResponse.id.length === 0) {
+    throw new Error("remote compaction completed without a response id");
+  }
+  if (completedResponse.usage !== undefined && !isCompactionUsage(completedResponse.usage)) {
+    throw new Error("remote compaction completed with invalid usage");
+  }
+
+  return {
+    compactionItem: compactionItems[0]!,
+    responseId: completedResponse.id,
+    createdAt: normalizeCreatedAt(completedResponse.created_at),
+    usage: completedResponse.usage,
+  };
+}
+
 async function compactRemotely(params: {
   relay: CodexCompactionRelay;
   model: Model<any>;
@@ -410,48 +579,40 @@ async function compactRemotely(params: {
   signal: AbortSignal;
 }) {
   const signal = AbortSignal.any([params.signal, AbortSignal.timeout(COMPACTION_TIMEOUT_MS)]);
-  const response = await fetch(`${normalizeUrl(params.relay.responsesUrl)}/compact`, {
+  const response = await fetch(normalizeUrl(params.relay.responsesUrl), {
     method: "POST",
     headers: {
-      Accept: "application/json",
+      Accept: "text/event-stream",
       Authorization: `Bearer ${params.relay.apiKey}`,
       "Content-Type": "application/json",
+      "x-codex-beta-features": "remote_compaction_v2",
     },
     body: JSON.stringify({
       model: params.model.id,
-      input: params.input,
+      input: [...params.input, { type: "compaction_trigger" }],
       instructions: params.instructions,
+      stream: true,
+      store: false,
     }),
     redirect: "error",
     signal,
   });
   const text = await readBoundedResponse(response);
-  if (!response.ok) throw new Error(`compact endpoint returned HTTP ${response.status}`);
+  if (!response.ok) throw new Error(`remote compaction returned HTTP ${response.status}`);
+  const contentType = response.headers.get("content-type")?.toLowerCase();
+  if (contentType && !contentType.includes("text/event-stream")) {
+    throw new Error("remote compaction returned a non-SSE response");
+  }
 
-  let payload: unknown;
-  try {
-    payload = JSON.parse(text);
-  } catch {
-    throw new Error("compact endpoint returned invalid JSON");
-  }
-  if (
-    !isJsonObject(payload) ||
-    payload.object !== "response.compaction" ||
-    typeof payload.id !== "string" ||
-    payload.id.length === 0 ||
-    !isNonNegativeNumber(payload.created_at) ||
-    !isCompactionUsage(payload.usage)
-  ) {
-    throw new Error("compact endpoint returned an invalid response object");
-  }
-  const compactedWindow = parseCompactedWindow(payload.output);
-  if (!compactedWindow) throw new Error("compact endpoint returned an invalid compacted window");
+  const parsed = parseRemoteCompactionStream(text);
+  const compactedWindow = buildV2CompactedWindow(params.input, parsed.compactionItem);
+  if (!compactedWindow) throw new Error("remote compaction produced an invalid replay window");
 
   return {
     compactedWindow,
-    compactResponseId: payload.id,
-    createdAt: normalizeCreatedAt(payload.created_at),
-    usage: parseCompactionUsage(params.model, payload.usage),
+    compactResponseId: parsed.responseId,
+    createdAt: parsed.createdAt,
+    usage: parseCompactionUsage(params.model, parsed.usage),
   };
 }
 

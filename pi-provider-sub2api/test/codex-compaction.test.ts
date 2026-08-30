@@ -159,7 +159,7 @@ function compactEvent(branchEntries: SessionEntry[], signal = new AbortControlle
   };
 }
 
-function compactResponse(encryptedContent: string, itemType = "compaction") {
+function legacyCompactResponse(encryptedContent: string, itemType = "compaction") {
   return {
     id: `cmp-response-${encryptedContent}`,
     object: "response.compaction",
@@ -184,12 +184,34 @@ function compactResponse(encryptedContent: string, itemType = "compaction") {
   };
 }
 
+function remoteCompactionResponse(encryptedContent: string, itemType = "compaction") {
+  const item = { id: null, type: itemType, encrypted_content: encryptedContent };
+  const response = {
+    id: `cmp-response-${encryptedContent}`,
+    object: "response",
+    status: "completed",
+    created_at: 1_800_000_000,
+    output: [item],
+    usage: legacyCompactResponse(encryptedContent, itemType).usage,
+  };
+  const events = [
+    { type: "response.created", response: { ...response, status: "in_progress", output: [] } },
+    { type: "response.output_item.added", output_index: 0, item },
+    { type: "response.output_item.done", output_index: 0, item },
+    { type: "response.completed", response },
+  ];
+  return new Response(
+    events.map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(""),
+    { headers: { "Content-Type": "text/event-stream" } },
+  );
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
 
-describe("Codex standalone compaction", () => {
+describe("Codex remote compaction v2", () => {
   it("compacts the current session and replaces Pi replay with the returned native window", async () => {
     const user = userEntry("user-1", "Remember BLUE-42.");
     const assistant = assistantEntry("assistant-1", "Noted.", user.id);
@@ -198,7 +220,7 @@ describe("Codex standalone compaction", () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     vi.stubGlobal("fetch", async (input: URL | RequestInfo, init?: RequestInit) => {
       calls.push({ url: String(input), init });
-      return Response.json(compactResponse("opaque-1"));
+      return remoteCompactionResponse("opaque-1");
     });
 
     const result = await harness.handlers.get("session_before_compact")!(
@@ -207,21 +229,23 @@ describe("Codex standalone compaction", () => {
     );
 
     expect(calls).toHaveLength(1);
-    expect(calls[0]!.url).toBe("https://relay.example/v1/responses/compact");
+    expect(calls[0]!.url).toBe("https://relay.example/v1/responses");
     expect(calls[0]!.init?.method).toBe("POST");
     expect(calls[0]!.init?.redirect).toBe("error");
     expect(calls[0]!.init?.signal).toBeInstanceOf(AbortSignal);
     const headers = new Headers(calls[0]!.init?.headers);
     expect(headers.get("authorization")).toBe("Bearer relay-token");
     expect(headers.get("chatgpt-account-id")).toBeNull();
-    expect(headers.get("accept")).toBe("application/json");
+    expect(headers.get("accept")).toBe("text/event-stream");
+    expect(headers.get("x-codex-beta-features")).toBe("remote_compaction_v2");
 
     const body = JSON.parse(String(calls[0]!.init?.body));
     expect(body).toMatchObject({ model: model.id });
     expect(body.instructions).toContain("You are Codex.");
     expect(body.instructions).toContain("Preserve implementation details.");
-    expect(body).not.toHaveProperty("stream");
-    expect(body).not.toHaveProperty("store");
+    expect(body.stream).toBe(true);
+    expect(body.store).toBe(false);
+    expect(body.input.at(-1)).toEqual({ type: "compaction_trigger" });
     expect(JSON.stringify(body.input)).toContain("Remember BLUE-42.");
     expect(JSON.stringify(body.input)).toContain("Noted.");
 
@@ -239,7 +263,7 @@ describe("Codex standalone compaction", () => {
       },
       details: {
         kind: "sub2api-codex-native-compaction",
-        version: 1,
+        version: 2,
         provider: relay.provider,
         api: "openai-codex-responses",
         model: model.id,
@@ -303,7 +327,7 @@ describe("Codex standalone compaction", () => {
     const user = userEntry("user-1", "Remember BLUE-42.");
     const harness = createHarness([user]);
     vi.stubGlobal("fetch", async () => {
-      return Response.json(compactResponse("relay-opaque", "compaction_summary"));
+      return remoteCompactionResponse("relay-opaque", "compaction_summary");
     });
 
     const result = await harness.handlers.get("session_before_compact")!(
@@ -327,7 +351,7 @@ describe("Codex standalone compaction", () => {
       api: "openai-codex-responses",
       model: model.id,
       responsesUrl: relay.responsesUrl,
-      compactedWindow: compactResponse("opaque-1", "compaction_summary").output,
+      compactedWindow: legacyCompactResponse("opaque-1", "compaction_summary").output,
       compactResponseId: "first",
       createdAt: new Date().toISOString(),
     };
@@ -338,7 +362,7 @@ describe("Codex standalone compaction", () => {
     let requestBody: any;
     vi.stubGlobal("fetch", async (_input: URL | RequestInfo, init?: RequestInit) => {
       requestBody = JSON.parse(String(init?.body));
-      return Response.json(compactResponse("opaque-2", "compaction_summary"));
+      return remoteCompactionResponse("opaque-2", "compaction_summary");
     });
 
     const result = await harness.handlers.get("session_before_compact")!(
@@ -351,9 +375,93 @@ describe("Codex standalone compaction", () => {
     expect(
       requestBody.input.filter((item: any) => item.type === "compaction_summary"),
     ).toHaveLength(1);
+    expect(requestBody.input.at(-1)).toEqual({ type: "compaction_trigger" });
     expect(result.compaction.details.compactedWindow.at(-1)).toMatchObject({
       type: "compaction_summary",
       encrypted_content: "opaque-2",
+    });
+    expect(
+      result.compaction.details.compactedWindow.filter(
+        (item: any) => item.type === "compaction_summary",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("retains recent user messages within the v2 replay budget", async () => {
+    const oldUser = userEntry("user-old", `OLD-OVERSIZED-${"x".repeat(300_000)}`);
+    const assistant = assistantEntry("assistant-1", "Intermediate reply.", oldUser.id);
+    const recentUser = userEntry("user-recent", "RECENT-KEPT-42", assistant.id);
+    const branch = [oldUser, assistant, recentUser];
+    const harness = createHarness(branch);
+    vi.stubGlobal("fetch", async () => remoteCompactionResponse("bounded-window"));
+
+    const result = await harness.handlers.get("session_before_compact")!(
+      compactEvent(branch),
+      harness.context,
+    );
+
+    const replay = JSON.stringify(result.compaction.details.compactedWindow);
+    expect(replay).toContain("RECENT-KEPT-42");
+    expect(replay).not.toContain("OLD-OVERSIZED");
+    expect(result.compaction.details.compactedWindow.at(-1)).toMatchObject({
+      type: "compaction",
+      encrypted_content: "bounded-window",
+    });
+  });
+
+  it("rejects output items sent after the response.completed terminal", async () => {
+    const user = userEntry("user-1", "hello");
+    const harness = createHarness([user]);
+    vi.stubGlobal("fetch", async () => {
+      const item = { id: null, type: "compaction", encrypted_content: "too-late" };
+      const response = {
+        id: "cmp-response-out-of-order",
+        status: "completed",
+        created_at: 1_800_000_000,
+        usage: legacyCompactResponse("opaque").usage,
+      };
+      return new Response(
+        [
+          `data: ${JSON.stringify({ type: "response.completed", response })}`,
+          `data: ${JSON.stringify({ type: "response.output_item.done", item })}`,
+          "",
+        ].join("\n\n"),
+        { headers: { "Content-Type": "text/event-stream" } },
+      );
+    });
+
+    const result = await harness.handlers.get("session_before_compact")!(
+      compactEvent([user]),
+      harness.context,
+    );
+
+    expect(result).toBeUndefined();
+    expect(harness.notifications.at(-1)).toMatchObject({
+      level: "warning",
+      message: expect.stringContaining("event after response.completed"),
+    });
+  });
+
+  it("surfaces top-level SSE error messages when native compaction falls back", async () => {
+    const user = userEntry("user-1", "hello");
+    const harness = createHarness([user]);
+    vi.stubGlobal(
+      "fetch",
+      async () =>
+        new Response(`data: ${JSON.stringify({ type: "error", message: "relay exploded" })}\n\n`, {
+          headers: { "Content-Type": "text/event-stream" },
+        }),
+    );
+
+    const result = await harness.handlers.get("session_before_compact")!(
+      compactEvent([user]),
+      harness.context,
+    );
+
+    expect(result).toBeUndefined();
+    expect(harness.notifications.at(-1)).toMatchObject({
+      level: "warning",
+      message: expect.stringContaining("relay exploded"),
     });
   });
 
@@ -376,7 +484,7 @@ describe("Codex standalone compaction", () => {
       api: "openai-codex-responses",
       model: model.id,
       responsesUrl: relay.responsesUrl,
-      compactedWindow: compactResponse("opaque-1").output,
+      compactedWindow: legacyCompactResponse("opaque-1").output,
       createdAt: new Date().toISOString(),
     };
     const checkpoint = compactionEntry("compact-1", user.id, user.id, details);
@@ -399,7 +507,7 @@ describe("Codex standalone compaction", () => {
       api: "openai-codex-responses",
       model: model.id,
       responsesUrl: relay.responsesUrl,
-      compactedWindow: compactResponse("opaque-1").output,
+      compactedWindow: legacyCompactResponse("opaque-1").output,
       createdAt: new Date().toISOString(),
     };
     const checkpoint = compactionEntry("compact-1", user.id, user.id, details);
@@ -444,15 +552,25 @@ describe("Codex standalone compaction", () => {
   it("rejects a malformed compacted output window before persisting it", async () => {
     const user = userEntry("user-1", "hello");
     const harness = createHarness([user]);
-    vi.stubGlobal("fetch", async () =>
-      Response.json({
-        ...compactResponse("opaque"),
-        output: [
-          { id: "bad-user", type: "message", status: "completed", role: "user" },
-          { id: "cmp-item", type: "compaction", encrypted_content: "opaque" },
-        ],
-      }),
-    );
+    vi.stubGlobal("fetch", async () => {
+      const item = { type: "compaction", encrypted_content: "" };
+      const response = {
+        id: "cmp-response-malformed",
+        object: "response",
+        status: "completed",
+        created_at: 1_800_000_000,
+        output: [item],
+        usage: legacyCompactResponse("opaque").usage,
+      };
+      return new Response(
+        [
+          `data: ${JSON.stringify({ type: "response.output_item.done", item })}`,
+          `data: ${JSON.stringify({ type: "response.completed", response })}`,
+          "",
+        ].join("\n\n"),
+        { headers: { "Content-Type": "text/event-stream" } },
+      );
+    });
 
     const result = await harness.handlers.get("session_before_compact")!(
       compactEvent([user]),
