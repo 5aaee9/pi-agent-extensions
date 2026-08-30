@@ -68,6 +68,8 @@ const LEGACY_NATIVE_COMPACTION_VERSION = 1;
 const NATIVE_COMPACTION_VERSION = 2;
 const NATIVE_COMPACTION_SUMMARY = "[OpenAI native compaction checkpoint]";
 const COMPACTION_TIMEOUT_MS = 180_000;
+const MAX_COMPACTION_RETRIES = 5;
+const COMPACTION_RETRY_BASE_DELAY_MS = 1_000;
 const MAX_COMPACTION_RESPONSE_BYTES = 32 * 1024 * 1024;
 const MAX_RETAINED_COMPACTION_TOKENS = 64_000;
 const MAX_RETAINED_COMPACTION_BYTES = 16 * 1024 * 1024;
@@ -79,6 +81,7 @@ const CODEX_TOOL_CALL_PROVIDERS = new Set(["openai", "openai-codex", "opencode"]
 // Both are opaque replay items and must be persisted without normalization.
 const COMPACTION_ITEM_TYPES = new Set(["compaction", "compaction_summary"]);
 const RETAINED_COMPACTION_MESSAGE_ROLES = new Set(["user", "developer", "system"]);
+const RETRYABLE_COMPACTION_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
 
 export interface CodexCompactionRelay {
   provider: string;
@@ -116,6 +119,14 @@ type NativeCheckpointResolution =
   | { status: "valid"; checkpoint: NativeCheckpoint };
 
 class NativeCheckpointError extends Error {}
+
+class RetryableRemoteCompactionError extends Error {}
+
+class RemoteCompactionHttpError extends Error {
+  constructor(readonly status: number) {
+    super(`remote compaction returned HTTP ${status}`);
+  }
+}
 
 function isJsonObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -533,7 +544,9 @@ function parseRemoteCompactionStream(text: string) {
       throw new Error("remote compaction stream returned an event after response.completed");
     }
     if (event.type === "error" || event.type === "response.failed") {
-      throw new Error(`remote compaction failed: ${remoteCompactionFailureMessage(event)}`);
+      throw new RetryableRemoteCompactionError(
+        `remote compaction failed: ${remoteCompactionFailureMessage(event)}`,
+      );
     }
     if (event.type === "response.output_item.done") {
       outputItemCount += 1;
@@ -549,7 +562,9 @@ function parseRemoteCompactionStream(text: string) {
   }
 
   if (!completedResponse) {
-    throw new Error("remote compaction stream closed before response.completed");
+    throw new RetryableRemoteCompactionError(
+      "remote compaction stream closed before response.completed",
+    );
   }
   if (compactionItems.length !== 1) {
     throw new Error(
@@ -571,7 +586,47 @@ function parseRemoteCompactionStream(text: string) {
   };
 }
 
-async function compactRemotely(params: {
+function isRetryableCompactionError(error: unknown) {
+  if (error instanceof RetryableRemoteCompactionError) return true;
+  if (error instanceof RemoteCompactionHttpError) {
+    return RETRYABLE_COMPACTION_STATUSES.has(error.status);
+  }
+  if (error instanceof DOMException) {
+    return ["AbortError", "NetworkError", "TimeoutError"].includes(error.name);
+  }
+  if (!(error instanceof Error)) return false;
+
+  const cause = error.cause as { code?: unknown } | undefined;
+  const code = typeof cause?.code === "string" ? cause.code.toLowerCase() : "";
+  const message = error.message.toLowerCase();
+  return (
+    ["eai_again", "econnrefused", "econnreset", "enotfound", "etimedout"].includes(code) ||
+    ["fetch failed", "socket hang up", "terminated", "timeout"].some((fragment) =>
+      message.includes(fragment),
+    )
+  );
+}
+
+async function waitBeforeCompactionRetry(retry: number, signal: AbortSignal) {
+  const delay = COMPACTION_RETRY_BASE_DELAY_MS * 2 ** retry;
+  await new Promise<void>((resolveDelay, rejectDelay) => {
+    if (signal.aborted) {
+      rejectDelay(signal.reason);
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      rejectDelay(signal.reason);
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolveDelay();
+    }, delay);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+async function compactRemotelyOnce(params: {
   relay: CodexCompactionRelay;
   model: Model<any>;
   input: ResponseItem[];
@@ -598,7 +653,7 @@ async function compactRemotely(params: {
     signal,
   });
   const text = await readBoundedResponse(response);
-  if (!response.ok) throw new Error(`remote compaction returned HTTP ${response.status}`);
+  if (!response.ok) throw new RemoteCompactionHttpError(response.status);
   const contentType = response.headers.get("content-type")?.toLowerCase();
   if (contentType && !contentType.includes("text/event-stream")) {
     throw new Error("remote compaction returned a non-SSE response");
@@ -614,6 +669,23 @@ async function compactRemotely(params: {
     createdAt: parsed.createdAt,
     usage: parseCompactionUsage(params.model, parsed.usage),
   };
+}
+
+async function compactRemotely(params: Parameters<typeof compactRemotelyOnce>[0]) {
+  for (let retry = 0; ; retry += 1) {
+    try {
+      return await compactRemotelyOnce(params);
+    } catch (error) {
+      if (
+        params.signal.aborted ||
+        retry >= MAX_COMPACTION_RETRIES ||
+        !isRetryableCompactionError(error)
+      ) {
+        throw error;
+      }
+      await waitBeforeCompactionRetry(retry, params.signal);
+    }
+  }
 }
 
 function appendCustomInstructions(systemPrompt: string, customInstructions?: string) {
