@@ -1962,6 +1962,71 @@ describe("sub2api provider extension", () => {
     );
   });
 
+  it("resolves an environment variable token reference when the variable is set", async () => {
+    vi.stubEnv("SUB2API_ENV_TOKEN_TEST", "sk-from-env");
+    writeFileSync(
+      join(stateDir, "sub2api.json"),
+      JSON.stringify({
+        "env-relay": {
+          baseURL: "https://env-relay.example/v1",
+          token: "${SUB2API_ENV_TOKEN_TEST}",
+          api: "openai-responses",
+        },
+      }),
+    );
+
+    const modelFetchCalls: FetchCall[] = [];
+    const otherFetchCalls: FetchCall[] = [];
+    vi.stubGlobal("fetch", async (input: URL | RequestInfo, init?: RequestInit) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (url.endsWith("/v1/models")) {
+        modelFetchCalls.push({ url, init });
+        return Response.json({ data: [{ id: "grok-env-test", display_name: "Env Test" }] });
+      }
+      otherFetchCalls.push({ url, init });
+      return new Response(
+        JSON.stringify({ error: { type: "invalid_request_error", message: "intentional stop" } }),
+        { status: 400 },
+      );
+    });
+
+    const registrations = await registerProviders();
+
+    expect(registrations).toHaveLength(1);
+    expect(registrations[0]!.name).toBe("env-relay");
+    expect(registrations[0]!.config.apiKey).toBe("sk-from-env");
+    expect(new Headers(modelFetchCalls[0]!.init?.headers).get("authorization")).toBe(
+      "Bearer sk-from-env",
+    );
+  });
+
+  it.each([
+    { label: "not set", name: "SUB2API_ENV_UNSET_TOKEN_TEST", value: undefined },
+    { label: "set to an empty value", name: "SUB2API_ENV_EMPTY_TOKEN_TEST", value: "" },
+    { label: "set to whitespace", name: "SUB2API_ENV_WS_TOKEN_TEST", value: "   " },
+  ])("rejects a token referencing an env variable that is $label", async ({ name, value }) => {
+    if (value !== undefined) vi.stubEnv(name, value);
+    writeFileSync(
+      join(stateDir, "sub2api.json"),
+      JSON.stringify({
+        invalid: { baseURL: "https://invalid-env.example/v1", token: `\${${name}}` },
+      }),
+    );
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    const registrations = await registerProviders();
+
+    expect(registrations).toHaveLength(0);
+    expect(consoleError).toHaveBeenCalledWith(
+      expect.stringContaining("failed to load"),
+      expect.objectContaining({
+        message: expect.stringContaining(
+          `token references environment variable ${JSON.stringify(name)} which is not set`,
+        ),
+      }),
+    );
+  });
+
   it.each([
     {
       label: "base URL",

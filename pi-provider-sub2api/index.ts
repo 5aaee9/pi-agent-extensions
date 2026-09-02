@@ -522,6 +522,26 @@ function validateServerToolsForApi(
   }
 }
 
+const ENV_REFERENCE_PATTERN = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/;
+
+function resolveToken(provider: string, configured: string): string {
+  const match = ENV_REFERENCE_PATTERN.exec(configured);
+  if (!match) return configured;
+  const name = match[1]!;
+  const resolved = process.env[name];
+  if (resolved === undefined || !resolved.trim()) {
+    throw new Error(
+      `provider ${provider} token references environment variable ${JSON.stringify(name)} which is not set`,
+    );
+  }
+  if (hasControlCharacters(resolved)) {
+    throw new Error(
+      `provider ${provider} token from environment variable ${JSON.stringify(name)} must not include control characters`,
+    );
+  }
+  return resolved;
+}
+
 function parseRelayConfig(provider: string, value: unknown): RelayConfig {
   if (
     !provider.trim() ||
@@ -563,6 +583,7 @@ function parseRelayConfig(provider: string, value: unknown): RelayConfig {
   const serverTools = parseServerTools(provider, entry.serverTools);
   validateServerToolsForApi(provider, configuredApi, serverTools);
 
+  const apiKey = resolveToken(provider, entry.token);
   const { baseUrl, anthropicBaseUrl } = normalizeBaseUrls(entry.baseURL);
   const accountId = createRelayAccountId(provider);
   return {
@@ -570,7 +591,7 @@ function parseRelayConfig(provider: string, value: unknown): RelayConfig {
     accountId,
     baseUrl,
     anthropicBaseUrl,
-    apiKey: entry.token,
+    apiKey,
     api: configuredApi,
     serverTools,
     responsesUrl: `${baseUrl}/responses`,
