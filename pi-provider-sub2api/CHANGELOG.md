@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.1.23 - 2026-09-05
+
+- Recognize GPT-6 models such as `gpt-6-astra` as reasoning-capable, discover their upstream reasoning levels even when token limits are already known, and retain fallback thinking levels when the Codex manifest is unavailable.
+
 ## 0.1.22 - 2026-08-30
 
 - Retry transient Codex native compaction failures five times with one- through sixteen-second exponential backoff before falling back to Pi compaction.
