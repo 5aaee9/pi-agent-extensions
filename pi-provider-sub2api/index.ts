@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { isDeepStrictEqual } from "node:util";
@@ -141,23 +141,21 @@ interface BuiltinModelMetadata extends ModelTokenLimits {
   cost: ModelCost;
 }
 
-const ANTHROPIC_BUILTIN_METADATA = new Map<string, BuiltinModelMetadata>(
-  getBuiltinModels("anthropic").map((model) => [model.id, model]),
+type ModelMetadataCatalogs = Map<string, Map<string, BuiltinModelMetadata>>;
+const METADATA_PROVIDERS = ["anthropic", "openai", "openai-codex", "xai"] as const;
+const BUILTIN_MODEL_METADATA: ModelMetadataCatalogs = new Map(
+  METADATA_PROVIDERS.map((provider) => [
+    provider,
+    new Map<string, BuiltinModelMetadata>(
+      getBuiltinModels(provider).map((model) => [model.id, model]),
+    ),
+  ]),
 );
-const OPENAI_BUILTIN_METADATA = new Map<string, BuiltinModelMetadata>(
-  getBuiltinModels("openai").map((model) => [model.id, model]),
-);
-const CODEX_BUILTIN_METADATA = new Map<string, BuiltinModelMetadata>(
-  getBuiltinModels("openai-codex").map((model) => [model.id, model]),
-);
-const XAI_BUILTIN_METADATA = new Map<string, BuiltinModelMetadata>(
-  getBuiltinModels("xai").map((model) => [model.id, model]),
-);
-const BUILTIN_METADATA_BY_API: Record<SupportedApi, Map<string, BuiltinModelMetadata>[]> = {
-  "anthropic-messages": [ANTHROPIC_BUILTIN_METADATA],
-  "openai-codex-responses": [CODEX_BUILTIN_METADATA, OPENAI_BUILTIN_METADATA],
-  "openai-responses": [OPENAI_BUILTIN_METADATA, XAI_BUILTIN_METADATA],
-  "openai-completions": [OPENAI_BUILTIN_METADATA, XAI_BUILTIN_METADATA],
+const METADATA_PROVIDERS_BY_API: Record<SupportedApi, (typeof METADATA_PROVIDERS)[number][]> = {
+  "anthropic-messages": ["anthropic"],
+  "openai-codex-responses": ["openai-codex", "openai"],
+  "openai-responses": ["openai", "xai"],
+  "openai-completions": ["openai", "xai"],
 };
 
 interface RateLimit {
@@ -778,10 +776,60 @@ function getModelMetadataIds(modelId: string) {
   return modelId.toLowerCase() === "gpt-5.6" ? [modelId, "gpt-5.6-sol"] : [modelId];
 }
 
-function getBuiltinModelMetadata(modelId: string, api: SupportedApi) {
+async function loadCachedModelMetadata(): Promise<ModelMetadataCatalogs | undefined> {
+  try {
+    const agentDir = getAgentDir();
+    const modelsStorePath = join(agentDir, "models-store.json");
+    await access(modelsStorePath);
+    const [{ ModelRuntime }, { InMemoryCredentialStore }] = await Promise.all([
+      import("@earendil-works/pi-coding-agent"),
+      import("@earendil-works/pi-ai"),
+    ]);
+    if (
+      typeof ModelRuntime?.create !== "function" ||
+      typeof InMemoryCredentialStore !== "function"
+    ) {
+      return undefined;
+    }
+    // Use the host SDK to restore its cached catalog, rather than parsing a
+    // private store format or resolving the user's provider credentials.
+    const runtime = await ModelRuntime.create({
+      credentials: new InMemoryCredentialStore(),
+      modelsPath: join(agentDir, "models.json"),
+      modelsStorePath,
+      allowModelNetwork: false,
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+    return new Map(
+      METADATA_PROVIDERS.map((provider) => [
+        provider,
+        new Map(
+          runtime
+            .getModels(provider)
+            .map((model) => [
+              model.id,
+              { contextWindow: model.contextWindow, maxTokens: model.maxTokens, cost: model.cost },
+            ]),
+        ),
+      ]),
+    );
+  } catch {
+    // Missing/unreadable caches and hosts without ModelRuntime keep the static
+    // catalog fallback. Metadata restoration failures must not prevent discovery.
+    return undefined;
+  }
+}
+
+function getBuiltinModelMetadata(
+  modelId: string,
+  api: SupportedApi,
+  cachedMetadata?: ModelMetadataCatalogs,
+) {
   for (const candidate of getModelMetadataIds(modelId)) {
-    for (const catalog of BUILTIN_METADATA_BY_API[api]) {
-      const metadata = catalog.get(candidate);
+    for (const provider of METADATA_PROVIDERS_BY_API[api]) {
+      const metadata =
+        cachedMetadata?.get(provider)?.get(candidate) ??
+        BUILTIN_MODEL_METADATA.get(provider)?.get(candidate);
       if (metadata) return metadata;
     }
   }
@@ -2146,12 +2194,15 @@ export default async function (pi: ExtensionAPI) {
 
   registerCodexCompaction(pi, (provider) => relaysByProvider.get(provider));
 
-  const providers = await Promise.all(
-    relays.map(async (relay) => {
-      const [models] = await Promise.all([fetchModels(relay), refreshRelayBilling(relay)]);
-      return { relay, models };
-    }),
-  );
+  const [providers, cachedModelMetadata] = await Promise.all([
+    Promise.all(
+      relays.map(async (relay) => {
+        const [models] = await Promise.all([fetchModels(relay), refreshRelayBilling(relay)]);
+        return { relay, models };
+      }),
+    ),
+    loadCachedModelMetadata(),
+  ]);
 
   const discoveredModelsByProvider = new Map(
     providers.map(({ relay, models }) => [relay.provider, models]),
@@ -2164,7 +2215,7 @@ export default async function (pi: ExtensionAPI) {
       .map((model) => {
         const api = getModelApi(model.id, relay.api);
         const reasoning = model.reasoning ?? REASONING.test(model.id);
-        const builtinMetadata = getBuiltinModelMetadata(model.id, api);
+        const builtinMetadata = getBuiltinModelMetadata(model.id, api, cachedModelMetadata);
         // Keep Anthropic's relay-safe limits: pi's native catalog can advertise a
         // larger output cap than some Sub2API deployments accept. Its pricing is
         // still authoritative when available.

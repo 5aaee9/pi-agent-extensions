@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ProviderConfig } from "@earendil-works/pi-coding-agent";
@@ -93,6 +93,122 @@ describe("explicit Codex manifest discovery", () => {
     expect(new Headers(manifestCall.init?.headers).get("authorization")).toBe("Bearer sk-manifest");
     expect(manifestCall.init?.redirect).toBe("error");
     expect(manifestCall.init?.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it.each([
+    {
+      scenario: "a model is absent from the static catalog",
+      modelId: "gpt-6-astra-cache-test",
+      contextWindow: 272000,
+      catalogMaxTokens: 128000,
+      manifestMaxTokens: undefined,
+      expectedMaxTokens: 128000,
+    },
+    {
+      scenario: "the manifest declares its own output limit",
+      modelId: "gpt-6-astra-cache-test",
+      contextWindow: 272000,
+      catalogMaxTokens: 128000,
+      manifestMaxTokens: 64000,
+      expectedMaxTokens: 64000,
+    },
+    {
+      scenario: "the cache updates a statically known model",
+      modelId: "gpt-5.5",
+      contextWindow: 272000,
+      catalogMaxTokens: 96000,
+      manifestMaxTokens: undefined,
+      expectedMaxTokens: 96000,
+    },
+    {
+      scenario: "the remote context cannot fit the cached output limit",
+      modelId: "gpt-6-astra-cache-test",
+      contextWindow: 64000,
+      catalogMaxTokens: 128000,
+      manifestMaxTokens: undefined,
+      expectedMaxTokens: 16384,
+    },
+  ])(
+    "uses Pi's cached catalog safely when $scenario",
+    async ({ modelId, contextWindow, catalogMaxTokens, manifestMaxTokens, expectedMaxTokens }) => {
+      const modelsStorePath = join(stateDir, "models-store.json");
+      const cachedCatalog = JSON.stringify({
+        "openai-codex": {
+          checkedAt: Date.now(),
+          lastModified: Date.now(),
+          models: [
+            {
+              id: modelId,
+              name: "Astra Cache Test",
+              provider: "openai-codex",
+              api: "openai-codex-responses",
+              baseUrl: "https://chatgpt.com/backend-api",
+              reasoning: true,
+              input: ["text", "image"],
+              contextWindow: 272000,
+              maxTokens: catalogMaxTokens,
+              cost: { input: 10, output: 50, cacheRead: 1, cacheWrite: 0 },
+            },
+          ],
+        },
+      });
+      writeFileSync(modelsStorePath, cachedCatalog);
+      const calls: string[] = [];
+      vi.stubGlobal("fetch", async (input: URL | RequestInfo) => {
+        const url = input instanceof Request ? input.url : String(input);
+        calls.push(url);
+        if (url === `${root}/backend-api/codex/models`) {
+          return Response.json({
+            models: [
+              {
+                slug: modelId,
+                context_window: contextWindow,
+                max_output_tokens: manifestMaxTokens,
+                supported_reasoning_levels: ["low", "max"],
+              },
+            ],
+          });
+        }
+        return new Response(null, { status: 404 });
+      });
+
+      const provider = await registerProvider();
+      expect(provider.models![0]).toMatchObject({
+        id: modelId,
+        name: modelId,
+        input: ["text"],
+        reasoning: true,
+        contextWindow,
+        maxTokens: expectedMaxTokens,
+        cost: { input: 10, output: 50, cacheRead: 1, cacheWrite: 0 },
+      });
+      expect(calls.sort()).toEqual([
+        `${root}/backend-api/codex/models`,
+        `${root}/v1/sub2api/billing`,
+      ]);
+      expect(readFileSync(modelsStorePath, "utf8")).toBe(cachedCatalog);
+    },
+  );
+
+  it("keeps static catalog limits when the local cache is malformed", async () => {
+    const modelsStorePath = join(stateDir, "models-store.json");
+    writeFileSync(modelsStorePath, "{");
+    vi.stubGlobal("fetch", async (input: URL | RequestInfo) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (url === `${root}/backend-api/codex/models`) {
+        return Response.json({ models: [{ slug: "gpt-5.5", context_window: 272000 }] });
+      }
+      return new Response(null, { status: 404 });
+    });
+
+    const provider = await registerProvider();
+    expect(provider.models![0]).toMatchObject({
+      id: "gpt-5.5",
+      contextWindow: 272000,
+      maxTokens: 128000,
+      cost: { input: 5, output: 30 },
+    });
+    expect(readFileSync(modelsStorePath, "utf8")).toBe("{");
   });
 
   it.each([[], ["none"], undefined])(
