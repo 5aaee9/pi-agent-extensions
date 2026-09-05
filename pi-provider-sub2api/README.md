@@ -6,7 +6,7 @@ A [pi](https://github.com/earendil-works/pi-mono) provider extension for Sub2API
 
 - pi 0.83.0 or newer
 - Node.js 22.19 or newer
-- A Sub2API-compatible relay exposing `GET /v1/models` and at least one supported generation endpoint
+- A Sub2API-compatible relay exposing `GET /backend-api/codex/models` for explicitly configured Codex providers, or `GET /v1/models` for other providers, plus at least one supported generation endpoint
 
 ## Install
 
@@ -161,6 +161,14 @@ Safety and compatibility limits:
 
 When `api` is fixed, only its matching `serverTools` group is accepted. An auto-routed relay may configure both groups; each discovered model receives only the group matching its selected API.
 
+## Model discovery
+
+Providers configured with `"api": "openai-codex-responses"` use `GET /backend-api/codex/models` as their sole model inventory. The extension does not request `/v1/models`, including when the manifest is unavailable, invalid, or empty. Manifest failures are logged and leave that provider without discovered models.
+
+Each valid manifest `slug` becomes the Pi model ID, and `display_name` supplies its name. `supported_reasoning_levels` determines reasoning support and selectable thinking efforts, so new model families do not need name-pattern updates. Missing, empty, or unrecognized reasoning levels do not enable thinking. `input_modalities` supplies Pi's supported `text`/`image` inputs; unrecognized modalities are ignored, and missing usable modalities default to text-only. Remote token limits are used when available, with Pi's catalog and existing defaults filling missing limits and prices. Codex-specific instructions and internal flags are not injected into Pi.
+
+Providers without an explicit Codex API setting keep `/v1/models` as their authoritative inventory, with best-effort Codex manifest enrichment. Set `api` explicitly to opt a Codex-only relay out of standard model discovery; automatic routing is retained for relays that mix OpenAI, Claude, or other model families.
+
 ## Routing behavior
 
 When a provider does not set `api`, model IDs select an API as follows:
@@ -207,8 +215,8 @@ Additional behavior:
 
 - Model discovery and billing requests use a 5-second timeout per attempt. Usage requests use a 30-second timeout because `/v1/usage` may aggregate a large history before responding. Transient network errors plus HTTP 408, 425, 429, 500, 502, 503, and 504 responses are retried up to twice with one- and two-second exponential backoff.
 - Models whose IDs start with `gpt-image` are excluded.
-- IDs containing `claude`, `codex`, `gpt-5`, or `gpt-6` are exposed as reasoning models.
-- `GET /v1/models` remains the authoritative model inventory. When an OpenAI model is missing token limits or reasoning-effort capabilities, the extension best-effort merges metadata for the same model ID from Sub2API's `GET /backend-api/codex/models` manifest; manifest-only models are never registered. The `gpt-5.6` inventory alias uses `gpt-5.6-sol` metadata.
+- Outside explicit Codex manifest discovery, IDs containing `claude`, `codex`, `gpt-5`, or `gpt-6` are exposed as reasoning models.
+- For automatically routed and non-Codex providers, `GET /v1/models` remains the authoritative model inventory. When an OpenAI model is missing token limits or reasoning-effort capabilities, the extension best-effort merges metadata for the same model ID from Sub2API's `GET /backend-api/codex/models` manifest; manifest-only models are not registered in this mode. The `gpt-5.6` inventory alias uses `gpt-5.6-sol` metadata.
 - Remote model metadata accepts `context_window`, `contextWindow`, `context_length`, `max_context_tokens`, `limit.context`, and `limits.context` for context size. Output limits accept `max_tokens`, `maxTokens`, `max_output_tokens`, `max_completion_tokens`, `limit.output`, and `limits.output`; the first valid positive integer is used, so an invalid earlier alias does not hide a valid later one. Supported thinking efforts are read from `supported_reasoning_levels` or `supportedReasoningLevels`, accepting both Codex object entries such as `{ "effort": "ultra" }` and string values.
 - Missing OpenAI model limits are filled from pi's catalog for the selected API (`openai-codex` or `openai`). Only fields still unavailable after remote and catalog lookup fall back to a 200,000-token context window and a model-family-specific output limit.
 - Each Codex remote compaction attempt has a three-minute timeout. Attempts reject redirects, cap the SSE response at 32 MiB, and retain at most 64,000 estimated message tokens or 16 MiB of replay messages so native checkpoints remain bounded.
@@ -227,7 +235,7 @@ Use HTTPS for remote relays. Plain HTTP is accepted for trusted local developmen
 ## Troubleshooting
 
 - **Provider does not appear:** inspect stderr for `[sub2api] failed to load ...`; verify that the JSON is valid and every entry has non-empty `baseURL` and `token` strings.
-- **No models appear:** verify that `<baseURL>/v1/models` is reachable with `Authorization: Bearer <token>`. Discovery failures are logged as `[sub2api:<provider>] failed to fetch models`.
+- **No models appear:** for explicit `openai-codex-responses` providers, verify that the relay's `/backend-api/codex/models` endpoint returns a `models` array with `Authorization: Bearer <token>`; failures are logged as `[sub2api:<provider>] failed to fetch Codex model manifest`, without falling back to `/v1/models`. Other providers require `/v1/models`; their discovery failures are logged as `[sub2api:<provider>] failed to fetch models`.
 - **Requests fail:** confirm the configured API is supported by the relay: Anthropic Messages uses `/v1/messages`, Codex generation and Remote Compaction V2 both use `/v1/responses`, OpenAI Responses uses `/v1/responses`, and Chat Completions uses `/v1/chat/completions`.
 - **Fast mode is rejected:** verify that the selected OpenAI model/account supports `service_tier: "priority"` and that the Sub2API OpenAI Fast policy allows it. `/toggle-fast` deliberately leaves relay eligibility and policy enforcement to Sub2API.
 - **Native compaction falls back:** verify that the relay supports Remote Compaction V2 on streamed `POST /v1/responses`: the request must end with a `compaction_trigger`, and the SSE response must contain exactly one encrypted `compaction` item in `response.output_item.done` followed by `response.completed`. The extension also accepts the `compaction_summary` type emitted by compatible Codex relays.

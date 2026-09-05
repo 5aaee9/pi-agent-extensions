@@ -151,10 +151,6 @@ const discovery = {
       { id: "gpt-image-1", display_name: "GPT Image" },
     ],
   },
-  "http://codex.example/v1/models": {
-    token: specialToken,
-    models: [{ id: "claude-forced-codex", display_name: "Forced Codex" }],
-  },
   "https://anthropic.example/v1/models": {
     token: "sk-anthropic",
     models: [
@@ -342,7 +338,18 @@ describe("sub2api provider extension", () => {
       }
       if (url.endsWith("/backend-api/codex/models")) {
         metadataFetchCalls.push({ url, init });
-        return Response.json({ models: [] });
+        return Response.json({
+          models:
+            url === "http://codex.example/backend-api/codex/models"
+              ? [
+                  {
+                    slug: "claude-forced-codex",
+                    display_name: "Forced Codex",
+                    supported_reasoning_levels: ["low", "medium", "high", "xhigh"],
+                  },
+                ]
+              : [],
+        });
       }
       if (url.endsWith("/v1/sub2api/billing")) {
         billingFetchCalls.push({ url, init });
@@ -393,6 +400,7 @@ describe("sub2api provider extension", () => {
         .sort(),
     ).toEqual(
       [
+        ["http://codex.example/backend-api/codex/models", `Bearer ${specialToken}`],
         ["https://fallback.example/backend-api/codex/models", "Bearer sk-fallback"],
         ["https://responses.example/backend-api/codex/models", "Bearer sk-responses"],
       ].sort(),
@@ -844,9 +852,9 @@ describe("sub2api provider extension", () => {
     );
     vi.stubGlobal("fetch", async (input: URL | RequestInfo) => {
       const url = input instanceof Request ? input.url : String(input);
-      if (url === "https://timing.example/v1/models") {
+      if (url === "https://timing.example/backend-api/codex/models") {
         return Response.json({
-          data: [{ id: "gpt-5.5", context_window: 200_000, max_tokens: 16_384 }],
+          models: [{ slug: "gpt-5.5", context_window: 200_000, max_tokens: 16_384 }],
         });
       }
       return new Response(null, { status: 404 });
@@ -920,9 +928,9 @@ describe("sub2api provider extension", () => {
     );
     vi.stubGlobal("fetch", async (input: URL | RequestInfo) => {
       const url = input instanceof Request ? input.url : String(input);
-      if (url === "https://retry.example/v1/models") {
+      if (url === "https://retry.example/backend-api/codex/models") {
         return Response.json({
-          data: [{ id: "gpt-5.5", context_window: 200_000, max_tokens: 16_384 }],
+          models: [{ slug: "gpt-5.5", context_window: 200_000, max_tokens: 16_384 }],
         });
       }
       return new Response(null, { status: 404 });
@@ -1007,9 +1015,9 @@ describe("sub2api provider extension", () => {
     );
     vi.stubGlobal("fetch", async (input: URL | RequestInfo) => {
       const url = input instanceof Request ? input.url : String(input);
-      if (url === "https://retry.example/v1/models") {
+      if (url === "https://retry.example/backend-api/codex/models") {
         return Response.json({
-          data: [{ id: "gpt-5.5", context_window: 200_000, max_tokens: 16_384 }],
+          models: [{ slug: "gpt-5.5", context_window: 200_000, max_tokens: 16_384 }],
         });
       }
       return new Response(null, { status: 404 });
@@ -1070,9 +1078,9 @@ describe("sub2api provider extension", () => {
     );
     vi.stubGlobal("fetch", async (input: URL | RequestInfo) => {
       const url = input instanceof Request ? input.url : String(input);
-      if (url === "https://retry.example/v1/models") {
+      if (url === "https://retry.example/backend-api/codex/models") {
         return Response.json({
-          data: [{ id: "gpt-5.5", context_window: 200_000, max_tokens: 16_384 }],
+          models: [{ slug: "gpt-5.5", context_window: 200_000, max_tokens: 16_384 }],
         });
       }
       return new Response(null, { status: 404 });
@@ -1125,9 +1133,9 @@ describe("sub2api provider extension", () => {
     );
     vi.stubGlobal("fetch", async (input: URL | RequestInfo) => {
       const url = input instanceof Request ? input.url : String(input);
-      if (url === "https://retry.example/v1/models") {
+      if (url === "https://retry.example/backend-api/codex/models") {
         return Response.json({
-          data: [{ id: "gpt-5.5", context_window: 200_000, max_tokens: 16_384 }],
+          models: [{ slug: "gpt-5.5", context_window: 200_000, max_tokens: 16_384 }],
         });
       }
       return new Response(null, { status: 404 });
@@ -1194,9 +1202,9 @@ describe("sub2api provider extension", () => {
     );
     vi.stubGlobal("fetch", async (input: URL | RequestInfo) => {
       const url = input instanceof Request ? input.url : String(input);
-      if (url === "https://retry.example/v1/models") {
+      if (url === "https://retry.example/backend-api/codex/models") {
         return Response.json({
-          data: [{ id: "gpt-5.5", context_window: 200_000, max_tokens: 16_384 }],
+          models: [{ slug: "gpt-5.5", context_window: 200_000, max_tokens: 16_384 }],
         });
       }
       return new Response(null, { status: 404 });

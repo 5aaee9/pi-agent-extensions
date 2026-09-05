@@ -36,16 +36,6 @@ describe("real Codex adapter integration", () => {
 
     vi.stubGlobal("fetch", async (input: URL | RequestInfo) => {
       const url = input instanceof Request ? input.url : String(input);
-      if (url === "https://codex-integration.example/v1/models") {
-        return Response.json({
-          data: [
-            {
-              id: "gpt-5.6",
-              supported_reasoning_levels: ["low", "medium", "high", "xhigh", "max"],
-            },
-          ],
-        });
-      }
       if (url === "https://codex-integration.example/backend-api/codex/models") {
         return Response.json({
           models: [
@@ -150,7 +140,7 @@ describe("real Codex adapter integration", () => {
     expect(transportCalls[0]!.headers.get("chatgpt-account-id")).toBeNull();
     expect(transportCalls[0]!.redirect).toBe("error");
     expect(transportCalls[0]!.body).toMatchObject({
-      model: "gpt-5.6",
+      model: "gpt-5.6-sol",
       reasoning: { effort: "max" },
     });
     expect(transportCalls[0]!.body).toMatchObject({
@@ -183,7 +173,7 @@ describe("real Codex adapter integration", () => {
 
     expect(transportCalls).toHaveLength(2);
     expect(transportCalls[1]!.body).toMatchObject({
-      model: "gpt-5.6",
+      model: "gpt-5.6-sol",
       reasoning: { effort: "ultra" },
       service_tier: "priority",
     });

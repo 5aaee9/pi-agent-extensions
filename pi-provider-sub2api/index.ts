@@ -128,15 +128,13 @@ interface DiscoveredModel {
   contextWindow?: number;
   maxTokens?: number;
   supportedThinkingLevels?: string[];
+  reasoning?: boolean;
+  input?: ("text" | "image")[];
 }
 
 interface ModelTokenLimits {
   contextWindow?: number;
   maxTokens?: number;
-}
-
-interface ModelCapabilities extends ModelTokenLimits {
-  supportedThinkingLevels?: string[];
 }
 
 interface BuiltinModelMetadata extends ModelTokenLimits {
@@ -730,12 +728,12 @@ function getApiBaseUrl(relay: RelayConfig, api: SupportedApi) {
 }
 
 function getThinkingLevelMap(
-  modelId: string,
+  reasoning: boolean,
   api: SupportedApi,
   supportedThinkingLevels?: string[],
   ultraEnabled = false,
 ) {
-  if (!REASONING.test(modelId)) return undefined;
+  if (!reasoning) return undefined;
   if (api === "anthropic-messages") return { xhigh: "max" };
   // Relayed Codex backends reject the "none" and "minimal" efforts with
   // upstream 5xx errors, so clamp minimal to low. The Codex adapter omits the
@@ -1260,37 +1258,57 @@ async function fetchModelInventory(relay: RelayConfig): Promise<DiscoveredModel[
 }
 
 async function fetchCodexManifest(relay: RelayConfig) {
-  const metadata = new Map<string, ModelCapabilities>();
+  const models = new Map<string, DiscoveredModel>();
   try {
     const result = await fetchTextWithRetry(`${relay.anthropicBaseUrl}/backend-api/codex/models`, {
       headers: { Authorization: `Bearer ${relay.apiKey}`, Accept: "application/json" },
     });
-    if (!result) return metadata;
+    if (!result) throw new Error("request failed after retries");
     if (!result.response.ok) {
       discardResponse(result.response);
-      return metadata;
+      throw new Error(`HTTP ${result.response.status} ${result.response.statusText}`.trim());
     }
-    if ("bodyError" in result || !("text" in result)) return metadata;
+    if ("bodyError" in result) throw result.bodyError;
+    if (!("text" in result)) throw new Error("Codex manifest response body is unavailable");
 
     const payload = asRecord(JSON.parse(result.text) as unknown);
-    if (!Array.isArray(payload?.models)) return metadata;
+    if (!Array.isArray(payload?.models))
+      throw new Error("Codex manifest must contain a models array");
     for (const value of payload.models) {
       const model = asRecord(value);
-      if (!model || !isSafeModelId(model.slug) || metadata.has(model.slug)) continue;
-      metadata.set(model.slug, {
+      if (!model || !isSafeModelId(model.slug) || models.has(model.slug)) continue;
+      const supportedThinkingLevels = pickRemoteThinkingLevels(model);
+      const input = Array.isArray(model.input_modalities)
+        ? model.input_modalities.filter(
+            (value): value is "text" | "image" => value === "text" || value === "image",
+          )
+        : [];
+      const displayName =
+        typeof model.display_name === "string" ? sanitizeDisplayString(model.display_name) : "";
+      models.set(model.slug, {
+        id: model.slug,
+        name: displayName || model.slug,
         contextWindow: pickRemoteContextWindow(model),
         maxTokens: pickRemoteMaxTokens(model),
-        supportedThinkingLevels: pickRemoteThinkingLevels(model),
+        supportedThinkingLevels,
+        reasoning: Boolean(supportedThinkingLevels?.length),
+        input: input.length ? [...new Set(input)] : ["text"],
       });
     }
-  } catch {
-    // This endpoint is a best-effort Sub2API enrichment. Other compatible
-    // relays may not expose it, so standard model discovery must still work.
+  } catch (error) {
+    // Explicit Codex relays require the manifest; auto/other API relays only
+    // use it as optional metadata enrichment and retain their inventory.
+    if (relay.api === "openai-codex-responses") {
+      console.error(`[sub2api:${relay.provider}] failed to fetch Codex model manifest:`, error);
+    }
   }
-  return metadata;
+  return models;
 }
 
 async function fetchModels(relay: RelayConfig): Promise<DiscoveredModel[]> {
+  if (relay.api === "openai-codex-responses") {
+    return [...(await fetchCodexManifest(relay)).values()];
+  }
   const models = await fetchModelInventory(relay);
   const needsCodexMetadata = models.some(
     (model) =>
@@ -1309,7 +1327,7 @@ async function fetchModels(relay: RelayConfig): Promise<DiscoveredModel[]> {
     if (!OPENAI.test(model.id)) return model;
     const metadata = getModelMetadataIds(model.id)
       .map((candidate) => manifest.get(candidate))
-      .filter((limits): limits is ModelCapabilities => limits !== undefined);
+      .filter((limits): limits is DiscoveredModel => limits !== undefined);
     if (!metadata.length) return model;
     const contextWindow =
       model.contextWindow ??
@@ -2145,6 +2163,7 @@ export default async function (pi: ExtensionAPI) {
       .filter((model) => !EXCLUDED.test(model.id))
       .map((model) => {
         const api = getModelApi(model.id, relay.api);
+        const reasoning = model.reasoning ?? REASONING.test(model.id);
         const builtinMetadata = getBuiltinModelMetadata(model.id, api);
         // Keep Anthropic's relay-safe limits: pi's native catalog can advertise a
         // larger output cap than some Sub2API deployments accept. Its pricing is
@@ -2160,14 +2179,14 @@ export default async function (pi: ExtensionAPI) {
           name: model.name,
           api,
           baseUrl: getApiBaseUrl(relay, api),
-          reasoning: REASONING.test(model.id),
+          reasoning,
           thinkingLevelMap: getThinkingLevelMap(
-            model.id,
+            reasoning,
             api,
             model.supportedThinkingLevels,
             ultraEnabled,
           ),
-          input: ["text", "image"],
+          input: model.input ?? ["text", "image"],
           cost: scaleModelCost(builtinMetadata?.cost, priceMultiplier),
           contextWindow,
           maxTokens,
