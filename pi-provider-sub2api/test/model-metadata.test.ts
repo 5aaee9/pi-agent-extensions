@@ -208,6 +208,108 @@ describe("model metadata discovery", () => {
     }
   });
 
+  it.each(["openai-codex-responses", "openai-responses", "openai-completions"] as const)(
+    "recognizes GPT-6 reasoning with %s and complete inventory limits",
+    async (api) => {
+      writeFileSync(
+        join(stateDir, "sub2api.json"),
+        JSON.stringify({
+          astra: {
+            baseURL: "https://gpt6.example",
+            token: "sk-gpt6",
+            ...(api === "openai-codex-responses" ? {} : { api }),
+          },
+        }),
+      );
+
+      vi.stubGlobal("fetch", async (input: URL | RequestInfo) => {
+        const url = input instanceof Request ? input.url : String(input);
+        if (url === "https://gpt6.example/v1/models") {
+          return Response.json({
+            data: [{ id: "gpt-6-astra", context_window: 272000, max_output_tokens: 64000 }],
+          });
+        }
+        if (url === "https://gpt6.example/backend-api/codex/models") {
+          return Response.json({
+            models: [
+              {
+                slug: "gpt-6-astra",
+                supported_reasoning_levels: [
+                  { effort: "low" },
+                  { effort: "high" },
+                  { effort: "max" },
+                  { effort: "ultra" },
+                ],
+              },
+            ],
+          });
+        }
+        return new Response(null, { status: 404 });
+      });
+
+      const registrations: Registration[] = [];
+      await extension({
+        registerProvider(name: string, config: ProviderConfig) {
+          registrations.push({ name, config });
+        },
+        on() {},
+        registerCommand() {},
+      } as unknown as ExtensionAPI);
+
+      expect(registrations[0]!.config.models![0]).toMatchObject({
+        id: "gpt-6-astra",
+        api,
+        reasoning: true,
+        contextWindow: 272000,
+        maxTokens: 64000,
+        thinkingLevelMap: {
+          off: api === "openai-codex-responses" ? "none" : null,
+          minimal: "low",
+          low: "low",
+          medium: null,
+          high: "high",
+          xhigh: null,
+          max: "max",
+        },
+      });
+    },
+  );
+
+  it.each(["gpt-6", "gpt-6-astra", "GPT-6-ASTRA"])(
+    "keeps fallback reasoning levels for %s when the Codex manifest is absent",
+    async (modelId) => {
+      writeFileSync(
+        join(stateDir, "sub2api.json"),
+        JSON.stringify({
+          astra: { baseURL: "https://gpt6-no-manifest.example", token: "sk-gpt6" },
+        }),
+      );
+      vi.stubGlobal("fetch", async (input: URL | RequestInfo) => {
+        const url = input instanceof Request ? input.url : String(input);
+        if (url === "https://gpt6-no-manifest.example/v1/models") {
+          return Response.json({ data: [{ id: modelId }] });
+        }
+        return new Response(null, { status: 404 });
+      });
+
+      const registrations: Registration[] = [];
+      await extension({
+        registerProvider(name: string, config: ProviderConfig) {
+          registrations.push({ name, config });
+        },
+        on() {},
+        registerCommand() {},
+      } as unknown as ExtensionAPI);
+
+      expect(registrations[0]!.config.models![0]).toMatchObject({
+        id: modelId,
+        api: "openai-codex-responses",
+        reasoning: true,
+        thinkingLevelMap: { off: "none", minimal: "low", xhigh: "xhigh" },
+      });
+    },
+  );
+
   it("keeps max as the default when the manifest also advertises ultra", async () => {
     writeFileSync(
       join(stateDir, "sub2api.json"),

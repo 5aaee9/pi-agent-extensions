@@ -104,7 +104,7 @@ const UNSUPPORTED_ANTHROPIC_SERVER_TOOL_PREFIXES = [
 ];
 
 // Models that support extended thinking / reasoning.
-const REASONING = /(claude|codex|gpt-5)/i;
+const REASONING = /(claude|codex|gpt-[56])/i;
 
 // Claude 4.6+ uses adaptive thinking instead of token-budget thinking.
 const ADAPTIVE_CLAUDE = /^claude-(?:fable-5|(?:haiku|opus|sonnet)-(?:4-[6-9]|[5-9]))(?:-|$)/i;
