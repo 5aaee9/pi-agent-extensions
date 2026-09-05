@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.1.24 - 2026-09-05
+
+- Discover explicitly configured `openai-codex-responses` providers directly from the Codex model manifest, without requesting or falling back to `/v1/models`.
+- Map manifest model IDs, display names, reasoning levels, input modalities, and token limits into Pi; derive reasoning support from declared capabilities instead of model-name patterns. Preserve standard inventory discovery for automatically routed and other API providers.
+
 ## 0.1.23 - 2026-09-05
 
 - Recognize GPT-6 models such as `gpt-6-astra` as reasoning-capable, discover their upstream reasoning levels even when token limits are already known, and retain fallback thinking levels when the Codex manifest is unavailable.
