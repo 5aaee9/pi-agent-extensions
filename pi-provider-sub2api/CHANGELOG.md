@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.25 - 2026-09-05
+
 - Fill missing model limits and prices from Pi's locally cached runtime catalog before the bundled static catalog, fixing newly discovered models such as `gpt-6-astra` incorrectly falling back to a 16,384-token output limit. Keep cache reads offline and preserve remote limits and static fallbacks for unavailable caches or older hosts.
 
 ## 0.1.24 - 2026-09-05
