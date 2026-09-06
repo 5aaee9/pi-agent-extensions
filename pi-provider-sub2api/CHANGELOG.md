@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.1.26 - 2026-09-06
+
+- Support `${ENV_VAR_NAME}` token references in `sub2api.json`, including validation for missing, empty, whitespace-only, and control-character values.
+
 ## 0.1.25 - 2026-09-05
 
 - Fill missing model limits and prices from Pi's locally cached runtime catalog before the bundled static catalog, fixing newly discovered models such as `gpt-6-astra` incorrectly falling back to a 16,384-token output limit. Keep cache reads offline and preserve remote limits and static fallbacks for unavailable caches or older hosts.
