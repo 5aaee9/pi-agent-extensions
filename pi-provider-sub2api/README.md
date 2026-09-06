@@ -62,6 +62,20 @@ Create `~/.pi/agent/sub2api.json`:
 
 Each top-level key becomes the provider name shown by pi. `baseURL` may include the `/v1` suffix; the extension normalizes both forms. The optional `api` setting accepts `anthropic-messages`, `openai-codex-responses`, `openai-responses`, or `openai-completions`. When present, it is applied to every discovered model for that provider instead of inferring an API from model IDs.
 
+A `token` may reference an environment variable instead of a literal secret, keeping the key out of the file:
+
+```json
+{
+  "my-relay": {
+    "baseURL": "https://relay.example.com",
+    "token": "${SUB2API_TOKEN}",
+    "api": "openai-responses"
+  }
+}
+```
+
+When `token` is exactly `${ENV_VAR_NAME}`, the extension reads the secret from that environment variable when pi starts. The variable must be set to a non-empty value, otherwise loading fails with an error naming the missing variable. Any other literal value is used as-is.
+
 The configuration directory follows `PI_CODING_AGENT_DIR` when that environment variable is set. Otherwise it defaults to `~/.pi/agent`.
 
 Restart pi after creating the file, or run `/reload` in an interactive session. Then use `/model` to select a discovered model under the configured provider.
@@ -224,7 +238,7 @@ Additional behavior:
 
 ## Security
 
-The configuration contains plaintext API tokens. Keep it outside repositories and restrict its permissions:
+The configuration may contain plaintext API tokens. Use an environment variable reference (`"token": "${SUB2API_TOKEN}"`) to keep secrets out of the file; a referenced variable must be set to a non-empty value before pi starts. Keep the file outside repositories and restrict its permissions:
 
 ```bash
 chmod 600 ~/.pi/agent/sub2api.json
@@ -234,8 +248,8 @@ Use HTTPS for remote relays. Plain HTTP is accepted for trusted local developmen
 
 ## Troubleshooting
 
-- **Provider does not appear:** inspect stderr for `[sub2api] failed to load ...`; verify that the JSON is valid and every entry has non-empty `baseURL` and `token` strings.
-- **No models appear:** for explicit `openai-codex-responses` providers, verify that the relay's `/backend-api/codex/models` endpoint returns a `models` array with `Authorization: Bearer <token>`; failures are logged as `[sub2api:<provider>] failed to fetch Codex model manifest`, without falling back to `/v1/models`. Other providers require `/v1/models`; their discovery failures are logged as `[sub2api:<provider>] failed to fetch models`.
+- **Provider does not appear:** inspect stderr for `[sub2api] failed to load ...`; verify that the JSON is valid and every entry has non-empty `baseURL` and `token` strings. A `token` referencing an unset environment variable fails with an error naming that variable.
+- **No models appear:** for explicit `openai-codex-responses` providers, verify that the relay's `/backend-api/codex/models` endpoint returns a `models` array with `Authorization: Bearer <token>`; failures are logged as `[sub2api:<provider>] failed to fetch Codex model manifest`, without falling back to `/v1/models`. Other providers require `<baseURL>/v1/models`; their discovery failures are logged as `[sub2api:<provider>] failed to fetch models`.
 - **Requests fail:** confirm the configured API is supported by the relay: Anthropic Messages uses `/v1/messages`, Codex generation and Remote Compaction V2 both use `/v1/responses`, OpenAI Responses uses `/v1/responses`, and Chat Completions uses `/v1/chat/completions`.
 - **Fast mode is rejected:** verify that the selected OpenAI model/account supports `service_tier: "priority"` and that the Sub2API OpenAI Fast policy allows it. `/toggle-fast` deliberately leaves relay eligibility and policy enforcement to Sub2API.
 - **Native compaction falls back:** verify that the relay supports Remote Compaction V2 on streamed `POST /v1/responses`: the request must end with a `compaction_trigger`, and the SSE response must contain exactly one encrypted `compaction` item in `response.output_item.done` followed by `response.completed`. The extension also accepts the `compaction_summary` type emitted by compatible Codex relays.
