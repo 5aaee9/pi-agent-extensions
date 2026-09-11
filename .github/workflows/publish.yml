@@ -41,6 +41,7 @@ jobs:
 
           package_directories=(
             "pi-provider-sub2api"
+            "pi-custom-provider"
             "pi-continue"
           )
           release_version="${RELEASE_TAG#v}"

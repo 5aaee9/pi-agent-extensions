@@ -14,6 +14,7 @@
   },
   "workspaces": [
     "pi-provider-sub2api",
+    "pi-custom-provider",
     "pi-continue"
   ],
   "type": "module",
@@ -27,6 +28,7 @@
     "format:check": "oxfmt --check .",
     "check": "npm run check:versions && npm run format:check && npm run lint && npm run typecheck && npm test",
     "pack:sub2api": "npm pack --workspace @indexyz/pi-provider-sub2api --dry-run",
+    "pack:custom-provider": "npm pack --workspace @indexyz/pi-custom-provider --dry-run",
     "pack:continue": "npm pack --workspace @indexyz/pi-continue --dry-run"
   },
   "devDependencies": {
@@ -40,6 +42,7 @@
   "pi": {
     "extensions": [
       "./pi-provider-sub2api/index.ts",
+      "./pi-custom-provider/index.ts",
       "./pi-continue/index.ts"
     ]
   }

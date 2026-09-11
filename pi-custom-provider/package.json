@@ -1,0 +1,62 @@
+{
+  "name": "@indexyz/pi-custom-provider",
+  "version": "0.1.26",
+  "description": "A generic pi provider extension for OpenAI-compatible, Anthropic-compatible, and OpenAI Responses endpoints",
+  "keywords": [
+    "anthropic",
+    "llm",
+    "openai",
+    "pi",
+    "pi-package",
+    "provider"
+  ],
+  "homepage": "https://github.com/5aaee9/pi-agent-extensions/tree/main/pi-custom-provider#readme",
+  "bugs": {
+    "url": "https://github.com/5aaee9/pi-agent-extensions/issues"
+  },
+  "license": "MIT",
+  "author": "5aaee9",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/5aaee9/pi-agent-extensions.git",
+    "directory": "pi-custom-provider"
+  },
+  "files": [
+    "index.ts",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "type": "module",
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm test",
+    "prepack": "npm run check"
+  },
+  "dependencies": {
+    "@earendil-works/pi-ai": "0.84.0"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "0.84.0",
+    "@earendil-works/pi-coding-agent": "0.84.0",
+    "@types/node": "^24.0.0",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.83.0"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}
