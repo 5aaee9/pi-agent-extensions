@@ -1,6 +1,6 @@
 {
   "name": "@indexyz/pi-custom-provider",
-  "version": "0.1.27",
+  "version": "0.1.28",
   "description": "A generic pi provider extension for OpenAI-compatible, Anthropic-compatible, and OpenAI Responses endpoints",
   "keywords": [
     "anthropic",

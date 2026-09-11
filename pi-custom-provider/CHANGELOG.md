@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.28 - 2026-09-11
+
+- Fix `authHeader: "authorization"` hiding all provider models: the API key was moved into an `Authorization` header and the registered `apiKey` cleared, but pi's availability check only counts `apiKey`/OAuth, so the provider was treated as unconfigured and its models were filtered out of `/model` and `--list-models`. The key now stays registered and pi's native `authHeader: true` flag emits `Authorization: Bearer <apiKey>` at request time. `!command` keys still use the generated header so the command output is wrapped in `Bearer`.
+
 ## 0.1.27 - 2026-09-11
 
 - Parse `max_input_tokens`/`maxInputTokens` (and `limit.input`) as context window sources, matching Anthropic-style catalogs.
