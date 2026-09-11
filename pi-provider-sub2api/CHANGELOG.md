@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.29 - 2026-09-11
+
+- Remove all extension-level retries so failed requests surface to Pi's own turn retry handling. The indefinite Codex stream retry loop (exponential backoff, stall heartbeats, buffered output) is gone; upstream errors, aborts, and thrown adapter failures now reach Pi unchanged. Model discovery, billing, and quota fetches run a single request each, and Codex native compaction attempts once before falling back to Pi's textual compaction or cancelling when a native checkpoint is active.
+
 ## 0.1.28 - 2026-09-11
 
 - Synchronize the package version with `@indexyz/pi-custom-provider` for coordinated workspace releases.
