@@ -1,6 +1,6 @@
 {
   "name": "@indexyz/pi-custom-provider",
-  "version": "0.1.30",
+  "version": "0.1.31",
   "description": "A generic pi provider extension for OpenAI-compatible, Anthropic-compatible, OpenAI Responses, and Ollama chat endpoints",
   "keywords": [
     "anthropic",

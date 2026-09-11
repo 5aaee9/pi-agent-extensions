@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.31 - 2026-09-12
+
+- Synchronize the package version with `@indexyz/pi-skill` for coordinated workspace releases.
+
 ## 0.1.30 - 2026-09-11
 
 - Synchronize the package version with `@indexyz/pi-custom-provider` for coordinated workspace releases.

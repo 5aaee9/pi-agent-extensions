@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.31 - 2026-09-12
+
+- Synchronize the package version with `@indexyz/pi-skill` for coordinated workspace releases.
+
 ## 0.1.30 - 2026-09-11
 
 - Add Ollama native chat API support (`api: "ollama-chat"`, aliases `ollama`, `ollama-chat-api`). Discovery uses `GET /api/tags` plus per-model `POST /api/show` to read capabilities (`thinking` → reasoning, `vision` → image input) and `model_info.*.context_length`; chat requests stream `POST /api/chat` NDJSON with thinking blocks, tool calls, usage (`prompt_eval_count`/`eval_count`/`prompt_eval_cached_count`), and `think` effort strings mapped through `thinkingLevelMap` (`low`/`medium`/`high`/`max`). A trailing `/v1` on `baseURL` is stripped for Ollama endpoints.
