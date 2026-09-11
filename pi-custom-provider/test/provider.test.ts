@@ -86,6 +86,28 @@ describe("upstream model metadata", () => {
       thinkingLevelMap: undefined,
     });
   });
+
+  it("reads Anthropic-style max_input_tokens and input modality arrays", () => {
+    const model = parseDiscoveredModel(
+      {
+        id: "glm-5.3",
+        display_name: "GLM-5.3",
+        max_input_tokens: 1_000_000,
+        max_tokens: 128_000,
+        capabilities: null,
+      },
+      "anthropic-messages",
+    );
+    expect(model).toMatchObject({
+      id: "glm-5.3",
+      contextWindow: 1_000_000,
+      maxTokens: 128_000,
+      reasoning: false,
+    });
+    expect(
+      parseDiscoveredModel({ id: "vision", input: ["text", "image"] }, "anthropic-messages"),
+    ).toMatchObject({ input: ["text", "image"] });
+  });
 });
 
 describe("custom provider extension", () => {
@@ -299,5 +321,167 @@ describe("custom provider extension", () => {
     const second = registerProviders();
     await extension(second.pi);
     expect(second.registrations[0]!.config.models![0]!.id).toBe("cached-model");
+  });
+
+  it("applies reasoningPattern, modelDefaults, and fallbackModels", async () => {
+    await writeFile(
+      join(agentDir, "custom-provider.json"),
+      JSON.stringify({
+        modelsDev: false,
+        providers: {
+          gateway: {
+            baseURL: "https://gateway.example",
+            api: "anthropic",
+            apiKey: "key",
+            reasoningPattern: "glm-5",
+            modelDefaults: {
+              input: ["text", "image"],
+              thinkingLevelMap: { xhigh: "max", max: "max" },
+            },
+          },
+          offline: {
+            baseURL: "https://offline.example",
+            api: "anthropic",
+            fallbackModels: [
+              {
+                id: "fallback-model",
+                display_name: "Fallback",
+                max_input_tokens: 500_000,
+                max_tokens: 32_000,
+                reasoning: true,
+                input: ["text", "image"],
+              },
+            ],
+          },
+        },
+      }),
+    );
+
+    vi.stubGlobal("fetch", async (input: URL | RequestInfo) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (url === "https://gateway.example/v1/models") {
+        return Response.json({
+          data: [
+            { id: "glm-5.3", max_input_tokens: 1_000_000, max_tokens: 128_000 },
+            { id: "plain-model" },
+          ],
+        });
+      }
+      throw new Error(`unexpected URL: ${url}`);
+    });
+
+    const harness = registerProviders();
+    await extension(harness.pi);
+
+    const gateway = harness.registrations.find((r) => r.name === "gateway")!;
+    const glm = gateway.config.models!.find((m) => m.id === "glm-5.3")!;
+    expect(glm).toMatchObject({
+      reasoning: true,
+      input: ["text", "image"],
+      contextWindow: 1_000_000,
+      maxTokens: 128_000,
+      thinkingLevelMap: { xhigh: "max", max: "max" },
+    });
+    const plain = gateway.config.models!.find((m) => m.id === "plain-model")!;
+    expect(plain.reasoning).toBe(false);
+    expect(plain.thinkingLevelMap).toBeUndefined();
+
+    const offline = harness.registrations.find((r) => r.name === "offline")!;
+    expect(offline.config.models![0]).toMatchObject({
+      id: "fallback-model",
+      reasoning: true,
+      input: ["text", "image"],
+      contextWindow: 500_000,
+      maxTokens: 32_000,
+    });
+  });
+
+  it("injects the configured session affinity header with the pi session id", async () => {
+    await writeFile(
+      join(agentDir, "custom-provider.json"),
+      JSON.stringify({
+        modelsDev: false,
+        providers: {
+          zcode: {
+            baseURL: "https://zcode.example",
+            api: "anthropic",
+            apiKey: "key",
+            sessionAffinityHeader: "x-session-id",
+          },
+          other: { baseURL: "https://other.example", api: "openai-completions", apiKey: "key" },
+        },
+      }),
+    );
+
+    vi.stubGlobal("fetch", async () => Response.json({ data: [{ id: "m1" }] }));
+
+    const handlers: Array<(event: any, ctx: any) => void> = [];
+    const registrations: Registration[] = [];
+    const pi = {
+      registerProvider(name: string, config: ProviderConfig) {
+        registrations.push({ name, config });
+      },
+      registerCommand() {},
+      on(event: string, handler: (event: any, ctx: any) => void) {
+        if (event === "before_provider_headers") handlers.push(handler);
+      },
+    } as unknown as ExtensionAPI;
+
+    await extension(pi);
+    expect(handlers.length).toBe(1);
+
+    const event = { headers: {} as Record<string, string> };
+    const ctx = {
+      model: { provider: "zcode" },
+      sessionManager: { getSessionId: () => "session-uuid-1" },
+    };
+    handlers[0]!(event, ctx);
+    expect(event.headers["x-session-id"]).toBe("session-uuid-1");
+
+    const otherEvent = { headers: {} as Record<string, string> };
+    handlers[0]!(otherEvent, { ...ctx, model: { provider: "other" } });
+    expect(otherEvent.headers["x-session-id"]).toBeUndefined();
+  });
+
+  it("registers refreshModels that rediscovers with the auth credential", async () => {
+    await writeFile(
+      join(agentDir, "custom-provider.json"),
+      JSON.stringify({
+        modelsDev: false,
+        providers: {
+          refreshable: {
+            baseURL: "https://refresh.example",
+            api: "anthropic",
+            apiKey: "config-key",
+            authHeader: "authorization",
+          },
+        },
+      }),
+    );
+
+    const seenAuth: Array<string | null> = [];
+    vi.stubGlobal("fetch", async (input: URL | RequestInfo, init?: RequestInit) => {
+      seenAuth.push(new Headers(init?.headers).get("authorization"));
+      return Response.json({ data: [{ id: "model-v1" }] });
+    });
+
+    const harness = registerProviders();
+    await extension(harness.pi);
+    expect(seenAuth).toEqual(["Bearer config-key"]);
+
+    const provider = harness.registrations[0]!;
+    expect(provider.config.headers?.Authorization).toBe("Bearer config-key");
+    expect(provider.config.apiKey).toBeUndefined();
+    expect(provider.config.refreshModels).toBeTypeOf("function");
+
+    const refreshed = await provider.config.refreshModels!({
+      credential: { type: "api_key", key: "stored-key" },
+      allowNetwork: true,
+      force: true,
+      signal: new AbortController().signal,
+      publish: async () => true,
+    });
+    expect(seenAuth).toEqual(["Bearer config-key", "Bearer stored-key"]);
+    expect(refreshed[0]!.id).toBe("model-v1");
   });
 });

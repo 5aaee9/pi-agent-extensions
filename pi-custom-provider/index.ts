@@ -68,6 +68,10 @@ interface ProviderDefinition {
   useModelsDev: boolean;
   compat?: JsonRecord;
   modelOverrides: Record<string, JsonRecord>;
+  modelDefaults?: JsonRecord;
+  fallbackModels: DiscoveredModel[];
+  reasoningPattern?: RegExp;
+  sessionAffinityHeader?: string;
   cache: CacheOptions;
 }
 
@@ -253,10 +257,14 @@ function pickContextWindow(model: JsonRecord) {
     model.context_window,
     model.contextWindow,
     model.context_length,
+    model.max_input_tokens,
+    model.maxInputTokens,
     model.max_context_tokens,
     model.maxContextTokens,
     limit?.context,
+    limit?.input,
     limits?.context,
+    limits?.input,
     context?.window,
     context?.length,
   );
@@ -503,6 +511,7 @@ function hasInputMetadata(model: JsonRecord) {
     model.input_modalities,
     model.inputModalities,
     model.modalities,
+    model.input,
     asRecord(model.modalities)?.input,
     architecture?.input_modalities,
     architecture?.inputModalities,
@@ -518,6 +527,7 @@ function pickInputTypes(model: JsonRecord) {
     model.input_modalities,
     model.inputModalities,
     model.modalities,
+    model.input,
     asRecord(model.modalities)?.input,
     architecture?.input_modalities,
     architecture?.inputModalities,
@@ -1070,6 +1080,47 @@ function parseModelOverrides(value: unknown) {
   );
 }
 
+const HEADER_NAME_RE = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+
+function parseReasoningPattern(name: string, value: unknown): RegExp | undefined {
+  if (value === undefined || value === null || value === false) return undefined;
+  if (typeof value !== "string" || !value.trim()) {
+    throw new Error(`provider ${name} reasoningPattern must be a non-empty string`);
+  }
+  try {
+    return new RegExp(value, "i");
+  } catch (error) {
+    throw new Error(
+      `provider ${name} reasoningPattern is not a valid regex: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+function parseSessionAffinityHeader(name: string, value: unknown): string | undefined {
+  if (value === undefined || value === null || value === false) return undefined;
+  const header = value === true ? "x-session-id" : typeof value === "string" ? value.trim() : "";
+  if (!header || !HEADER_NAME_RE.test(header)) {
+    throw new Error(`provider ${name} sessionAffinityHeader must be a valid HTTP header name`);
+  }
+  return header;
+}
+
+function parseFallbackModels(name: string, value: unknown, api: SupportedApi): DiscoveredModel[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new Error(`provider ${name} fallbackModels must be an array`);
+  const seen = new Set<string>();
+  const models: DiscoveredModel[] = [];
+  for (const entry of value.slice(0, 1000)) {
+    const record = asRecord(entry);
+    if (!record) continue;
+    const model = parseDiscoveredModel(record, api);
+    if (!model || seen.has(model.id)) continue;
+    seen.add(model.id);
+    models.push(model);
+  }
+  return models;
+}
+
 function parseProvider(
   name: string,
   value: unknown,
@@ -1126,6 +1177,18 @@ function parseProvider(
     useModelsDev: record.modelsDev !== false,
     compat: providerCompat ? structuredClone(providerCompat) : undefined,
     modelOverrides: parseModelOverrides(record.modelOverrides ?? record.model_overrides),
+    modelDefaults: asRecord(record.modelDefaults ?? record.model_defaults)
+      ? structuredClone(asRecord(record.modelDefaults ?? record.model_defaults))
+      : undefined,
+    fallbackModels: parseFallbackModels(name, record.fallbackModels ?? record.fallback_models, api),
+    reasoningPattern: parseReasoningPattern(
+      name,
+      record.reasoningPattern ?? record.reasoning_pattern,
+    ),
+    sessionAffinityHeader: parseSessionAffinityHeader(
+      name,
+      record.sessionAffinityHeader ?? record.session_affinity_header,
+    ),
     cache: parseCacheOptions(record.cache, {
       ...defaults,
       enabled: record.cache !== false && defaults.enabled !== false,
@@ -1404,6 +1467,58 @@ function mergeCompat(...values: (JsonRecord | undefined)[]) {
   return Object.keys(merged).length > 0 ? merged : undefined;
 }
 
+/**
+ * Apply provider-level heuristics after upstream parsing and models.dev
+ * enrichment. These fill fields the upstream/catalog did not provide:
+ * `reasoningPattern` marks models reasoning-capable by id, and `modelDefaults`
+ * fills any field that is still unprovided. `thinkingLevelMap` defaults apply
+ * only to reasoning models.
+ */
+function applyProviderHeuristics(
+  provider: ProviderDefinition,
+  model: DiscoveredModel,
+): DiscoveredModel {
+  let result = model;
+  if (!result.reasoningProvided && provider.reasoningPattern?.test(result.id)) {
+    result = { ...result, reasoning: true, reasoningProvided: true };
+  }
+  const defaults = provider.modelDefaults;
+  if (!defaults) return result;
+
+  const next = { ...result };
+  if (!next.reasoningProvided && typeof defaults.reasoning === "boolean") {
+    next.reasoning = defaults.reasoning;
+    next.reasoningProvided = true;
+  }
+  if (!next.inputProvided && Array.isArray(defaults.input)) {
+    next.input = pickInputTypes({ input: defaults.input });
+    next.inputProvided = true;
+  }
+  if (next.contextWindow === undefined) {
+    next.contextWindow = toPositiveInteger(defaults.contextWindow ?? defaults.context_window);
+  }
+  if (next.maxTokens === undefined) {
+    next.maxTokens = toPositiveInteger(defaults.maxTokens ?? defaults.max_tokens);
+  }
+  if (!next.costProvided) {
+    const picked = pickCost({ cost: defaults.cost });
+    if (picked.provided) {
+      next.cost = picked.cost;
+      next.costProvided = true;
+      next.costFields = picked.fields;
+    }
+  }
+  if (next.reasoning && !next.thinkingLevelMapProvided) {
+    const map = readExplicitThinkingMap({ thinkingLevelMap: defaults.thinkingLevelMap });
+    if (map) {
+      next.thinkingLevelMap = map;
+      next.thinkingLevelMapProvided = true;
+    }
+  }
+  next.compat = mergeCompat(asRecord(defaults.compat), next.compat);
+  return next;
+}
+
 function applyModelOverride(model: DiscoveredModel, override: JsonRecord | undefined) {
   if (!override) return model;
   const result = { ...model } as DiscoveredModel & JsonRecord;
@@ -1476,7 +1591,31 @@ function registeredHeaders(headers: Record<string, string>) {
   );
 }
 
-function providerConfig(provider: ProviderDefinition, models: DiscoveredModel[]): ProviderConfig {
+function credentialApiKey(credential: unknown): string | undefined {
+  const record = asRecord(credential);
+  if (!record) return undefined;
+  if (record.type === "api_key" && typeof record.key === "string" && record.key.trim()) {
+    return record.key;
+  }
+  if (record.type === "oauth" && typeof record.access === "string" && record.access.trim()) {
+    return record.access;
+  }
+  return undefined;
+}
+
+function authorizationHeaderValue(apiKey: string): string {
+  // A `!command` apiKey must keep the command syntax inside the Bearer value so
+  // pi executes the inner command and interpolates its stdout.
+  return apiKey.startsWith("!")
+    ? `!printf 'Bearer %s' "$(${apiKey.slice(1)})"`
+    : `Bearer ${apiKey}`;
+}
+
+function providerConfig(
+  provider: ProviderDefinition,
+  models: DiscoveredModel[],
+  refreshModels?: ProviderConfig["refreshModels"],
+): ProviderConfig {
   const configs = models.map((model) => modelConfig(provider, model));
   const headers = registeredHeaders(provider.headers);
   const hasAuthorizationHeader = Object.keys(headers).some(
@@ -1484,7 +1623,7 @@ function providerConfig(provider: ProviderDefinition, models: DiscoveredModel[])
   );
   const usesAuthorizationHeader = provider.useAuthorizationHeader;
   if (usesAuthorizationHeader && provider.apiKey && !hasAuthorizationHeader) {
-    headers.Authorization = `Bearer ${toProviderValue(provider.apiKey)}`;
+    headers.Authorization = authorizationHeaderValue(toProviderValue(provider.apiKey));
   }
   return {
     name: provider.name,
@@ -1497,6 +1636,7 @@ function providerConfig(provider: ProviderDefinition, models: DiscoveredModel[])
     api: provider.api,
     headers,
     models: configs,
+    ...(refreshModels ? { refreshModels } : {}),
   };
 }
 
@@ -1529,6 +1669,12 @@ async function discoverProvider(
 
   try {
     const models = await fetchModels(provider, signal);
+    if (models.length === 0 && provider.fallbackModels.length > 0) {
+      console.warn(
+        `[custom-provider:${provider.name}] upstream returned no usable models; using fallbackModels`,
+      );
+      return provider.fallbackModels;
+    }
     if (provider.cache.enabled) {
       cache.providers[provider.name] = { cacheKey: key, fetchedAt: Date.now(), models };
       await writeCache(cacheFile, cache);
@@ -1540,6 +1686,12 @@ async function discoverProvider(
         `[custom-provider:${provider.name}] model discovery failed; using cached models`,
       );
       return cached.models;
+    }
+    if (provider.fallbackModels.length > 0) {
+      console.warn(
+        `[custom-provider:${provider.name}] model discovery failed; using fallbackModels`,
+      );
+      return provider.fallbackModels;
     }
     console.error(`[custom-provider:${provider.name}] failed to fetch models:`, error);
     return [];
@@ -1597,21 +1749,84 @@ export default async function customProviderExtension(pi: ExtensionAPI) {
       const models = await discoverProvider(provider, cache, path, controller.signal, forceRefresh);
       discoveredModels.set(
         provider.name,
-        models.map((model) => enrichWithModelsDev(provider, model, modelsDev)),
+        models.map((model) =>
+          applyProviderHeuristics(provider, enrichWithModelsDev(provider, model, modelsDev)),
+        ),
       );
     }
   };
 
   await discoverAll(false);
+
+  const refreshProviderModels = async (
+    provider: ProviderDefinition,
+    context: Parameters<NonNullable<ProviderConfig["refreshModels"]>>[0],
+  ) => {
+    const credentialKey = credentialApiKey(context.credential);
+    const effective = credentialKey ? { ...provider, apiKey: credentialKey } : provider;
+    const path = cachePath(provider, loaded.root.cache);
+    let cache = cacheDocuments.get(path);
+    if (!cache) {
+      cache = await readCache(path);
+      cacheDocuments.set(path, cache);
+    }
+    const force = context.force === true;
+    const models = context.allowNetwork
+      ? await discoverProvider(effective, cache, path, context.signal, force)
+      : (cache.providers[provider.name]?.models ?? provider.fallbackModels);
+    let catalog: ModelsDevCatalog = { providers: {}, models: {} };
+    if (provider.useModelsDev) {
+      const modelsDevPath = modelsDevCachePath(loaded.root.modelsDev, loaded.root.cache);
+      let modelsDevCache = cacheDocuments.get(modelsDevPath);
+      if (!modelsDevCache) {
+        modelsDevCache = await readCache(modelsDevPath);
+        cacheDocuments.set(modelsDevPath, modelsDevCache);
+      }
+      catalog = await loadModelsDevCatalog(
+        loaded.root.modelsDev,
+        modelsDevCache,
+        modelsDevPath,
+        context.signal,
+        context.allowNetwork ? force : false,
+      );
+    }
+    const enriched = models.map((model) =>
+      applyProviderHeuristics(provider, enrichWithModelsDev(provider, model, catalog)),
+    );
+    discoveredModels.set(provider.name, enriched);
+    return enriched.map((model) => modelConfig(provider, model));
+  };
+
   const registerAll = () => {
     for (const provider of loaded.providers) {
       pi.registerProvider(
         provider.name,
-        providerConfig(provider, discoveredModels.get(provider.name) ?? []),
+        providerConfig(provider, discoveredModels.get(provider.name) ?? [], (context) =>
+          refreshProviderModels(provider, context),
+        ),
       );
     }
   };
   registerAll();
+
+  // Inject a per-request session-affinity header (e.g. x-session-id) carrying
+  // pi's session UUID, matching the provider's expected affinity scheme. The
+  // hook also applies to retried requests.
+  const affinityHeaders = new Map(
+    loaded.providers.flatMap((provider) =>
+      provider.sessionAffinityHeader
+        ? [[provider.name, provider.sessionAffinityHeader] as const]
+        : [],
+    ),
+  );
+  if (affinityHeaders.size > 0) {
+    pi.on("before_provider_headers", (event, ctx) => {
+      const headerName = ctx.model?.provider ? affinityHeaders.get(ctx.model.provider) : undefined;
+      if (!headerName) return;
+      const sessionId = ctx.sessionManager?.getSessionId?.();
+      if (sessionId) event.headers[headerName] = sessionId;
+    });
+  }
 
   pi.registerCommand("refresh-custom-provider-models", {
     description: "Refresh model catalogs for custom providers",

@@ -104,6 +104,45 @@ API 也接受以下别名：`openai-chat-compatible`、`chat-completions`、`ant
 
 `modelOverrides` 的 key 是上游模型 ID，可覆盖 `name`、`reasoning`、`thinkingLevelMap`、`input`、`contextWindow`、`maxTokens`、`cost` 和 `compat`。
 
+### 上游不提供能力信息时
+
+部分网关（如自建 Anthropic 网关）的 `/v1/models` 只返回 `id`/`max_input_tokens`，不含 capabilities。可以用 provider 级别的选项补齐：
+
+```json
+{
+  "providers": {
+    "gateway": {
+      "baseURL": "https://gateway.example",
+      "api": "anthropic-messages",
+      "authHeader": "authorization",
+      "reasoningPattern": "glm-5|claude|gpt-5",
+      "modelDefaults": {
+        "input": ["text", "image"],
+        "thinkingLevelMap": { "xhigh": "max", "max": "max" }
+      },
+      "fallbackModels": [
+        {
+          "id": "glm-5.3",
+          "display_name": "GLM-5.3",
+          "max_input_tokens": 1000000,
+          "max_tokens": 128000,
+          "reasoning": true,
+          "input": ["text", "image"]
+        }
+      ],
+      "sessionAffinityHeader": "x-session-id"
+    }
+  }
+}
+```
+
+- `reasoningPattern`：正则（不区分大小写），对上游未声明 reasoning 能力的模型按 ID 匹配补齐；上游明确返回 `reasoning`/`capabilities` 时不受影响。
+- `modelDefaults`：填充仍未提供的字段，支持 `reasoning`、`input`、`contextWindow`、`maxTokens`、`cost`、`thinkingLevelMap`（仅对 reasoning 模型生效）和 `compat`。优先级低于上游返回值和 `modelOverrides`。
+- `fallbackModels`：模型发现失败（网络错误、无缓存、上游返回空列表）时使用的静态目录，字段格式与上游 `/models` 条目相同，也接受 pi 风格的 `input`/`contextWindow`/`thinkingLevelMap`。
+- `sessionAffinityHeader`：在每个 LLM 请求（含重试）上注入值为当前 pi 会话 UUID 的请求头。`true` 等价于 `"x-session-id"`；上游需要别的 header 名时直接写名字。
+
+模型列表还会注册到 pi 原生的模型刷新流程：刷新时使用 `auth.json` 中已存储的 credential（如果有），否则回退到 `apiKey` 配置值。
+
 ### models.dev 补全
 
 默认会查询并缓存 `https://models.dev/api.json` 和 `https://models.dev/models.json`。上游模型对象的字段优先，models.dev 只补充缺失字段；两份 models.dev 数据也会合并，优先使用带 provider 的价格数据。
