@@ -43,6 +43,7 @@ jobs:
             "pi-provider-sub2api"
             "pi-custom-provider"
             "pi-continue"
+            "pi-skill"
           )
           release_version="${RELEASE_TAG#v}"
 

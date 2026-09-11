@@ -7,6 +7,7 @@ A collection of extensions for the [pi coding agent](https://github.com/earendil
 - [`@indexyz/pi-provider-sub2api`](./pi-provider-sub2api) — dynamic provider support, model metadata discovery, and quota reporting for Sub2API-compatible relays.
 - [`@indexyz/pi-custom-provider`](./pi-custom-provider) — generic OpenAI Chat Compatible, Anthropic Messages, and OpenAI Responses providers with model discovery and caching.
 - [`@indexyz/pi-continue`](./pi-continue) — resume an interrupted or failed turn with pi's currently selected model.
+- [`@indexyz/pi-skill`](./pi-skill) — Codex-style `$skill-name` invocation anywhere in a prompt.
 
 The repository root is a private npm workspace. Install packages from npm with:
 
@@ -14,6 +15,7 @@ The repository root is a private npm workspace. Install packages from npm with:
 pi install npm:@indexyz/pi-provider-sub2api
 pi install npm:@indexyz/pi-custom-provider
 pi install npm:@indexyz/pi-continue
+pi install npm:@indexyz/pi-skill
 ```
 
 For local development:
@@ -26,6 +28,7 @@ npm run check
 pi -e ./pi-provider-sub2api/index.ts
 pi -e ./pi-custom-provider/index.ts
 pi -e ./pi-continue/index.ts
+pi -e ./pi-skill/index.ts
 ```
 
 ## Releases
