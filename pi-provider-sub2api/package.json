@@ -21,8 +21,18 @@
     "directory": "pi-provider-sub2api"
   },
   "files": [
-    "index.ts",
+    "codex-api.ts",
     "codex-compaction.ts",
+    "config.ts",
+    "discovery.ts",
+    "footer.ts",
+    "index.ts",
+    "model-metadata.ts",
+    "quota.ts",
+    "relay-stream.ts",
+    "server-tools.ts",
+    "types.ts",
+    "util.ts",
     "README.md",
     "CHANGELOG.md",
     "LICENSE"

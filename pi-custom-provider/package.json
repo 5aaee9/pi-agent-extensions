@@ -22,7 +22,16 @@
     "directory": "pi-custom-provider"
   },
   "files": [
+    "cache.ts",
+    "config.ts",
+    "discovery.ts",
     "index.ts",
+    "model-metadata.ts",
+    "models-dev.ts",
+    "ollama.ts",
+    "thinking.ts",
+    "types.ts",
+    "util.ts",
     "README.md",
     "CHANGELOG.md",
     "LICENSE"
