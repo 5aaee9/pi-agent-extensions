@@ -470,8 +470,12 @@ describe("custom provider extension", () => {
     expect(seenAuth).toEqual(["Bearer config-key"]);
 
     const provider = harness.registrations[0]!;
-    expect(provider.config.headers?.Authorization).toBe("Bearer config-key");
-    expect(provider.config.apiKey).toBeUndefined();
+    // The key must stay on apiKey (with authHeader asking pi to send it as a
+    // Bearer token): hiding it inside headers leaves the provider
+    // "unconfigured", so pi filters its models out of the model list.
+    expect(provider.config.apiKey).toBe("config-key");
+    expect(provider.config.authHeader).toBe(true);
+    expect(provider.config.headers?.Authorization).toBeUndefined();
     expect(provider.config.refreshModels).toBeTypeOf("function");
 
     const refreshed = await provider.config.refreshModels!({

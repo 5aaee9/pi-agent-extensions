@@ -1603,14 +1603,6 @@ function credentialApiKey(credential: unknown): string | undefined {
   return undefined;
 }
 
-function authorizationHeaderValue(apiKey: string): string {
-  // A `!command` apiKey must keep the command syntax inside the Bearer value so
-  // pi executes the inner command and interpolates its stdout.
-  return apiKey.startsWith("!")
-    ? `!printf 'Bearer %s' "$(${apiKey.slice(1)})"`
-    : `Bearer ${apiKey}`;
-}
-
 function providerConfig(
   provider: ProviderDefinition,
   models: DiscoveredModel[],
@@ -1618,22 +1610,32 @@ function providerConfig(
 ): ProviderConfig {
   const configs = models.map((model) => modelConfig(provider, model));
   const headers = registeredHeaders(provider.headers);
+  const usesAuthorizationHeader = provider.useAuthorizationHeader;
   const hasAuthorizationHeader = Object.keys(headers).some(
     (key) => key.toLowerCase() === "authorization",
   );
-  const usesAuthorizationHeader = provider.useAuthorizationHeader;
-  if (usesAuthorizationHeader && provider.apiKey && !hasAuthorizationHeader) {
-    headers.Authorization = authorizationHeaderValue(toProviderValue(provider.apiKey));
+  // A `!command` apiKey needs the Bearer prefix inside the executed command so
+  // pi interpolates the command stdout. pi's authHeader would wrap the literal
+  // command instead, so keep the header form for that case only.
+  const needsCommandWrapper =
+    usesAuthorizationHeader && provider.apiKey?.startsWith("!") === true && !hasAuthorizationHeader;
+  if (needsCommandWrapper && provider.apiKey) {
+    headers.Authorization = `!printf 'Bearer %s' "$(${provider.apiKey.slice(1)})"`;
   }
   return {
     name: provider.name,
     baseUrl:
       provider.api === "anthropic-messages" ? provider.anthropicBaseURL : provider.openaiBaseURL,
-    // Anthropic's SDK uses x-api-key for apiKey. When a gateway explicitly asks
-    // for Authorization, keep the key in the configured header instead so the
-    // request does not contain two competing authentication schemes.
-    apiKey: usesAuthorizationHeader ? undefined : registeredApiKey(provider.apiKey),
+    // Always register the key: pi's availability check only counts apiKey/oauth,
+    // so a key hidden inside headers leaves the provider "unconfigured" and its
+    // models are filtered out of the model list entirely. authHeader tells pi
+    // to also send Authorization: Bearer <apiKey> at request time (it would
+    // clobber a user-configured Authorization header, so skip it there).
+    apiKey: registeredApiKey(provider.apiKey),
     api: provider.api,
+    ...(usesAuthorizationHeader && !needsCommandWrapper && !hasAuthorizationHeader
+      ? { authHeader: true }
+      : {}),
     headers,
     models: configs,
     ...(refreshModels ? { refreshModels } : {}),
