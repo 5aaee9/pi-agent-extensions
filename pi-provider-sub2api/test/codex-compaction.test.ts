@@ -206,17 +206,6 @@ function remoteCompactionResponse(encryptedContent: string, itemType = "compacti
   );
 }
 
-function runRetryTimersImmediately() {
-  vi.spyOn(AbortSignal, "timeout").mockImplementation(() => new AbortController().signal);
-  const delays: number[] = [];
-  const realSetTimeout = globalThis.setTimeout;
-  vi.spyOn(globalThis, "setTimeout").mockImplementation(((callback: () => void, delay?: number) => {
-    delays.push(delay ?? 0);
-    return realSetTimeout(callback, 0);
-  }) as typeof setTimeout);
-  return delays;
-}
-
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
@@ -334,34 +323,9 @@ describe("Codex remote compaction v2", () => {
     expect(rewrittenWithContext.input.at(-1)).toEqual(injectedTail);
   });
 
-  it("retries transient failures five times with exponential backoff before succeeding", async () => {
-    const user = userEntry("user-1", "Remember BLUE-42.");
-    const harness = createHarness([user]);
-    const delays = runRetryTimersImmediately();
-    let attempts = 0;
-    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => {
-      attempts += 1;
-      return attempts <= 5
-        ? new Response("temporary failure", { status: 502 })
-        : remoteCompactionResponse("after-retries");
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
-    const result = await harness.handlers.get("session_before_compact")!(
-      compactEvent([user]),
-      harness.context,
-    );
-
-    expect(fetchMock).toHaveBeenCalledTimes(6);
-    expect(delays).toEqual([1_000, 2_000, 4_000, 8_000, 16_000]);
-    expect(result.compaction.details.compactResponseId).toBe("cmp-response-after-retries");
-    expect(harness.notifications).toEqual([]);
-  });
-
-  it("falls back to Pi compaction only after all five transient retries fail", async () => {
+  it("falls back to Pi compaction after a single transient failure without retrying", async () => {
     const user = userEntry("user-1", "hello");
     const harness = createHarness([user]);
-    const delays = runRetryTimersImmediately();
     const fetchMock = vi.fn<typeof globalThis.fetch>(async () => {
       return new Response("still unavailable", { status: 503 });
     });
@@ -373,8 +337,7 @@ describe("Codex remote compaction v2", () => {
     );
 
     expect(result).toBeUndefined();
-    expect(fetchMock).toHaveBeenCalledTimes(6);
-    expect(delays).toEqual([1_000, 2_000, 4_000, 8_000, 16_000]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(harness.notifications.at(-1)).toMatchObject({
       level: "warning",
       message: expect.stringContaining("HTTP 503"),
@@ -384,7 +347,6 @@ describe("Codex remote compaction v2", () => {
   it("does not retry permanent compaction HTTP failures", async () => {
     const user = userEntry("user-1", "hello");
     const harness = createHarness([user]);
-    const delays = runRetryTimersImmediately();
     const fetchMock = vi.fn<typeof globalThis.fetch>(async () => {
       return new Response("unauthorized", { status: 401 });
     });
@@ -397,7 +359,6 @@ describe("Codex remote compaction v2", () => {
 
     expect(result).toBeUndefined();
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(delays).toEqual([]);
   });
 
   it("accepts the compaction_summary item returned by Codex relays", async () => {
@@ -519,10 +480,9 @@ describe("Codex remote compaction v2", () => {
     });
   });
 
-  it("retries top-level SSE failures and surfaces the final error when falling back", async () => {
+  it("surfaces top-level SSE failures when falling back without retrying", async () => {
     const user = userEntry("user-1", "hello");
     const harness = createHarness([user]);
-    const delays = runRetryTimersImmediately();
     const fetchMock = vi.fn<typeof globalThis.fetch>(async () => {
       return new Response(
         `data: ${JSON.stringify({ type: "error", message: "relay exploded" })}\n\n`,
@@ -537,8 +497,7 @@ describe("Codex remote compaction v2", () => {
     );
 
     expect(result).toBeUndefined();
-    expect(fetchMock).toHaveBeenCalledTimes(6);
-    expect(delays).toEqual([1_000, 2_000, 4_000, 8_000, 16_000]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(harness.notifications.at(-1)).toMatchObject({
       level: "warning",
       message: expect.stringContaining("relay exploded"),

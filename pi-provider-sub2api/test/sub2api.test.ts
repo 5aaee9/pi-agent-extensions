@@ -274,27 +274,6 @@ function createErrorEvent(model: Record<string, any>, errorMessage: string) {
   };
 }
 
-async function* createTextAttemptEvents(
-  model: Record<string, any>,
-  text: string,
-  includeDone = true,
-) {
-  const partial = createAssistantMessage(model, "pending");
-  yield { type: "start", partial };
-  partial.content.push({ type: "text", text: "" });
-  yield { type: "text_start", contentIndex: 0, partial };
-  partial.content[0]!.text = text;
-  yield { type: "text_delta", contentIndex: 0, delta: text, partial };
-  yield { type: "text_end", contentIndex: 0, content: text, partial };
-  if (includeDone) {
-    yield {
-      type: "done",
-      reason: "stop",
-      message: { ...partial, stopReason: "stop" },
-    };
-  }
-}
-
 async function loadProviderComposer() {
   let searchDir = import.meta.dirname;
   let codingAgentDir: string | undefined;
@@ -915,7 +894,7 @@ describe("sub2api provider extension", () => {
     expect(observed[1]!.output / ((observed[1]!.at - observed[0]!.at) / 1_000)).toBe(336);
   });
 
-  it("retries Codex stream_read_error forever with exponential backoff capped at 30 minutes", async () => {
+  it("surfaces Codex upstream errors to Pi without retrying internally", async () => {
     writeFileSync(
       join(stateDir, "sub2api.json"),
       JSON.stringify({
@@ -938,335 +917,39 @@ describe("sub2api provider extension", () => {
 
     const [registration] = await registerProviders();
     const model = { ...modelConfigs(registration!)[0]!, provider: registration!.name };
-    const callTimes: number[] = [];
-    codexApiMock.streamSimple.mockImplementation(() => {
-      callTimes.push(Date.now());
-      const attempt = callTimes.length;
-      return (async function* () {
-        if (attempt <= 13) {
-          if (attempt === 1) {
-            for await (const event of createTextAttemptEvents(model, "stale partial", false)) {
-              yield event;
-            }
-          } else yield createStartEvent(model);
-          yield createErrorEvent(model, "Codex error: stream_read_error");
-          return;
-        }
-        for await (const event of createTextAttemptEvents(model, "fresh response")) yield event;
-      })();
-    });
-    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    const controller = new AbortController();
-    const addAbortListener = vi.spyOn(controller.signal, "addEventListener");
-    const removeAbortListener = vi.spyOn(controller.signal, "removeEventListener");
-    vi.useFakeTimers();
-    vi.setSystemTime(0);
-
-    const retryingStream = registration!.config.streamSimple!(
-      model as never,
-      { messages: [] } as never,
-      { signal: controller.signal },
-    );
-    const streamPromise = collectStream(retryingStream);
-    await vi.advanceTimersByTimeAsync(0);
-    expect(callTimes).toEqual([0]);
-
-    const expectedDelays = [
-      1_000, 2_000, 4_000, 8_000, 16_000, 32_000, 64_000, 128_000, 256_000, 512_000, 1_024_000,
-      1_800_000, 1_800_000,
-    ];
-    for (const [index, delay] of expectedDelays.entries()) {
-      await vi.advanceTimersByTimeAsync(delay - 1);
-      expect(callTimes).toHaveLength(index + 1);
-      await vi.advanceTimersByTimeAsync(1);
-      expect(callTimes).toHaveLength(index + 2);
-    }
-
-    const events = await streamPromise;
-    expect(
-      events
-        .filter((event: any) => event.type === "start" || event.type === "done")
-        .map((event: any) => event.type),
-    ).toEqual(["start", "done"]);
-    expect(JSON.stringify(events)).not.toContain("stale partial");
-    expect(JSON.stringify(events)).toContain("fresh response");
-    await expect(retryingStream.result()).resolves.toMatchObject({
-      stopReason: "stop",
-      content: [{ type: "text", text: "fresh response" }],
-    });
-    expect(callTimes.slice(1).map((time, index) => time - callTimes[index]!)).toEqual(
-      expectedDelays,
-    );
-    expect(warning).toHaveBeenCalledTimes(expectedDelays.length);
-    expect(addAbortListener).toHaveBeenCalled();
-    expect(removeAbortListener).toHaveBeenCalledTimes(addAbortListener.mock.calls.length);
-  });
-
-  it("keeps the outer stream active during stalled Codex attempts and retry backoffs", async () => {
-    writeFileSync(
-      join(stateDir, "sub2api.json"),
-      JSON.stringify({
-        codex: {
-          baseURL: "https://retry.example",
-          token: "sk-retry",
-          api: "openai-codex-responses",
-        },
-      }),
-    );
-    vi.stubGlobal("fetch", async (input: URL | RequestInfo) => {
-      const url = input instanceof Request ? input.url : String(input);
-      if (url === "https://retry.example/backend-api/codex/models") {
-        return Response.json({
-          models: [{ slug: "gpt-5.5", context_window: 200_000, max_tokens: 16_384 }],
-        });
-      }
-      return new Response(null, { status: 404 });
-    });
-
-    const [registration] = await registerProviders();
-    const model = { ...modelConfigs(registration!)[0]!, provider: registration!.name };
-    let attempt = 0;
-    codexApiMock.streamSimple.mockImplementation(() => {
-      attempt += 1;
-      if (attempt > 8) return createTextAttemptEvents(model, "fresh response");
-      const stallBeforeError = attempt === 1;
-      return (async function* () {
-        yield createStartEvent(model);
-        if (stallBeforeError) await new Promise((resolve) => setTimeout(resolve, 95_000));
-        yield createErrorEvent(model, "Upstream request failed");
-      })();
-    });
-    vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    vi.useFakeTimers();
-    vi.setSystemTime(0);
-
-    const observedAt: number[] = [];
-    const retryingStream = registration!.config.streamSimple!(
-      model as never,
-      { messages: [] } as never,
-      {},
-    );
-    const collecting = (async () => {
-      for await (const _event of retryingStream) observedAt.push(Date.now());
-    })();
-    await vi.advanceTimersByTimeAsync(0);
-    await vi.advanceTimersByTimeAsync(95_000);
-    for (const delay of [1_000, 2_000, 4_000, 8_000, 16_000, 32_000, 64_000, 128_000]) {
-      await vi.advanceTimersByTimeAsync(delay);
-    }
-    await collecting;
-
-    expect(
-      Math.max(...observedAt.slice(1).map((time, index) => time - observedAt[index]!)),
-    ).toBeLessThanOrEqual(30_000);
-    await expect(retryingStream.result()).resolves.toMatchObject({
-      stopReason: "stop",
-      content: [{ type: "text", text: "fresh response" }],
-    });
-  });
-
-  it("retries Upstream request failed errors", async () => {
-    writeFileSync(
-      join(stateDir, "sub2api.json"),
-      JSON.stringify({
-        codex: {
-          baseURL: "https://retry.example",
-          token: "sk-retry",
-          api: "openai-codex-responses",
-        },
-      }),
-    );
-    vi.stubGlobal("fetch", async (input: URL | RequestInfo) => {
-      const url = input instanceof Request ? input.url : String(input);
-      if (url === "https://retry.example/backend-api/codex/models") {
-        return Response.json({
-          models: [{ slug: "gpt-5.5", context_window: 200_000, max_tokens: 16_384 }],
-        });
-      }
-      return new Response(null, { status: 404 });
-    });
-
-    const [registration] = await registerProviders();
-    const model = { ...modelConfigs(registration!)[0]!, provider: registration!.name };
-    vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    vi.useFakeTimers();
-    codexApiMock.streamSimple
-      .mockImplementationOnce(() =>
-        (async function* () {
-          yield createStartEvent(model);
-          yield createErrorEvent(model, "Upstream request failed");
-        })(),
-      )
-      .mockImplementationOnce(() => createTextAttemptEvents(model, "fresh response"));
-
-    const retryingStream = registration!.config.streamSimple!(
-      model as never,
-      { messages: [] } as never,
-      {},
-    );
-    const streamPromise = collectStream(retryingStream);
-    await vi.advanceTimersByTimeAsync(0);
-    await vi.advanceTimersByTimeAsync(1_000);
-
-    expect(
-      (await streamPromise)
-        .filter((event: any) => event.type === "start" || event.type === "done")
-        .map((event: any) => event.type),
-    ).toEqual(["start", "done"]);
-    await expect(retryingStream.result()).resolves.toMatchObject({
-      stopReason: "stop",
-      content: [{ type: "text", text: "fresh response" }],
-    });
-    expect(codexApiMock.streamSimple).toHaveBeenCalledTimes(2);
-  });
-
-  it("returns Codex context overflow errors to Pi without retrying", async () => {
-    writeFileSync(
-      join(stateDir, "sub2api.json"),
-      JSON.stringify({
-        codex: {
-          baseURL: "https://retry.example",
-          token: "sk-retry",
-          api: "openai-codex-responses",
-        },
-      }),
-    );
-    vi.stubGlobal("fetch", async (input: URL | RequestInfo) => {
-      const url = input instanceof Request ? input.url : String(input);
-      if (url === "https://retry.example/backend-api/codex/models") {
-        return Response.json({
-          models: [{ slug: "gpt-5.5", context_window: 200_000, max_tokens: 16_384 }],
-        });
-      }
-      return new Response(null, { status: 404 });
-    });
-
-    const [registration] = await registerProviders();
-    const model = { ...modelConfigs(registration!)[0]!, provider: registration!.name };
-    const overflowMessage =
-      "Codex error: Your input exceeds the context window of this model. Please adjust your input and try again.";
     codexApiMock.streamSimple.mockImplementationOnce(() =>
       (async function* () {
         yield createStartEvent(model);
-        yield createErrorEvent(model, overflowMessage);
-      })(),
-    );
-    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    vi.useFakeTimers();
-
-    const overflowStream = registration!.config.streamSimple!(
-      model as never,
-      { messages: [] } as never,
-      {},
-    );
-    const streamPromise = collectStream(overflowStream);
-    await vi.advanceTimersByTimeAsync(1_000);
-    const events = await streamPromise;
-
-    expect(events.at(-1)).toMatchObject({
-      type: "error",
-      reason: "error",
-      error: { errorMessage: overflowMessage },
-    });
-    expect(codexApiMock.streamSimple).toHaveBeenCalledTimes(1);
-    expect(warning).not.toHaveBeenCalled();
-
-    codexApiMock.streamSimple.mockImplementationOnce(() =>
-      (async function* () {
-        yield* [];
-        throw new Error(overflowMessage);
-      })(),
-    );
-    const thrownEvents = await collectStream(
-      registration!.config.streamSimple!(model as never, { messages: [] } as never, {}),
-    );
-    expect(thrownEvents.at(-1)).toMatchObject({
-      type: "error",
-      reason: "error",
-      error: { errorMessage: overflowMessage },
-    });
-    expect(codexApiMock.streamSimple).toHaveBeenCalledTimes(2);
-    expect(warning).not.toHaveBeenCalled();
-  });
-
-  it("stops Codex stream retries on abort and retries thrown errors", async () => {
-    writeFileSync(
-      join(stateDir, "sub2api.json"),
-      JSON.stringify({
-        codex: {
-          baseURL: "https://retry.example",
-          token: "sk-retry",
-          api: "openai-codex-responses",
-        },
-      }),
-    );
-    vi.stubGlobal("fetch", async (input: URL | RequestInfo) => {
-      const url = input instanceof Request ? input.url : String(input);
-      if (url === "https://retry.example/backend-api/codex/models") {
-        return Response.json({
-          models: [{ slug: "gpt-5.5", context_window: 200_000, max_tokens: 16_384 }],
-        });
-      }
-      return new Response(null, { status: 404 });
-    });
-
-    const [registration] = await registerProviders();
-    const model = { ...modelConfigs(registration!)[0]!, provider: registration!.name };
-    vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    vi.useFakeTimers();
-
-    const controller = new AbortController();
-    codexApiMock.streamSimple.mockImplementationOnce(() =>
-      (async function* () {
-        for await (const event of createTextAttemptEvents(model, "stale partial", false)) {
-          yield event;
-        }
         yield createErrorEvent(model, "Codex error: stream_read_error");
       })(),
     );
-    const abortedStream = registration!.config.streamSimple!(
+
+    const failingStream = registration!.config.streamSimple!(
       model as never,
       { messages: [] } as never,
-      { signal: controller.signal },
+      {},
     );
-    const abortedPromise = collectStream(abortedStream);
-    await vi.advanceTimersByTimeAsync(0);
-    controller.abort();
-    await vi.advanceTimersByTimeAsync(0);
-
-    const abortedEvents = await abortedPromise;
-    expect(abortedEvents.at(-1)).toMatchObject({ type: "error", reason: "aborted" });
-    expect(JSON.stringify(abortedEvents)).not.toContain("stale partial");
-    await expect(abortedStream.result()).resolves.toMatchObject({
-      stopReason: "aborted",
-      content: [],
+    const events = await collectStream(failingStream);
+    expect(events.at(-1)).toMatchObject({
+      type: "error",
+      reason: "error",
+      error: { errorMessage: "Codex error: stream_read_error" },
     });
     expect(codexApiMock.streamSimple).toHaveBeenCalledTimes(1);
 
-    codexApiMock.streamSimple
-      .mockImplementationOnce(() =>
-        (async function* () {
-          for await (const event of createTextAttemptEvents(model, "old attempt", false)) {
-            yield event;
-          }
-          throw new Error("socket exploded");
-        })(),
-      )
-      .mockImplementationOnce(() => createTextAttemptEvents(model, "fresh response"));
-    const thrownPromise = collectStream(
-      registration!.config.streamSimple!(model as never, { messages: [] } as never, {}),
+    // Thrown adapter errors propagate to the caller so Pi can retry the turn.
+    codexApiMock.streamSimple.mockImplementationOnce(() =>
+      (async function* () {
+        yield createStartEvent(model);
+        throw new Error("socket exploded");
+      })(),
     );
-    await vi.advanceTimersByTimeAsync(0);
-    await vi.advanceTimersByTimeAsync(1_000);
-    const thrownEvents = await thrownPromise;
-    expect(
-      thrownEvents
-        .filter((event: any) => event.type === "start" || event.type === "done")
-        .map((event: any) => event.type),
-    ).toEqual(["start", "done"]);
-    expect(JSON.stringify(thrownEvents)).not.toContain("old attempt");
-    expect(JSON.stringify(thrownEvents)).toContain("fresh response");
-    expect(codexApiMock.streamSimple).toHaveBeenCalledTimes(3);
+    await expect(
+      collectStream(
+        registration!.config.streamSimple!(model as never, { messages: [] } as never, {}),
+      ),
+    ).rejects.toThrow("socket exploded");
+    expect(codexApiMock.streamSimple).toHaveBeenCalledTimes(2);
   });
 
   it("refreshes a dedicated final footer row and shows active mode badges", async () => {
@@ -1750,7 +1433,7 @@ describe("sub2api provider extension", () => {
     expect(footer.render()).not.toContain("stale · loading…");
   });
 
-  it("retries model discovery with exponential backoff and a five-second timeout", async () => {
+  it("fetches model discovery once with a five-second timeout and no retries", async () => {
     writeFileSync(
       join(stateDir, "sub2api.json"),
       JSON.stringify({ retry: { baseURL: "https://retry.example", token: "sk-retry" } }),
@@ -1758,42 +1441,21 @@ describe("sub2api provider extension", () => {
     const timeoutSpy = vi
       .spyOn(AbortSignal, "timeout")
       .mockImplementation(() => new AbortController().signal);
-    const retryDelays: number[] = [];
-    const realSetTimeout = globalThis.setTimeout;
-    vi.spyOn(globalThis, "setTimeout").mockImplementation(((
-      callback: () => void,
-      delay?: number,
-    ) => {
-      retryDelays.push(delay ?? 0);
-      return realSetTimeout(callback, 0);
-    }) as typeof setTimeout);
-    let attempts = 0;
     const fetchMock = vi.fn<typeof globalThis.fetch>(async (input) => {
       const url = input instanceof Request ? input.url : String(input);
       if (url.endsWith("/v1/sub2api/billing")) {
         return new Response(null, { status: 404 });
       }
-      attempts += 1;
-      if (attempts === 1) {
-        return new Response(
-          new ReadableStream({
-            start(controller) {
-              controller.error(new TypeError("terminated"));
-            },
-          }),
-        );
-      }
-      if (attempts === 2) return new Response(null, { status: 503 });
       return Response.json({ data: [{ id: "grok-retry" }] });
     });
     vi.stubGlobal("fetch", fetchMock);
 
     const registrations = await registerProviders();
 
-    expect(fetchMock).toHaveBeenCalledTimes(4);
-    expect(timeoutSpy.mock.calls).toEqual([[5_000], [5_000], [5_000], [5_000]]);
-    expect(retryDelays).toEqual([1_000, 2_000]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(timeoutSpy.mock.calls).toEqual([[5_000], [5_000]]);
     expect(registrations).toHaveLength(1);
+    expect(modelConfigs(registrations[0]!).map((model) => model.id)).toEqual(["grok-retry"]);
   });
 
   it("bounds remote JSON responses to one MiB", async () => {

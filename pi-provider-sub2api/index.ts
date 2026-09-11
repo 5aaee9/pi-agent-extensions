@@ -4,10 +4,6 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
 import {
-  createAssistantMessageEventStream,
-  isContextOverflow,
-  type AssistantMessage,
-  type AssistantMessageEvent,
   type AssistantMessageEventStream,
   type Context,
   type Model,
@@ -29,11 +25,6 @@ type CompatModule = typeof import("@earendil-works/pi-ai/compat");
 const CONFIG_FILENAME = "sub2api.json";
 const REQUEST_TIMEOUT_MS = 5_000;
 const USAGE_REQUEST_TIMEOUT_MS = 30_000;
-const MAX_RETRIES = 2;
-const RETRY_BASE_DELAY_MS = 1_000;
-const CODEX_STREAM_RETRY_BASE_DELAY_MS = 1_000;
-const CODEX_STREAM_RETRY_MAX_DELAY_MS = 30 * 60 * 1_000;
-const CODEX_STREAM_RETRY_HEARTBEAT_MS = 30_000;
 const MAX_RESPONSE_BYTES = 1024 * 1024;
 const MAX_MODEL_TOKEN_LIMIT = 10_000_000;
 const USAGE_FOOTER_KEY = "sub2api-usage";
@@ -621,85 +612,31 @@ function isRetryableError(error: unknown) {
   );
 }
 
-function isRetryableStatus(status: number) {
-  return [408, 425, 429, 500, 502, 503, 504].includes(status);
-}
-
-async function waitBeforeRetry(attempt: number, signal?: AbortSignal) {
-  const delay = RETRY_BASE_DELAY_MS * 2 ** attempt;
-  await new Promise<void>((resolveDelay, rejectDelay) => {
-    if (signal?.aborted) {
-      rejectDelay(signal.reason);
-      return;
-    }
-    const onAbort = () => {
-      clearTimeout(timer);
-      rejectDelay(signal?.reason);
-    };
-    const timer = setTimeout(() => {
-      signal?.removeEventListener("abort", onAbort);
-      resolveDelay();
-    }, delay);
-    signal?.addEventListener("abort", onAbort, { once: true });
-  });
-}
-
 type TextFetchResult =
   | { response: Response; text: string }
   | { response: Response; bodyError: unknown }
   | { response: Response };
 
-async function fetchTextWithRetry(
+async function fetchText(
   url: string,
   init: RequestInit = {},
   timeoutMs = REQUEST_TIMEOUT_MS,
 ): Promise<TextFetchResult | null> {
-  const canRetry = (init.method ?? "GET").toUpperCase() === "GET";
-  for (let attempt = 0; attempt <= MAX_RETRIES; attempt += 1) {
-    if (init.signal?.aborted) return null;
-    let shouldRetry = false;
+  if (init.signal?.aborted) return null;
+  try {
+    const timeoutSignal = AbortSignal.timeout(timeoutMs);
+    const signal = init.signal ? AbortSignal.any([init.signal, timeoutSignal]) : timeoutSignal;
+    const response = await fetch(url, { ...init, redirect: "error", signal });
+    if (!response.ok) return { response };
     try {
-      const timeoutSignal = AbortSignal.timeout(timeoutMs);
-      const signal = init.signal ? AbortSignal.any([init.signal, timeoutSignal]) : timeoutSignal;
-      const response = await fetch(url, { ...init, redirect: "error", signal });
-      if (canRetry && isRetryableStatus(response.status) && attempt < MAX_RETRIES) {
-        discardResponse(response);
-        shouldRetry = true;
-      } else if (!response.ok) {
-        return { response };
-      } else {
-        try {
-          return { response, text: await readResponseText(response) };
-        } catch (bodyError) {
-          discardResponse(response);
-          if (
-            canRetry &&
-            !init.signal?.aborted &&
-            isRetryableError(bodyError) &&
-            attempt < MAX_RETRIES
-          ) {
-            shouldRetry = true;
-          } else {
-            return { response, bodyError };
-          }
-        }
-      }
-    } catch (error) {
-      if (canRetry && !init.signal?.aborted && isRetryableError(error) && attempt < MAX_RETRIES) {
-        shouldRetry = true;
-      } else {
-        return null;
-      }
+      return { response, text: await readResponseText(response) };
+    } catch (bodyError) {
+      discardResponse(response);
+      return { response, bodyError };
     }
-
-    if (!shouldRetry) return null;
-    try {
-      await waitBeforeRetry(attempt, init.signal ?? undefined);
-    } catch {
-      return null;
-    }
+  } catch {
+    return null;
   }
-  return null;
 }
 
 function escapeConfigLiteral(value: string) {
@@ -872,241 +809,6 @@ function scaleModelCost(cost: ModelCost | undefined, multiplier: number): ModelC
   };
 }
 
-function codexRetryDelayMs(attempt: number) {
-  return Math.min(
-    CODEX_STREAM_RETRY_MAX_DELAY_MS,
-    CODEX_STREAM_RETRY_BASE_DELAY_MS * 2 ** Math.min(attempt - 1, 30),
-  );
-}
-
-function waitForCodexRetry(delayMs: number, signal?: AbortSignal, onHeartbeat?: () => void) {
-  if (signal?.aborted) return Promise.resolve(false);
-  return new Promise<boolean>((resolveWait) => {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let remainingMs = delayMs;
-    const finish = (completed: boolean) => {
-      if (timer !== undefined) clearTimeout(timer);
-      signal?.removeEventListener("abort", onAbort);
-      resolveWait(completed);
-    };
-    const onAbort = () => finish(false);
-    const waitForNextSlice = () => {
-      const sliceMs = Math.min(remainingMs, CODEX_STREAM_RETRY_HEARTBEAT_MS);
-      timer = setTimeout(() => {
-        remainingMs -= sliceMs;
-        if (remainingMs <= 0) finish(true);
-        else {
-          onHeartbeat?.();
-          waitForNextSlice();
-        }
-      }, sliceMs);
-    };
-    waitForNextSlice();
-    signal?.addEventListener("abort", onAbort, { once: true });
-  });
-}
-
-function assistantMessageFromError(
-  model: Model<any>,
-  prior: AssistantMessage | undefined,
-  stopReason: "error" | "aborted",
-  errorMessage?: string,
-): AssistantMessage {
-  return {
-    ...(prior ?? {
-      role: "assistant",
-      content: [],
-      api: model.api,
-      provider: model.provider,
-      model: model.id,
-      usage: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0,
-        totalTokens: 0,
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-      },
-      timestamp: Date.now(),
-    }),
-    stopReason,
-    errorMessage,
-  };
-}
-
-function createCodexAttemptSignal(parent?: AbortSignal) {
-  const controller = new AbortController();
-  const abortAttempt = () => controller.abort(parent?.reason);
-  if (parent?.aborted) abortAttempt();
-  else parent?.addEventListener("abort", abortAttempt, { once: true });
-  return {
-    signal: controller.signal,
-    cleanup() {
-      parent?.removeEventListener("abort", abortAttempt);
-    },
-  };
-}
-
-function errorMessage(error: unknown) {
-  return error instanceof Error ? error.message : String(error);
-}
-
-function pushCodexTerminalEvent(
-  stream: AssistantMessageEventStream,
-  event: Extract<AssistantMessageEvent, { type: "done" | "error" }>,
-  streamStarted: boolean,
-) {
-  if (!streamStarted) {
-    const finalMessage = event.type === "done" ? event.message : event.error;
-    stream.push({
-      type: "start",
-      partial: {
-        ...structuredClone(finalMessage),
-        stopReason: "pending",
-        errorMessage: undefined,
-      },
-    });
-  }
-  stream.push(structuredClone(event));
-  stream.end();
-}
-
-function pushCodexTerminalError(
-  stream: AssistantMessageEventStream,
-  model: Model<any>,
-  prior: AssistantMessage | undefined,
-  stopReason: "error" | "aborted",
-  message?: string,
-  streamStarted = false,
-) {
-  const error = assistantMessageFromError(model, prior, stopReason, message);
-  pushCodexTerminalEvent(stream, { type: "error", reason: stopReason, error }, streamStarted);
-}
-
-function pushCodexRetryHeartbeat(
-  stream: AssistantMessageEventStream,
-  model: Model<any>,
-  prior: AssistantMessage | undefined,
-  streamStarted: boolean,
-) {
-  const partial: AssistantMessage = {
-    ...assistantMessageFromError(model, prior, "error"),
-    content: [{ type: "text", text: "" }],
-    stopReason: "pending",
-    errorMessage: undefined,
-  };
-  if (!streamStarted) {
-    stream.push({
-      type: "start",
-      partial: { ...structuredClone(partial), content: [] },
-    });
-  }
-  stream.push({ type: "text_start", contentIndex: 0, partial: structuredClone(partial) });
-  stream.push({
-    type: "text_end",
-    contentIndex: 0,
-    content: "",
-    partial: structuredClone(partial),
-  });
-  return true;
-}
-
-function streamCodexWithRetry(
-  model: Model<any>,
-  context: Context,
-  options: SimpleStreamOptions,
-): AssistantMessageEventStream {
-  if (!CODEX_API) throw new Error("pi Codex adapter unavailable on this host");
-  const stream = createAssistantMessageEventStream();
-  let streamStarted = false;
-  let streamPartial: AssistantMessage | undefined;
-  void (async () => {
-    let retryAttempt = 0;
-
-    for (;;) {
-      let retryReason: string | undefined;
-      const attemptSignal = createCodexAttemptSignal(options.signal);
-      const attemptHeartbeat = setInterval(() => {
-        streamStarted = pushCodexRetryHeartbeat(stream, model, streamPartial, streamStarted);
-      }, CODEX_STREAM_RETRY_HEARTBEAT_MS);
-      try {
-        const attemptStream = CODEX_API.streamSimple(model, context, {
-          ...options,
-          signal: attemptSignal.signal,
-        });
-        for await (const event of attemptStream) {
-          if (event.type === "start") {
-            streamPartial = event.partial;
-            if (!streamStarted) {
-              // Publish the lifecycle start as soon as generation begins so
-              // message_start/message_end consumers can measure real elapsed
-              // time. Keep buffering content events so a retried attempt cannot
-              // leak stale partial output into the outer stream.
-              stream.push(structuredClone(event));
-              streamStarted = true;
-            }
-          }
-          if (event.type === "error") {
-            if (options.signal?.aborted) {
-              pushCodexTerminalError(stream, model, undefined, "aborted", undefined, streamStarted);
-              return;
-            }
-            if (isContextOverflow(event.error, model.contextWindow)) {
-              pushCodexTerminalEvent(stream, event, streamStarted);
-              return;
-            }
-            retryReason = event.error.errorMessage ?? "Unknown upstream error";
-            break;
-          }
-
-          if (event.type === "done") {
-            pushCodexTerminalEvent(stream, event, streamStarted);
-            return;
-          }
-        }
-      } catch (error) {
-        if (options.signal?.aborted) {
-          pushCodexTerminalError(stream, model, undefined, "aborted", undefined, streamStarted);
-          return;
-        }
-        const message = errorMessage(error);
-        const assistantError = assistantMessageFromError(model, undefined, "error", message);
-        if (isContextOverflow(assistantError, model.contextWindow)) {
-          pushCodexTerminalEvent(
-            stream,
-            { type: "error", reason: "error", error: assistantError },
-            streamStarted,
-          );
-          return;
-        }
-        retryReason = message;
-      } finally {
-        clearInterval(attemptHeartbeat);
-        attemptSignal.cleanup();
-      }
-
-      retryReason ??= "Codex stream ended without a terminal event";
-      retryAttempt += 1;
-      const delayMs = codexRetryDelayMs(retryAttempt);
-      console.warn(
-        `[sub2api:${model.provider}] Codex upstream error (${retryReason}); retry ${retryAttempt} in ${Math.ceil(delayMs / 1000)}s`,
-      );
-      streamStarted = pushCodexRetryHeartbeat(stream, model, streamPartial, streamStarted);
-      if (
-        !(await waitForCodexRetry(delayMs, options.signal, () => {
-          streamStarted = pushCodexRetryHeartbeat(stream, model, streamPartial, streamStarted);
-        }))
-      ) {
-        pushCodexTerminalError(stream, model, undefined, "aborted", undefined, streamStarted);
-        return;
-      }
-    }
-  })().catch((error) => {
-    pushCodexTerminalError(stream, model, undefined, "error", errorMessage(error), streamStarted);
-  });
-  return stream;
-}
-
 function streamCodex(
   model: Model<any>,
   context: Context,
@@ -1116,8 +818,10 @@ function streamCodex(
   if (!CODEX_API) throw new Error("pi Codex adapter unavailable on this host");
   if (!relay) return CODEX_API.streamSimple(model, context, options);
 
+  // Failed requests surface as ordinary stream errors so Pi's own retry
+  // handling can retry the turn.
   const upstreamFetch = options.fetch ?? globalThis.fetch;
-  return streamCodexWithRetry(model, context, {
+  return CODEX_API.streamSimple(model, context, {
     ...options,
     apiKey: relay.codexAuthToken,
     transport: "sse",
@@ -1282,10 +986,10 @@ function mergeSupportedThinkingLevels(...levels: (string[] | undefined)[]) {
 
 async function fetchModelInventory(relay: RelayConfig): Promise<DiscoveredModel[]> {
   try {
-    const result = await fetchTextWithRetry(`${relay.baseUrl}/models`, {
+    const result = await fetchText(`${relay.baseUrl}/models`, {
       headers: { Authorization: `Bearer ${relay.apiKey}`, Accept: "application/json" },
     });
-    if (!result) throw new Error("request failed after retries");
+    if (!result) throw new Error("request failed");
     if (!result.response.ok) {
       discardResponse(result.response);
       throw new Error(`HTTP ${result.response.status} ${result.response.statusText}`.trim());
@@ -1329,10 +1033,10 @@ async function fetchModelInventory(relay: RelayConfig): Promise<DiscoveredModel[
 async function fetchCodexManifest(relay: RelayConfig) {
   const models = new Map<string, DiscoveredModel>();
   try {
-    const result = await fetchTextWithRetry(`${relay.anthropicBaseUrl}/backend-api/codex/models`, {
+    const result = await fetchText(`${relay.anthropicBaseUrl}/backend-api/codex/models`, {
       headers: { Authorization: `Bearer ${relay.apiKey}`, Accept: "application/json" },
     });
-    if (!result) throw new Error("request failed after retries");
+    if (!result) throw new Error("request failed");
     if (!result.response.ok) {
       discardResponse(result.response);
       throw new Error(`HTTP ${result.response.status} ${result.response.statusText}`.trim());
@@ -1723,7 +1427,7 @@ async function fetchBilling(
   signal: AbortSignal,
 ): Promise<BillingRefreshResult> {
   const billingUrl = getBillingUrl(relay);
-  const result = await fetchTextWithRetry(billingUrl, {
+  const result = await fetchText(billingUrl, {
     headers: { Authorization: `Bearer ${relay.apiKey}`, Accept: "application/json" },
     signal,
   });
@@ -1793,7 +1497,7 @@ async function fetchQuotaAt(
   usageUrl: string,
   signal: AbortSignal,
 ): Promise<QuotaRefreshResult> {
-  const result = await fetchTextWithRetry(
+  const result = await fetchText(
     usageUrl,
     {
       headers: { Authorization: `Bearer ${relay.apiKey}`, Accept: "application/json" },
