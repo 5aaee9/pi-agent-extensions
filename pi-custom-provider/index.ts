@@ -6,6 +6,24 @@ import type {
   ProviderConfig,
   ProviderModelConfig,
 } from "@earendil-works/pi-coding-agent";
+import {
+  calculateCost,
+  clampThinkingLevel,
+  createAssistantMessageEventStream,
+  parseStreamingJson,
+  type Api,
+  type AssistantMessage,
+  type AssistantMessageEventStream,
+  type Context,
+  type Model,
+  type SimpleStreamOptions,
+  type StreamOptions,
+  type ToolCall,
+  type ToolResultMessage,
+  type UserMessage,
+} from "@earendil-works/pi-ai";
+import { buildBaseOptions } from "@earendil-works/pi-ai/api/simple-options";
+import { transformMessages } from "@earendil-works/pi-ai/api/transform-messages";
 
 const CONFIG_FILENAME = "custom-provider.json";
 const DEFAULT_CACHE_FILENAME = "custom-provider-models.json";
@@ -21,7 +39,12 @@ const DEFAULT_CONTEXT_WINDOW = 128_000;
 const DEFAULT_MAX_TOKENS = 16_384;
 const ESCAPED_DOLLAR_PLACEHOLDER = "__PI_CUSTOM_PROVIDER_ESCAPED_DOLLAR__";
 
-const SUPPORTED_APIS = ["openai-completions", "anthropic-messages", "openai-responses"] as const;
+const SUPPORTED_APIS = [
+  "openai-completions",
+  "anthropic-messages",
+  "openai-responses",
+  "ollama-chat",
+] as const;
 type SupportedApi = (typeof SUPPORTED_APIS)[number];
 
 type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
@@ -58,6 +81,7 @@ interface ProviderDefinition {
   baseURL: string;
   openaiBaseURL: string;
   anthropicBaseURL: string;
+  ollamaBaseURL: string;
   api: SupportedApi;
   apiKey?: string;
   headers: Record<string, string>;
@@ -915,6 +939,454 @@ function enrichWithModelsDev(
   };
 }
 
+// ---------------------------------------------------------------------------
+// Ollama chat API (`api: "ollama-chat"`, POST /api/chat over NDJSON)
+// ---------------------------------------------------------------------------
+
+const OLLAMA_SHOW_CONCURRENCY = 4;
+const OLLAMA_MAX_ERROR_BODY_CHARS = 4000;
+
+/** pi thinking levels mapped onto the effort strings Ollama's `think` accepts. */
+const OLLAMA_THINKING_LEVELS = ["low", "medium", "high", "max"];
+
+interface OllamaChatMessage {
+  role: "system" | "user" | "assistant" | "tool";
+  content: string;
+  thinking?: string;
+  images?: string[];
+  tool_calls?: { function: { name: string; arguments: Record<string, unknown> } }[];
+  tool_name?: string;
+  tool_call_id?: string;
+}
+
+interface OllamaToolCall {
+  function?: {
+    name?: string;
+    arguments?: unknown;
+  };
+}
+
+/** Extract text blocks and base64 images from a pi message content array. */
+function ollamaContentParts(content: UserMessage["content"] | ToolResultMessage["content"]) {
+  const blocks = Array.isArray(content) ? content : [{ type: "text" as const, text: content }];
+  const text: string[] = [];
+  const images: string[] = [];
+  for (const block of blocks) {
+    if (block.type === "text") text.push(block.text);
+    else if (block.type === "image") images.push(block.data);
+  }
+  return { text: text.join("\n"), images };
+}
+
+function toOllamaMessages(context: Context): OllamaChatMessage[] {
+  const messages: OllamaChatMessage[] = [];
+  const systemPrompt = context.systemPrompt?.trim();
+  if (systemPrompt) messages.push({ role: "system", content: systemPrompt });
+  for (const message of context.messages) {
+    if (message.role === "user") {
+      const { text, images } = ollamaContentParts(message.content);
+      messages.push({
+        role: "user",
+        content: text,
+        ...(images.length > 0 ? { images } : {}),
+      });
+      continue;
+    }
+    if (message.role === "assistant") {
+      const converted: OllamaChatMessage = { role: "assistant", content: "" };
+      const textParts: string[] = [];
+      const thinkingParts: string[] = [];
+      const toolCalls: NonNullable<OllamaChatMessage["tool_calls"]> = [];
+      for (const block of message.content) {
+        if (block.type === "text") textParts.push(block.text);
+        else if (block.type === "thinking") thinkingParts.push(block.thinking);
+        else if (block.type === "toolCall") {
+          toolCalls.push({
+            function: { name: block.name, arguments: block.arguments ?? {} },
+          });
+        }
+      }
+      converted.content = textParts.join("\n");
+      const thinking = thinkingParts.join("\n");
+      if (thinking) converted.thinking = thinking;
+      if (toolCalls.length > 0) converted.tool_calls = toolCalls;
+      messages.push(converted);
+      continue;
+    }
+    // toolResult
+    const { text, images } = ollamaContentParts(message.content);
+    messages.push({
+      role: "tool",
+      content: text,
+      tool_name: message.toolName,
+      tool_call_id: message.toolCallId,
+      ...(images.length > 0 ? { images } : {}),
+    });
+  }
+  return messages;
+}
+
+/**
+ * Map pi's reasoning option to Ollama's `think` field. `think` accepts a
+ * boolean or an effort string ("low" | "medium" | "high" | "max"). When a
+ * thinkingLevelMap exists the mapped value is sent; otherwise `true` enables
+ * thinking and `false` (off, or a non-thinking model) disables it.
+ */
+function ollamaThink(
+  model: Model<Api>,
+  options?: SimpleStreamOptions,
+): boolean | string | undefined {
+  // Non-thinking models never receive the field.
+  if (!model.reasoning) return undefined;
+  // An unset reasoning option means pi's thinking is off; send false
+  // explicitly so models whose default enables thinking stay quiet.
+  if (!options?.reasoning) return false;
+  const level = clampThinkingLevel(model, options.reasoning);
+  if (level === "off") return false;
+  const mapped = model.thinkingLevelMap?.[level];
+  if (typeof mapped === "string") return mapped;
+  return true;
+}
+
+function buildOllamaPayload(
+  model: Model<Api>,
+  context: Context,
+  options: StreamOptions,
+  think: boolean | string | undefined,
+): JsonRecord {
+  const ollamaOptions: JsonRecord = {};
+  if (typeof options.temperature === "number") ollamaOptions.temperature = options.temperature;
+  if (typeof options.maxTokens === "number") ollamaOptions.num_predict = options.maxTokens;
+  if (model.contextWindow > 0) ollamaOptions.num_ctx = model.contextWindow;
+  for (const [key, value] of Object.entries(options.samplingParams ?? {})) {
+    ollamaOptions[key] = value;
+  }
+  const payload: JsonRecord = {
+    model: model.id,
+    messages: toOllamaMessages(context),
+    stream: true,
+  };
+  if (think !== undefined) payload.think = think;
+  if (Object.keys(ollamaOptions).length > 0) payload.options = ollamaOptions;
+  if (context.tools && context.tools.length > 0) {
+    payload.tools = context.tools.map((tool) => ({
+      type: "function",
+      function: {
+        name: tool.name,
+        description: tool.description,
+        parameters: tool.parameters,
+      },
+    }));
+  }
+  return payload;
+}
+
+function isOllamaToolCall(value: unknown): value is OllamaToolCall {
+  const record = asRecord(value);
+  return typeof asRecord(record?.function)?.name === "string";
+}
+
+function ollamaErrorMessage(payload: unknown, fallback: string) {
+  const error = asRecord(payload)?.error;
+  return typeof error === "string" && error.trim() ? error : fallback;
+}
+
+/** Read an ndjson response body line by line, invoking `onLine` per JSON value. */
+async function readNdjson(response: Response, onLine: (value: JsonRecord) => void) {
+  if (!response.body) return;
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  const flush = (line: string) => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    let value: unknown;
+    try {
+      value = JSON.parse(trimmed);
+    } catch {
+      return; // tolerate partial/garbage lines between valid chunks
+    }
+    const record = asRecord(value);
+    if (record) onLine(record);
+  };
+  while (true) {
+    const { done, value } = await reader.read();
+    buffer += decoder.decode(value, { stream: !done });
+    let newline = buffer.indexOf("\n");
+    while (newline >= 0) {
+      flush(buffer.slice(0, newline));
+      buffer = buffer.slice(newline + 1);
+      newline = buffer.indexOf("\n");
+    }
+    if (done) break;
+  }
+  flush(buffer);
+}
+
+function ollamaRetryDelayMs(response: Response | undefined, attempt: number, cap: number) {
+  const header = response?.headers.get("retry-after");
+  const parsed = header ? Number(header) : Number.NaN;
+  const requested = Number.isFinite(parsed) ? parsed * 1000 : 0;
+  const exponential = Math.min(cap, 500 * 2 ** attempt);
+  return Math.min(cap, Math.max(requested, exponential));
+}
+
+/**
+ * Stream a completion from Ollama's native chat API (`POST {baseUrl}/api/chat`).
+ * The response is NDJSON: each line is a partial `message` chunk until a final
+ * line with `done: true` carries `done_reason` and token counts.
+ */
+function streamOllamaChat(
+  model: Model<Api>,
+  context: Context,
+  options?: StreamOptions & { think?: boolean | string },
+): AssistantMessageEventStream {
+  const stream = createAssistantMessageEventStream();
+
+  (async () => {
+    const output: AssistantMessage = {
+      role: "assistant",
+      content: [],
+      api: model.api,
+      provider: model.provider,
+      model: model.id,
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      stopReason: "pending",
+      timestamp: Date.now(),
+    };
+
+    try {
+      let payload: unknown = buildOllamaPayload(model, context, options ?? {}, options?.think);
+      const nextPayload = await options?.onPayload?.(payload, model);
+      if (nextPayload !== undefined) payload = nextPayload;
+
+      const headers: Record<string, string> = { "content-type": "application/json" };
+      for (const [key, value] of Object.entries(model.headers ?? {})) headers[key] = value;
+      for (const [key, value] of Object.entries(options?.headers ?? {})) {
+        if (value === null) delete headers[key];
+        else headers[key] = value;
+      }
+      if (
+        options?.apiKey &&
+        !Object.keys(headers).some((key) => key.toLowerCase() === "authorization")
+      ) {
+        headers.Authorization = `Bearer ${options.apiKey}`;
+      }
+
+      const fetchImpl = options?.fetch ?? fetch;
+      const url = `${model.baseUrl.replace(/\/+$/, "")}/api/chat`;
+      const maxRetries = options?.maxRetries ?? 0;
+      const maxRetryDelayMs = options?.maxRetryDelayMs ?? 60_000;
+      const signal =
+        options?.timeoutMs !== undefined
+          ? AbortSignal.any([
+              options?.signal ?? new AbortController().signal,
+              AbortSignal.timeout(options.timeoutMs),
+            ])
+          : (options?.signal ?? null);
+
+      let response: Response | undefined;
+      for (let attempt = 0; ; attempt++) {
+        try {
+          response = await fetchImpl(url, {
+            method: "POST",
+            headers,
+            body: JSON.stringify(payload),
+            signal,
+          });
+        } catch (error) {
+          if (attempt < maxRetries && !options?.signal?.aborted) {
+            await new Promise((resolvePromise) =>
+              setTimeout(resolvePromise, Math.min(maxRetryDelayMs, 500 * 2 ** attempt)),
+            );
+            continue;
+          }
+          throw error;
+        }
+        const retriable = response.status === 429 || response.status >= 500;
+        if (retriable && attempt < maxRetries && !options?.signal?.aborted) {
+          const delay = ollamaRetryDelayMs(response, attempt, maxRetryDelayMs);
+          await response.body?.cancel().catch(() => undefined);
+          await new Promise((resolvePromise) => setTimeout(resolvePromise, delay));
+          continue;
+        }
+        break;
+      }
+
+      if (!response) throw new Error("Ollama request produced no response");
+      await options?.onResponse?.(
+        {
+          status: response.status,
+          headers: Object.fromEntries(response.headers.entries()),
+        },
+        model,
+      );
+      if (!response.ok) {
+        const body = await readResponseText(response, OLLAMA_MAX_ERROR_BODY_CHARS).catch(() => "");
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(body);
+        } catch {
+          parsed = undefined;
+        }
+        throw new Error(
+          `HTTP ${response.status}: ${ollamaErrorMessage(parsed, body || response.statusText)}`,
+        );
+      }
+
+      stream.push({ type: "start", partial: output });
+
+      let currentBlock: { type: "text" | "thinking"; index: number } | undefined;
+      const closeBlock = () => {
+        if (!currentBlock) return;
+        const block = output.content[currentBlock.index];
+        if (block?.type === "text") {
+          stream.push({
+            type: "text_end",
+            contentIndex: currentBlock.index,
+            content: block.text,
+            partial: output,
+          });
+        } else if (block?.type === "thinking") {
+          stream.push({
+            type: "thinking_end",
+            contentIndex: currentBlock.index,
+            content: block.thinking,
+            partial: output,
+          });
+        }
+        currentBlock = undefined;
+      };
+      const pushDelta = (type: "text" | "thinking", delta: string) => {
+        if (!delta) return;
+        if (currentBlock?.type !== type) {
+          closeBlock();
+          output.content.push(
+            type === "text" ? { type: "text", text: "" } : { type: "thinking", thinking: "" },
+          );
+          currentBlock = { type, index: output.content.length - 1 };
+          stream.push({
+            type: type === "text" ? "text_start" : "thinking_start",
+            contentIndex: currentBlock.index,
+            partial: output,
+          });
+        }
+        const block = output.content[currentBlock.index];
+        if (block?.type === "text") block.text += delta;
+        else if (block?.type === "thinking") block.thinking += delta;
+        stream.push({
+          type: type === "text" ? "text_delta" : "thinking_delta",
+          contentIndex: currentBlock.index,
+          delta,
+          partial: output,
+        });
+      };
+
+      let toolCallIndex = 0;
+      const pushToolCall = (raw: OllamaToolCall) => {
+        const name = raw.function?.name;
+        if (!name) return;
+        const args =
+          asRecord(raw.function?.arguments) ??
+          (typeof raw.function?.arguments === "string"
+            ? (parseStreamingJson(raw.function.arguments) as Record<string, unknown>)
+            : {});
+        const toolCall: ToolCall = {
+          type: "toolCall",
+          // Ollama does not generate call ids; synthesize one for matching.
+          id: `ollama_call_${toolCallIndex++}`,
+          name,
+          arguments: args,
+        };
+        closeBlock();
+        output.content.push(toolCall);
+        const contentIndex = output.content.length - 1;
+        stream.push({ type: "toolcall_start", contentIndex, partial: output });
+        stream.push({
+          type: "toolcall_end",
+          contentIndex,
+          toolCall,
+          partial: output,
+        });
+      };
+
+      let sawDone = false;
+      await readNdjson(response, (chunk) => {
+        const message = asRecord(chunk.message);
+        if (typeof message?.thinking === "string") pushDelta("thinking", message.thinking);
+        if (typeof message?.content === "string") pushDelta("text", message.content);
+        if (Array.isArray(message?.tool_calls)) {
+          for (const rawCall of message.tool_calls) {
+            if (isOllamaToolCall(rawCall)) pushToolCall(rawCall);
+          }
+        }
+        if (chunk.done === true) {
+          sawDone = true;
+          const input = toNonNegativeNumber(chunk.prompt_eval_count) ?? 0;
+          const cacheRead = toNonNegativeNumber(chunk.prompt_eval_cached_count) ?? 0;
+          const outputTokens = toNonNegativeNumber(chunk.eval_count) ?? 0;
+          output.usage.input = input;
+          output.usage.output = outputTokens;
+          output.usage.cacheRead = cacheRead;
+          output.usage.cacheWrite = 0;
+          output.usage.totalTokens = input + outputTokens + cacheRead;
+          output.usage.cost = calculateCost(model, output.usage);
+          const reason = typeof chunk.done_reason === "string" ? chunk.done_reason : "stop";
+          output.rawStopReason = reason;
+          output.stopReason =
+            reason === "length"
+              ? "length"
+              : output.content.some((b) => b.type === "toolCall")
+                ? "toolUse"
+                : "stop";
+        }
+        const chunkError = chunk.error;
+        if (typeof chunkError === "string" && chunkError.trim()) {
+          throw new Error(chunkError);
+        }
+      });
+
+      closeBlock();
+
+      if (options?.signal?.aborted) throw new Error("Request was aborted");
+      if (!sawDone || output.stopReason === "pending") {
+        throw new Error("Ollama stream ended without a done event");
+      }
+      stream.push({
+        type: "done",
+        reason: output.stopReason as "stop" | "length" | "toolUse",
+        message: output,
+      });
+      stream.end();
+    } catch (error) {
+      output.stopReason = options?.signal?.aborted ? "aborted" : "error";
+      output.errorMessage = error instanceof Error ? error.message : String(error);
+      stream.push({ type: "error", reason: output.stopReason, error: output });
+      stream.end();
+    }
+  })();
+
+  return stream;
+}
+
+const streamOllamaChatSimple = (
+  model: Model<Api>,
+  context: Context,
+  options?: SimpleStreamOptions,
+): AssistantMessageEventStream => {
+  const base = buildBaseOptions(model, context, options, options?.apiKey);
+  const transformed = transformMessages(context.messages, model);
+  const think = ollamaThink(model, options);
+  return streamOllamaChat(model, { ...context, messages: transformed }, { ...base, think });
+};
+
 function parseApi(value: unknown): SupportedApi {
   if (value === undefined) return "openai-completions";
   if (typeof value !== "string") throw new Error("api must be a string");
@@ -929,6 +1401,9 @@ function parseApi(value: unknown): SupportedApi {
     "anthropic-messages": "anthropic-messages",
     responses: "openai-responses",
     "openai-responses": "openai-responses",
+    ollama: "ollama-chat",
+    "ollama-chat": "ollama-chat",
+    "ollama-chat-api": "ollama-chat",
   };
   const api = aliases[normalized];
   if (!api) {
@@ -964,6 +1439,7 @@ function normalizeBaseUrls(value: string) {
   return {
     openaiBaseURL: makeURL(hasV1Suffix ? pathname : `${pathname}/v1`),
     anthropicBaseURL: makeURL(hasV1Suffix ? pathname.slice(0, -3) : pathname),
+    ollamaBaseURL: makeURL(hasV1Suffix ? pathname.slice(0, -3) : pathname),
   };
 }
 
@@ -1135,8 +1611,16 @@ function parseProvider(
   if (typeof baseURL !== "string" || !baseURL.trim()) {
     throw new Error(`provider ${name} is missing baseURL`);
   }
-  const { openaiBaseURL, anthropicBaseURL } = normalizeBaseUrls(baseURL);
+  const { openaiBaseURL, anthropicBaseURL, ollamaBaseURL } = normalizeBaseUrls(baseURL);
   const api = parseApi(record.api);
+  // The endpoint family that serves the configured API: Ollama lives at the
+  // raw base URL (no /v1), Anthropic strips it, OpenAI-compatible adds it.
+  const requestBaseURL =
+    api === "anthropic-messages"
+      ? anthropicBaseURL
+      : api === "ollama-chat"
+        ? ollamaBaseURL
+        : openaiBaseURL;
   const apiKeyValue = record.apiKey ?? record.api_key ?? record.token;
   if (apiKeyValue !== undefined && typeof apiKeyValue !== "string") {
     throw new Error(`provider ${name} apiKey must be a string`);
@@ -1150,8 +1634,10 @@ function parseProvider(
     record.modelsURL ?? record.modelsUrl ?? record.models_url ?? record.modelsPath;
   const modelsURL =
     typeof modelsValue === "string" && modelsValue.trim()
-      ? new URL(modelsValue, `${openaiBaseURL}/`).toString()
-      : `${openaiBaseURL}/models`;
+      ? new URL(modelsValue, `${requestBaseURL}/`).toString()
+      : api === "ollama-chat"
+        ? `${ollamaBaseURL}/api/tags`
+        : `${openaiBaseURL}/models`;
   const authHeader =
     record.authHeader === "authorization"
       ? "authorization"
@@ -1164,6 +1650,7 @@ function parseProvider(
     baseURL,
     openaiBaseURL,
     anthropicBaseURL,
+    ollamaBaseURL,
     api,
     apiKey: apiKeyValue,
     headers,
@@ -1299,11 +1786,16 @@ async function fetchJson(
   signal: AbortSignal,
   headers: Record<string, string> = {},
   maxBytes = MAX_RESPONSE_BYTES,
+  body?: string,
 ) {
   const timeoutSignal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
   const requestSignal = AbortSignal.any([signal, timeoutSignal]);
+  const requestHeaders =
+    body === undefined ? headers : { "content-type": "application/json", ...headers };
   const response = await fetch(url, {
-    headers,
+    method: body === undefined ? "GET" : "POST",
+    headers: requestHeaders,
+    body,
     redirect: "error",
     signal: requestSignal,
   });
@@ -1324,13 +1816,90 @@ async function fetchModels(provider: ProviderDefinition, signal: AbortSignal) {
   const root = asRecord(payload);
   const values = Array.isArray(payload) ? payload : (root?.data ?? root?.models);
   if (!Array.isArray(values)) throw new Error("model response must contain a data or models array");
+  const records = values.map((value) => asRecord(value) ?? {});
+  const enriched =
+    provider.api === "ollama-chat" ? await enrichOllamaModels(provider, records, signal) : records;
   const seen = new Set<string>();
-  return values.flatMap((value) => {
-    const model = parseDiscoveredModel(asRecord(value) ?? {}, provider.api);
+  return enriched.flatMap((value) => {
+    const model = parseDiscoveredModel(value, provider.api);
     if (!model || seen.has(model.id)) return [];
     seen.add(model.id);
     return [model];
   });
+}
+
+/**
+ * Ollama `/api/tags` only lists model names. `POST /api/show` per model reveals
+ * `capabilities` (e.g. "thinking", "vision", "tools") and `model_info`, whose
+ * `*.context_length` key carries the trained context window. The results are
+ * folded back into the generic metadata record so `parseDiscoveredModel` sees
+ * the usual `reasoning`/`input_modalities`/`context_window` fields.
+ */
+async function enrichOllamaModels(
+  provider: ProviderDefinition,
+  records: JsonRecord[],
+  signal: AbortSignal,
+): Promise<JsonRecord[]> {
+  const showURL = `${provider.ollamaBaseURL}/api/show`;
+  const headers = discoveryHeaders(provider);
+  const result = Array.from<JsonRecord>({ length: records.length });
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < records.length) {
+      const index = cursor++;
+      const record = records[index]!;
+      result[index] = record;
+      const name = record.model ?? record.name ?? record.id;
+      if (typeof name !== "string" || !name.trim()) continue;
+      try {
+        const shown = asRecord(
+          await fetchJson(
+            showURL,
+            signal,
+            headers,
+            MAX_RESPONSE_BYTES,
+            JSON.stringify({ model: name }),
+          ),
+        );
+        if (shown) result[index] = mergeOllamaShowRecord(record, shown);
+      } catch (error) {
+        if (signal.aborted) throw error;
+        console.warn(`[custom-provider:${provider.name}] /api/show failed for ${name}:`, error);
+      }
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(OLLAMA_SHOW_CONCURRENCY, records.length) }, worker),
+  );
+  return result;
+}
+
+function mergeOllamaShowRecord(tag: JsonRecord, shown: JsonRecord): JsonRecord {
+  const merged: JsonRecord = { ...tag };
+  const capabilities = Array.isArray(shown.capabilities)
+    ? shown.capabilities.filter((value): value is string => typeof value === "string")
+    : undefined;
+  if (capabilities && capabilities.length > 0) {
+    merged.reasoning = capabilities.some((capability) => capability.toLowerCase() === "thinking");
+    if (capabilities.some((capability) => capability.toLowerCase() === "vision")) {
+      merged.input_modalities = ["text", "image"];
+    }
+    // Ollama thinking-capable models accept effort strings low/medium/high/max.
+    if (merged.reasoning) merged.supported_reasoning_levels = [...OLLAMA_THINKING_LEVELS];
+  }
+  const modelInfo = asRecord(shown.model_info);
+  if (modelInfo) {
+    for (const [key, value] of Object.entries(modelInfo)) {
+      if (key.toLowerCase().endsWith(".context_length")) {
+        const context = toPositiveInteger(value);
+        if (context !== undefined) {
+          merged.context_window ??= context;
+          break;
+        }
+      }
+    }
+  }
+  return merged;
 }
 
 function cacheKey(provider: ProviderDefinition) {
@@ -1570,7 +2139,12 @@ function modelConfig(
     id: model.id,
     name: model.name,
     api,
-    baseUrl: api === "anthropic-messages" ? provider.anthropicBaseURL : provider.openaiBaseURL,
+    baseUrl:
+      api === "anthropic-messages"
+        ? provider.anthropicBaseURL
+        : api === "ollama-chat"
+          ? provider.ollamaBaseURL
+          : provider.openaiBaseURL,
     reasoning: model.reasoning,
     thinkingLevelMap: model.thinkingLevelMap,
     input: model.input,
@@ -1625,7 +2199,11 @@ function providerConfig(
   return {
     name: provider.name,
     baseUrl:
-      provider.api === "anthropic-messages" ? provider.anthropicBaseURL : provider.openaiBaseURL,
+      provider.api === "anthropic-messages"
+        ? provider.anthropicBaseURL
+        : provider.api === "ollama-chat"
+          ? provider.ollamaBaseURL
+          : provider.openaiBaseURL,
     // Always register the key: pi's availability check only counts apiKey/oauth,
     // so a key hidden inside headers leaves the provider "unconfigured" and its
     // models are filtered out of the model list entirely. authHeader tells pi
@@ -1638,6 +2216,7 @@ function providerConfig(
       : {}),
     headers,
     models: configs,
+    ...(provider.api === "ollama-chat" ? { streamSimple: streamOllamaChatSimple } : {}),
     ...(refreshModels ? { refreshModels } : {}),
   };
 }

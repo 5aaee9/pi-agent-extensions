@@ -443,6 +443,143 @@ describe("custom provider extension", () => {
     expect(otherEvent.headers["x-session-id"]).toBeUndefined();
   });
 
+  it("discovers Ollama models via /api/tags + /api/show and streams /api/chat", async () => {
+    await writeFile(
+      join(agentDir, "custom-provider.json"),
+      JSON.stringify({
+        modelsDev: false,
+        providers: {
+          ollama: {
+            baseURL: "http://localhost:11434",
+            api: "ollama",
+          },
+        },
+      }),
+    );
+
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    vi.stubGlobal("fetch", async (input: URL | RequestInfo, init?: RequestInit) => {
+      const url = input instanceof Request ? input.url : String(input);
+      calls.push({ url, init });
+      if (url === "http://localhost:11434/api/tags") {
+        return Response.json({
+          models: [{ model: "qwen3:8b", name: "qwen3:8b" }, { model: "llama3.2" }],
+        });
+      }
+      if (url === "http://localhost:11434/api/show") {
+        const body = JSON.parse(String(init?.body));
+        if (body.model === "qwen3:8b") {
+          return Response.json({
+            capabilities: ["completion", "tools", "thinking"],
+            model_info: { "qwen3.context_length": 40960 },
+          });
+        }
+        return Response.json({
+          capabilities: ["completion", "vision"],
+          model_info: { "llama.context_length": 131072 },
+        });
+      }
+      if (url === "http://localhost:11434/api/chat") {
+        const chunks = [
+          { model: "qwen3:8b", message: { role: "assistant", thinking: "thinking " }, done: false },
+          { model: "qwen3:8b", message: { role: "assistant", thinking: "hard" }, done: false },
+          { model: "qwen3:8b", message: { role: "assistant", content: "Hello" }, done: false },
+          { model: "qwen3:8b", message: { role: "assistant", content: "!" }, done: false },
+          {
+            model: "qwen3:8b",
+            message: { role: "assistant", content: "" },
+            done: true,
+            done_reason: "stop",
+            prompt_eval_count: 10,
+            prompt_eval_cached_count: 4,
+            eval_count: 2,
+          },
+        ];
+        return new Response(chunks.map((chunk) => JSON.stringify(chunk)).join("\n") + "\n", {
+          status: 200,
+          headers: { "content-type": "application/x-ndjson" },
+        });
+      }
+      throw new Error(`unexpected URL: ${url}`);
+    });
+
+    const harness = registerProviders();
+    await extension(harness.pi);
+
+    const ollama = harness.registrations[0]!;
+    expect(ollama.config).toMatchObject({
+      baseUrl: "http://localhost:11434",
+      api: "ollama-chat",
+    });
+    expect(ollama.config.streamSimple).toBeTypeOf("function");
+
+    const qwen = ollama.config.models!.find((m) => m.id === "qwen3:8b")!;
+    expect(qwen).toMatchObject({
+      reasoning: true,
+      contextWindow: 40960,
+      baseUrl: "http://localhost:11434",
+    });
+    const llama = ollama.config.models!.find((m) => m.id === "llama3.2")!;
+    expect(llama).toMatchObject({
+      reasoning: false,
+      input: ["text", "image"],
+      contextWindow: 131072,
+    });
+
+    const model = {
+      id: qwen.id,
+      name: qwen.name,
+      api: "ollama-chat",
+      provider: "ollama",
+      baseUrl: qwen.baseUrl!,
+      reasoning: qwen.reasoning,
+      thinkingLevelMap: qwen.thinkingLevelMap,
+      input: qwen.input,
+      cost: qwen.cost,
+      contextWindow: qwen.contextWindow,
+      maxTokens: qwen.maxTokens,
+    };
+    const events: Array<{ type: string }> = [];
+    const stream = ollama.config.streamSimple!(
+      model as never,
+      {
+        systemPrompt: "Be brief.",
+        messages: [{ role: "user", content: "hi", timestamp: 1 }],
+      },
+      { reasoning: "medium" } as never,
+    );
+    for await (const event of stream) events.push(event);
+
+    const chatCall = calls.find(({ url }) => url.endsWith("/api/chat"))!;
+    const chatBody = JSON.parse(String(chatCall.init?.body));
+    expect(chatBody).toMatchObject({
+      model: "qwen3:8b",
+      stream: true,
+      think: "medium",
+      messages: [
+        { role: "system", content: "Be brief." },
+        { role: "user", content: "hi" },
+      ],
+    });
+
+    const done = events.find((event) => event.type === "done")! as {
+      type: "done";
+      reason: string;
+      message: { content: unknown[]; usage: Record<string, number>; stopReason: string };
+    };
+    expect(done.reason).toBe("stop");
+    expect(done.message.content).toEqual([
+      { type: "thinking", thinking: "thinking hard" },
+      { type: "text", text: "Hello!" },
+    ]);
+    expect(done.message.usage).toMatchObject({
+      input: 10,
+      output: 2,
+      cacheRead: 4,
+      totalTokens: 16,
+    });
+  });
+
   it("registers refreshModels that rediscovers with the auth credential", async () => {
     await writeFile(
       join(agentDir, "custom-provider.json"),

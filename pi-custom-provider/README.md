@@ -5,6 +5,7 @@
 - OpenAI Chat Compatible（`openai-completions`）
 - Anthropic Messages（`anthropic-messages`）
 - OpenAI Responses（`openai-responses`）
+- Ollama Chat（`ollama-chat`，原生 `/api/chat` + NDJSON 流）
 - 从上游 `/models` 拉取模型列表
 - 从 [models.dev](https://models.dev/) 补全价格、上下文窗口、输出上限、模态和 reasoning/thinking 元数据
 - 缓存上游模型列表和 models.dev 元数据到 `~/.pi/agent/custom-provider-models.json`
@@ -45,14 +46,25 @@ pi -e ./pi-custom-provider/index.ts
       "baseURL": "https://responses.example.com/v1",
       "apiKey": "sk-...",
       "api": "openai-responses"
+    },
+    "ollama": {
+      "baseURL": "http://localhost:11434",
+      "apiKey": "ollama",
+      "api": "ollama"
     }
   }
 }
 ```
 
-`baseURL` 支持带或不带 `/v1`。Chat/Responses provider 会使用 `/v1`，Anthropic provider 会去掉末尾 `/v1`，以适配 pi 原生 API 实现。`modelsURL` 可用于上游不使用标准 `/v1/models` 的服务。
+`baseURL` 支持带或不带 `/v1`。Chat/Responses provider 会使用 `/v1`，Anthropic 和 Ollama provider 会去掉末尾 `/v1`，以适配 pi 原生 API 实现和 Ollama 的根路径端点。`modelsURL` 可用于上游不使用标准 `/v1/models` 的服务；Ollama 默认为 `/api/tags`。
 
-API 也接受以下别名：`openai-chat-compatible`、`chat-completions`、`anthropic`、`responses`。未填写 `api` 时默认为 `openai-completions`。
+API 也接受以下别名：`openai-chat-compatible`、`chat-completions`、`anthropic`、`responses`、`ollama`、`ollama-chat-api`。未填写 `api` 时默认为 `openai-completions`。
+
+### Ollama
+
+`api: "ollama"`（或 `ollama-chat`）使用 Ollama 原生 API：模型发现走 `GET /api/tags`，并逐个调用 `POST /api/show` 读取 `capabilities`（`thinking`、`vision`）与 `model_info.*.context_length`，映射为 reasoning、图像输入和上下文窗口。对话走 `POST /api/chat` 的 NDJSON 流，支持 thinking 块、tool calls 和 `think` effort 字符串（pi 的 thinking 等级通过 `thinkingLevelMap` 映射到 `low`/`medium`/`high`/`max`）。
+
+Ollama 本身不要求鉴权，但 pi 会过滤没有 credential 的 provider，本地部署时可写任意占位值（如 `"apiKey": "ollama"`）；Ollama 云端或反代网关则配置真实 key，会以 `Authorization: Bearer` 发送。
 
 认证支持：
 
