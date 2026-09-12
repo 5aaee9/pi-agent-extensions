@@ -1,11 +1,18 @@
 import { readFile } from "node:fs/promises";
 import type { ExtensionAPI, SlashCommandInfo } from "@earendil-works/pi-coding-agent";
 import { stripFrontmatter } from "@earendil-works/pi-coding-agent";
+import type {
+  AutocompleteItem,
+  AutocompleteProvider,
+  AutocompleteSuggestions,
+} from "@earendil-works/pi-tui";
+import { fuzzyFilter } from "@earendil-works/pi-tui";
 
 export interface SkillRef {
   name: string;
   filePath: string;
   baseDir: string;
+  description?: string;
 }
 
 /**
@@ -28,6 +35,7 @@ export function skillsFromCommands(commands: readonly SlashCommandInfo[]): Map<s
       name,
       filePath,
       baseDir: command.sourceInfo.baseDir ?? filePath.replace(/\/[^/]*$/, ""),
+      description: command.description,
     });
   }
   return skills;
@@ -76,7 +84,83 @@ export async function expandSkillTokens(
   return { text: result, expanded, failed };
 }
 
+const MAX_SUGGESTIONS = 20;
+
+/** Token before the cursor that opens a `$skill` completion: `$` at line start or after whitespace, never `$$`. */
+const SKILL_COMPLETION_PATTERN = /(?:^|[\s])\$([a-z0-9-]*)$/;
+
+export function createSkillAutocompleteProvider(
+  current: AutocompleteProvider,
+  getSkills: () => ReadonlyMap<string, SkillRef>,
+): AutocompleteProvider {
+  return {
+    triggerCharacters: ["$"],
+
+    async getSuggestions(
+      lines,
+      cursorLine,
+      cursorCol,
+      options,
+    ): Promise<AutocompleteSuggestions | null> {
+      const beforeCursor = (lines[cursorLine] ?? "").slice(0, cursorCol);
+      const match = beforeCursor.match(SKILL_COMPLETION_PATTERN);
+      // A second `$` just before the token means the user typed `$$name` (literal escape).
+      if (!match || beforeCursor.endsWith("$$" + match[1])) {
+        return current.getSuggestions(lines, cursorLine, cursorCol, options);
+      }
+
+      const skills = getSkills();
+      if (options.signal.aborted || skills.size === 0) {
+        return current.getSuggestions(lines, cursorLine, cursorCol, options);
+      }
+
+      const query = match[1];
+      const refs = [...skills.values()];
+      const candidates = query ? fuzzyFilter(refs, query, (skill) => skill.name) : refs;
+      const items: AutocompleteItem[] = candidates.slice(0, MAX_SUGGESTIONS).map((skill) => ({
+        value: `$${skill.name}`,
+        label: `$${skill.name}`,
+        description: skill.description,
+      }));
+
+      if (items.length === 0) {
+        return current.getSuggestions(lines, cursorLine, cursorCol, options);
+      }
+      return { prefix: `$${query}`, items };
+    },
+
+    applyCompletion(lines, cursorLine, cursorCol, item, prefix) {
+      if (!prefix.startsWith("$")) {
+        return current.applyCompletion(lines, cursorLine, cursorCol, item, prefix);
+      }
+      const line = lines[cursorLine] ?? "";
+      const beforePrefix = line.slice(0, cursorCol - prefix.length);
+      const afterCursor = line.slice(cursorCol);
+      // Add a separating space only when one isn't already after the cursor.
+      const separator = /^\s/.test(afterCursor) ? "" : " ";
+      const newLine = `${beforePrefix + item.value + separator}${afterCursor}`;
+      const newLines = [...lines];
+      newLines[cursorLine] = newLine;
+      return {
+        lines: newLines,
+        cursorLine,
+        cursorCol: beforePrefix.length + item.value.length + separator.length,
+      };
+    },
+
+    shouldTriggerFileCompletion(lines, cursorLine, cursorCol) {
+      return current.shouldTriggerFileCompletion?.(lines, cursorLine, cursorCol) ?? true;
+    },
+  };
+}
+
 export default function piSkill(pi: ExtensionAPI) {
+  pi.on("session_start", (_event, ctx) => {
+    ctx.ui.addAutocompleteProvider((current) =>
+      createSkillAutocompleteProvider(current, () => skillsFromCommands(pi.getCommands())),
+    );
+  });
+
   pi.on("input", async (event, ctx) => {
     if (!event.text.includes("$")) return;
 

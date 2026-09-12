@@ -42,6 +42,10 @@ $code-review                          # whole prompt is the skill
 对比 $code-review 和 $simplify-codebase 两份检查清单
 ```
 
+Typing `$` at the start of a token (line start or after whitespace) opens an
+autocomplete popup listing every loaded skill with its description, just like
+`/skill:` completion. Suggestions fuzzy-match on the skill name.
+
 - Works with every skill pi has loaded: global (`~/.pi/agent/skills`, `~/.agents/skills`), project (`.pi/skills`, `.agents/skills`), package, settings, and `--skill` paths — including skills marked `disable-model-invocation`, which never appear in the system prompt.
 - Expansion uses the same `<skill name="…" location="…">` block pi emits for `/skill:name`, so relative references inside the skill keep working.
 - A token that matches no loaded skill is left untouched, so `$HOME` or `$9.99` in prose is safe.

@@ -8,8 +8,14 @@ import type {
   InputEventResult,
   SlashCommandInfo,
 } from "@earendil-works/pi-coding-agent";
+import type { AutocompleteProvider, AutocompleteSuggestions } from "@earendil-works/pi-tui";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import piSkill, { expandSkillTokens, skillsFromCommands, type SkillRef } from "../index.ts";
+import piSkill, {
+  createSkillAutocompleteProvider,
+  expandSkillTokens,
+  skillsFromCommands,
+  type SkillRef,
+} from "../index.ts";
 
 type InputHandler = (
   event: InputEvent,
@@ -36,7 +42,7 @@ async function writeSkill(dirName: string, name: string, body: string): Promise<
     filePath,
     `---\nname: ${name}\ndescription: Test skill ${name}\n---\n\n${body}\n`,
   );
-  return { name, filePath, baseDir: dir };
+  return { name, filePath, baseDir: dir, description: `Test skill ${name}` };
 }
 
 function skillCommand(skill: SkillRef): SlashCommandInfo {
@@ -195,6 +201,120 @@ describe("expandSkillTokens", () => {
     expect(expanded).toEqual([]);
     expect(failed).toEqual(["gone"]);
     expect(text).toBe("试试 $gone");
+  });
+});
+
+describe("skill autocomplete provider", () => {
+  const fallbackSuggestions: AutocompleteSuggestions = {
+    prefix: "x",
+    items: [{ value: "x", label: "x" }],
+  };
+
+  function fakeCurrent(): AutocompleteProvider {
+    return {
+      getSuggestions: async () => fallbackSuggestions,
+      applyCompletion: () => ({
+        lines: ["fallback"],
+        cursorLine: 0,
+        cursorCol: 8,
+      }),
+    };
+  }
+
+  function skillMap(...names: string[]): Map<string, SkillRef> {
+    return new Map(
+      names.map((name) => [
+        name,
+        {
+          name,
+          filePath: `/skills/${name}/SKILL.md`,
+          baseDir: `/skills/${name}`,
+          description: `Test skill ${name}`,
+        },
+      ]),
+    );
+  }
+
+  const signal = new AbortController().signal;
+
+  it("suggests all skills right after `$`", async () => {
+    const provider = createSkillAutocompleteProvider(fakeCurrent(), () =>
+      skillMap("code-review", "tdd"),
+    );
+    const result = await provider.getSuggestions(["使用 $"], 0, 4, { signal });
+    expect(result?.prefix).toBe("$");
+    expect(result?.items.map((i) => i.value).sort()).toEqual(["$code-review", "$tdd"]);
+    expect(result?.items[0]?.description).toContain("Test skill");
+  });
+
+  it("filters by typed prefix", async () => {
+    const provider = createSkillAutocompleteProvider(fakeCurrent(), () =>
+      skillMap("code-review", "tdd", "codebase-design"),
+    );
+    const result = await provider.getSuggestions(["$code"], 0, 5, { signal });
+    expect(result?.prefix).toBe("$code");
+    expect(result?.items.map((i) => i.value).sort()).toEqual(["$code-review", "$codebase-design"]);
+  });
+
+  it("delegates when there is no `$` token or no match", async () => {
+    const provider = createSkillAutocompleteProvider(fakeCurrent(), () => skillMap("code-review"));
+    // No $ at all
+    expect(await provider.getSuggestions(["hello"], 0, 5, { signal })).toBe(fallbackSuggestions);
+    // $HOME style: not a skill name char after $ → pattern still matches "HOME"? No: [a-z0-9-] excludes uppercase.
+    expect(await provider.getSuggestions(["echo $HO"], 0, 8, { signal })).toBe(fallbackSuggestions);
+    // Unknown skill name → no items → fallback
+    expect(await provider.getSuggestions(["$zz"], 0, 3, { signal })).toBe(fallbackSuggestions);
+  });
+
+  it("does not complete `$$name` escape", async () => {
+    const provider = createSkillAutocompleteProvider(fakeCurrent(), () => skillMap("code-review"));
+    expect(await provider.getSuggestions(["$$code"], 0, 6, { signal })).toBe(fallbackSuggestions);
+    expect(await provider.getSuggestions(["a $$"], 0, 4, { signal })).toBe(fallbackSuggestions);
+  });
+
+  it("delegates when no skills are loaded", async () => {
+    const provider = createSkillAutocompleteProvider(fakeCurrent(), () => new Map());
+    expect(await provider.getSuggestions(["$code"], 0, 5, { signal })).toBe(fallbackSuggestions);
+  });
+
+  it("replaces the $ prefix and adds a trailing space on applyCompletion", async () => {
+    const provider = createSkillAutocompleteProvider(fakeCurrent(), () => new Map());
+    const lines = ["请用 $cod 检查"];
+    const result = provider.applyCompletion(
+      lines,
+      0,
+      "请用 $cod".length,
+      { value: "$code-review", label: "$code-review" },
+      "$cod",
+    );
+    expect(result.lines[0]).toBe("请用 $code-review 检查");
+    expect(result.cursorCol).toBe("请用 ".length + "$code-review".length);
+  });
+
+  it("adds a trailing space when the cursor is at end of line", async () => {
+    const provider = createSkillAutocompleteProvider(fakeCurrent(), () => new Map());
+    const lines = ["$cod"];
+    const result = provider.applyCompletion(
+      lines,
+      0,
+      4,
+      { value: "$code-review", label: "$code-review" },
+      "$cod",
+    );
+    expect(result.lines[0]).toBe("$code-review ");
+    expect(result.cursorCol).toBe("$code-review".length + 1);
+  });
+
+  it("delegates applyCompletion for non-$ prefixes", async () => {
+    const provider = createSkillAutocompleteProvider(fakeCurrent(), () => new Map());
+    const result = provider.applyCompletion(
+      ["/skil"],
+      0,
+      5,
+      { value: "skill:x", label: "skill:x" },
+      "/skil",
+    );
+    expect(result.lines[0]).toBe("fallback");
   });
 });
 
