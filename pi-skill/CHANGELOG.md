@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.33 - 2026-09-12
 
 - Render each referenced `$skill` as its own native, collapsible `[skill] name` block instead of embedding full skill bodies in the displayed user prompt.
 
