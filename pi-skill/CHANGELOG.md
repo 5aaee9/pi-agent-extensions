@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Render each referenced `$skill` as its own native, collapsible `[skill] name` block instead of embedding full skill bodies in the displayed user prompt.
+
 ## 0.1.32 - 2026-09-12
 
 - Autocomplete loaded skills when typing `$` at a token boundary: fuzzy name filtering, skill descriptions, `$$name` escape left alone.

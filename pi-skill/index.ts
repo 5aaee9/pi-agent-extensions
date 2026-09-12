@@ -1,6 +1,10 @@
 import { readFile } from "node:fs/promises";
 import type { ExtensionAPI, SlashCommandInfo } from "@earendil-works/pi-coding-agent";
-import { stripFrontmatter } from "@earendil-works/pi-coding-agent";
+import {
+  parseSkillBlock,
+  SkillInvocationMessageComponent,
+  stripFrontmatter,
+} from "@earendil-works/pi-coding-agent";
 import type {
   AutocompleteItem,
   AutocompleteProvider,
@@ -14,6 +18,13 @@ export interface SkillRef {
   baseDir: string;
   description?: string;
 }
+
+export interface ResolvedSkillBlock {
+  name: string;
+  text: string;
+}
+
+export const SKILL_MESSAGE_TYPE = "skill";
 
 /**
  * Candidates like `$code-review`: a `$` followed by a valid skill name
@@ -48,12 +59,20 @@ export function skillsFromCommands(commands: readonly SlashCommandInfo[]): Map<s
 export async function expandSkillTokens(
   text: string,
   skills: ReadonlyMap<string, SkillRef>,
-): Promise<{ text: string; expanded: string[]; failed: string[] }> {
+): Promise<{
+  text: string;
+  expanded: string[];
+  failed: string[];
+  blocks: ResolvedSkillBlock[];
+}> {
   const matches = [...text.matchAll(SKILL_TOKEN_PATTERN)];
-  if (matches.length === 0) return { text, expanded: [], failed: [] };
+  if (matches.length === 0) return { text, expanded: [], failed: [], blocks: [] };
 
   const expanded: string[] = [];
   const failed: string[] = [];
+  const blocks: ResolvedSkillBlock[] = [];
+  const blockByName = new Map<string, string>();
+  const failedNames = new Set<string>();
 
   // Rebuild the string so each match is replaced exactly once, left to right.
   let result = "";
@@ -63,25 +82,31 @@ export async function expandSkillTokens(
     const skill = skills.get(name);
     if (!skill || match.index === undefined) continue;
 
-    let block: string;
-    try {
-      const content = await readFile(skill.filePath, "utf-8");
-      const body = stripFrontmatter(content).trim();
-      block = `<skill name="${skill.name}" location="${skill.filePath}">\nReferences are relative to ${skill.baseDir}.\n\n${body}\n</skill>`;
-    } catch {
-      failed.push(name);
-      continue;
+    let block = blockByName.get(name);
+    if (block === undefined) {
+      if (failedNames.has(name)) continue;
+      try {
+        const content = await readFile(skill.filePath, "utf-8");
+        const body = stripFrontmatter(content).trim();
+        block = `<skill name="${skill.name}" location="${skill.filePath}">\nReferences are relative to ${skill.baseDir}.\n\n${body}\n</skill>`;
+        blockByName.set(name, block);
+        blocks.push({ name, text: block });
+        expanded.push(name);
+      } catch {
+        failedNames.add(name);
+        failed.push(name);
+        continue;
+      }
     }
 
     result += text.slice(cursor, match.index);
     result += block;
     cursor = match.index + match[0].length;
-    if (!expanded.includes(name)) expanded.push(name);
   }
 
-  if (expanded.length === 0) return { text, expanded, failed };
+  if (expanded.length === 0) return { text, expanded, failed, blocks };
   result += text.slice(cursor);
-  return { text: result, expanded, failed };
+  return { text: result, expanded, failed, blocks };
 }
 
 const MAX_SUGGESTIONS = 20;
@@ -155,6 +180,22 @@ export function createSkillAutocompleteProvider(
 }
 
 export default function piSkill(pi: ExtensionAPI) {
+  pi.registerMessageRenderer(SKILL_MESSAGE_TYPE, (message, { expanded }) => {
+    const text =
+      typeof message.content === "string"
+        ? message.content
+        : message.content
+            .filter((part) => part.type === "text")
+            .map((part) => part.text)
+            .join("");
+    const skillBlock = parseSkillBlock(text);
+    if (!skillBlock) return undefined;
+
+    const component = new SkillInvocationMessageComponent(skillBlock);
+    component.setExpanded(expanded);
+    return component;
+  });
+
   pi.on("session_start", (_event, ctx) => {
     ctx.ui.addAutocompleteProvider((current) =>
       createSkillAutocompleteProvider(current, () => skillsFromCommands(pi.getCommands())),
@@ -167,16 +208,28 @@ export default function piSkill(pi: ExtensionAPI) {
     const skills = skillsFromCommands(pi.getCommands());
     if (skills.size === 0) return;
 
-    const { text, expanded, failed } = await expandSkillTokens(event.text, skills);
+    const { blocks, failed } = await expandSkillTokens(event.text, skills);
     for (const name of failed) {
       ctx.ui.notify(`Failed to read skill "${name}"`, "warning");
     }
-    if (expanded.length === 0) return;
+    if (blocks.length === 0) return;
 
-    ctx.ui.notify(
-      `Expanded skill${expanded.length > 1 ? "s" : ""}: ${expanded.join(", ")}`,
-      "info",
-    );
-    return { action: "transform", text };
+    for (const block of blocks) {
+      const message = {
+        customType: SKILL_MESSAGE_TYPE,
+        content: block.text,
+        display: true,
+        details: { name: block.name },
+      };
+      if (event.streamingBehavior) {
+        pi.sendMessage(message, { deliverAs: event.streamingBehavior });
+      } else {
+        pi.sendMessage(message);
+      }
+    }
+
+    // Keep the user's original `$skill` references visible while each skill's
+    // full instructions travel in their own context-bearing, collapsible block.
+    return { action: "continue" };
   });
 }

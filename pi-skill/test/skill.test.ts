@@ -6,6 +6,7 @@ import type {
   ExtensionContext,
   InputEvent,
   InputEventResult,
+  MessageRenderer,
   SlashCommandInfo,
 } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteProvider, AutocompleteSuggestions } from "@earendil-works/pi-tui";
@@ -14,6 +15,7 @@ import piSkill, {
   createSkillAutocompleteProvider,
   expandSkillTokens,
   skillsFromCommands,
+  SKILL_MESSAGE_TYPE,
   type SkillRef,
 } from "../index.ts";
 
@@ -24,10 +26,17 @@ type InputHandler = (
 
 let workDir: string;
 let notifications: Array<{ message: string; level: string }>;
+let sentMessages: Array<{
+  message: Parameters<ExtensionAPI["sendMessage"]>[0];
+  options: Parameters<ExtensionAPI["sendMessage"]>[1];
+}>;
+let messageRenderers: Map<string, MessageRenderer>;
 
 beforeEach(async () => {
   workDir = await mkdtemp(join(tmpdir(), "pi-skill-test-"));
   notifications = [];
+  sentMessages = [];
+  messageRenderers = new Map();
 });
 
 afterEach(async () => {
@@ -69,6 +78,15 @@ function createHarness(commands: SlashCommandInfo[]) {
       handlers.set(event, list);
     },
     getCommands: () => commands,
+    registerMessageRenderer: (customType: string, renderer: MessageRenderer) => {
+      messageRenderers.set(customType, renderer);
+    },
+    sendMessage: (
+      message: Parameters<ExtensionAPI["sendMessage"]>[0],
+      options: Parameters<ExtensionAPI["sendMessage"]>[1],
+    ) => {
+      sentMessages.push({ message, options });
+    },
   } as unknown as ExtensionAPI;
 
   piSkill(pi);
@@ -81,8 +99,16 @@ function createHarness(commands: SlashCommandInfo[]) {
     },
   } as unknown as ExtensionContext;
 
-  const emit = async (text: string): Promise<InputEventResult | undefined> => {
-    const event: InputEvent = { type: "input", text, source: "interactive" };
+  const emit = async (
+    text: string,
+    streamingBehavior?: InputEvent["streamingBehavior"],
+  ): Promise<InputEventResult | undefined> => {
+    const event: InputEvent = {
+      type: "input",
+      text,
+      source: "interactive",
+      streamingBehavior,
+    };
     let result: InputEventResult | undefined;
     for (const handler of handlers.get("input") ?? []) {
       const r = await handler(event, ctx);
@@ -156,9 +182,10 @@ describe("expandSkillTokens", () => {
       [b.name, b],
     ]);
 
-    const { text, expanded } = await expandSkillTokens("先 $a-skill 再 $b-skill", skills);
+    const { text, expanded, blocks } = await expandSkillTokens("先 $a-skill 再 $b-skill", skills);
 
     expect(expanded).toEqual(["a-skill", "b-skill"]);
+    expect(blocks.map((block) => block.name)).toEqual(["a-skill", "b-skill"]);
     expect(text).toContain("Body A.");
     expect(text).toContain("Body B.");
     expect(text.indexOf("Body A.")).toBeLessThan(text.indexOf("Body B."));
@@ -319,17 +346,52 @@ describe("skill autocomplete provider", () => {
 });
 
 describe("input handler", () => {
-  it("transforms input containing a known skill", async () => {
+  it("injects a known skill as its own context message", async () => {
     const skill = await writeSkill("code-review", "code-review", "Review it.");
     const { emit } = createHarness([skillCommand(skill)]);
 
     const result = await emit("使用 $code-review 这个 skill review 代码");
 
-    expect(result?.action).toBe("transform");
-    const text = result?.action === "transform" ? result.text : "";
-    expect(text).toContain(`<skill name="code-review" location="${skill.filePath}">`);
-    expect(text).toContain("Review it.");
-    expect(notifications).toEqual([{ message: "Expanded skill: code-review", level: "info" }]);
+    expect(result).toEqual({ action: "continue" });
+    expect(sentMessages).toHaveLength(1);
+    expect(sentMessages[0]?.message).toMatchObject({
+      customType: SKILL_MESSAGE_TYPE,
+      display: true,
+      details: { name: "code-review" },
+    });
+    expect(sentMessages[0]?.message.content).toContain(
+      `<skill name="code-review" location="${skill.filePath}">`,
+    );
+    expect(sentMessages[0]?.message.content).toContain("Review it.");
+    expect(sentMessages[0]?.options).toBeUndefined();
+    expect(notifications).toEqual([]);
+  });
+
+  it("injects one message per distinct skill in first-reference order", async () => {
+    const a = await writeSkill("a-skill", "a-skill", "Body A.");
+    const b = await writeSkill("b-skill", "b-skill", "Body B.");
+    const { emit } = createHarness([skillCommand(a), skillCommand(b)]);
+
+    await emit("先 $a-skill，再 $b-skill，最后仍用 $a-skill");
+
+    expect(sentMessages.map(({ message }) => message.details)).toEqual([
+      { name: "a-skill" },
+      { name: "b-skill" },
+    ]);
+  });
+
+  it("uses the input's delivery mode while the agent is streaming", async () => {
+    const skill = await writeSkill("known", "known", "Known.");
+    const { emit } = createHarness([skillCommand(skill)]);
+
+    await emit("$known", "followUp");
+
+    expect(sentMessages[0]?.options).toEqual({ deliverAs: "followUp" });
+  });
+
+  it("registers a renderer for standalone skill messages", () => {
+    createHarness([]);
+    expect(messageRenderers.has(SKILL_MESSAGE_TYPE)).toBe(true);
   });
 
   it("passes through input without $ or without matching skills", async () => {
@@ -338,11 +400,13 @@ describe("input handler", () => {
 
     expect(await emit("普通消息")).toBeUndefined();
     expect(await emit("价格是 $100")).toBeUndefined();
+    expect(sentMessages).toEqual([]);
     expect(notifications).toEqual([]);
   });
 
   it("does nothing when no skills are loaded", async () => {
     const { emit } = createHarness([]);
     expect(await emit("$code-review 一下")).toBeUndefined();
+    expect(sentMessages).toEqual([]);
   });
 });
