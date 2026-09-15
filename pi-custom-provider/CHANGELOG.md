@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.34 - 2026-09-15
+
+- Synchronize the package version with `@indexyz/pi-model-trace` for coordinated workspace releases.
+
 ## 0.1.33 - 2026-09-12
 
 - Synchronize the package version with `@indexyz/pi-skill` for coordinated workspace releases.
