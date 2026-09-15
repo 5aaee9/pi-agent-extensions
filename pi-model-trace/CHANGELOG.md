@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.35 - 2026-09-15
+
+- Update the bundled unified fingerprint bank to 24 candidate models.
+
 ## 0.1.34 - 2026-09-15
 
 - First public release. Add `/model-trace` for attributing the model actually serving pi via ModelTrace numeric fingerprinting.
