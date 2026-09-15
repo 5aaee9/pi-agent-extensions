@@ -44,6 +44,7 @@ jobs:
             "pi-custom-provider"
             "pi-continue"
             "pi-skill"
+            "pi-model-trace"
           )
           release_version="${RELEASE_TAG#v}"
 

@@ -1,0 +1,61 @@
+{
+  "name": "@indexyz/pi-model-trace",
+  "version": "0.1.33",
+  "description": "Attribute the model actually serving pi via ModelTrace numeric fingerprinting (/model-trace)",
+  "keywords": [
+    "fingerprint",
+    "llm",
+    "model-attribution",
+    "modeltrace",
+    "pi",
+    "pi-package"
+  ],
+  "homepage": "https://github.com/5aaee9/pi-agent-extensions/tree/main/pi-model-trace#readme",
+  "bugs": {
+    "url": "https://github.com/5aaee9/pi-agent-extensions/issues"
+  },
+  "license": "MIT",
+  "author": "5aaee9",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/5aaee9/pi-agent-extensions.git",
+    "directory": "pi-model-trace"
+  },
+  "files": [
+    "index.ts",
+    "fingerprint.ts",
+    "challenges.ts",
+    "data/unified_bank.json",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "type": "module",
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm test",
+    "prepack": "npm run check"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.84.0",
+    "@types/node": "^24.0.0",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}

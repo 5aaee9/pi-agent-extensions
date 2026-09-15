@@ -16,7 +16,8 @@
     "pi-provider-sub2api",
     "pi-custom-provider",
     "pi-continue",
-    "pi-skill"
+    "pi-skill",
+    "pi-model-trace"
   ],
   "type": "module",
   "scripts": {
@@ -31,7 +32,8 @@
     "pack:sub2api": "npm pack --workspace @indexyz/pi-provider-sub2api --dry-run",
     "pack:custom-provider": "npm pack --workspace @indexyz/pi-custom-provider --dry-run",
     "pack:continue": "npm pack --workspace @indexyz/pi-continue --dry-run",
-    "pack:skill": "npm pack --workspace @indexyz/pi-skill --dry-run"
+    "pack:skill": "npm pack --workspace @indexyz/pi-skill --dry-run",
+    "pack:model-trace": "npm pack --workspace @indexyz/pi-model-trace --dry-run"
   },
   "devDependencies": {
     "oxfmt": "^0.62.0",
@@ -46,7 +48,8 @@
       "./pi-provider-sub2api/index.ts",
       "./pi-custom-provider/index.ts",
       "./pi-continue/index.ts",
-      "./pi-skill/index.ts"
+      "./pi-skill/index.ts",
+      "./pi-model-trace/index.ts"
     ]
   }
 }
