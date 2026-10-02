@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.36 - 2026-10-02
+
+- Synchronize the package version with `@indexyz/pi-provider-sub2api` for coordinated workspace releases.
+
 ## 0.1.35 - 2026-09-15
 
 - Synchronize the package version with `@indexyz/pi-model-trace` for coordinated workspace releases.

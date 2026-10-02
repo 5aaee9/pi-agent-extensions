@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.36 - 2026-10-02
+
+- Declare host-provided pi packages as wildcard `peerDependencies` instead of `dependencies`.
+
 ## 0.1.35 - 2026-09-15
 
 - Synchronize the package version with `@indexyz/pi-model-trace` for coordinated workspace releases.

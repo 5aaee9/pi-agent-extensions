@@ -1,6 +1,6 @@
 {
   "name": "@indexyz/pi-skill",
-  "version": "0.1.35",
+  "version": "0.1.36",
   "description": "Codex-style $skill-name invocation anywhere in a pi prompt",
   "keywords": [
     "codex",
