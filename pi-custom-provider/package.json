@@ -47,9 +47,6 @@
     "check": "npm run typecheck && npm test",
     "prepack": "npm run check"
   },
-  "dependencies": {
-    "@earendil-works/pi-ai": "0.84.0"
-  },
   "devDependencies": {
     "@earendil-works/pi-ai": "0.84.0",
     "@earendil-works/pi-coding-agent": "0.84.0",
@@ -58,7 +55,8 @@
     "vitest": "^4.1.10"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": ">=0.83.0"
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*"
   },
   "engines": {
     "node": ">=22.19.0"
