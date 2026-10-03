@@ -1,6 +1,6 @@
 {
   "name": "@indexyz/pi-custom-provider",
-  "version": "0.1.36",
+  "version": "0.1.37",
   "description": "A generic pi provider extension for OpenAI-compatible, Anthropic-compatible, OpenAI Responses, and Ollama chat endpoints",
   "keywords": [
     "anthropic",
@@ -29,6 +29,7 @@
     "model-metadata.ts",
     "models-dev.ts",
     "ollama.ts",
+    "pi-ai-internal.ts",
     "thinking.ts",
     "types.ts",
     "util.ts",

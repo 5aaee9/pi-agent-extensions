@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.37 - 2026-10-03
+
+- Synchronize the package version for coordinated workspace releases.
+
 ## 0.1.36 - 2026-10-02
 
 - Declare host-provided pi packages as wildcard `peerDependencies` instead of `dependencies`.
