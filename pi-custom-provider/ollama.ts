@@ -18,8 +18,12 @@ import {
   type ToolResultMessage,
   type UserMessage,
 } from "@earendil-works/pi-ai";
-import { buildBaseOptions } from "@earendil-works/pi-ai/api/simple-options";
-import { transformMessages } from "@earendil-works/pi-ai/api/transform-messages";
+import {
+  getSystemMessageText,
+  buildBaseOptions,
+  transformMessages,
+  type RuntimeMessage,
+} from "./pi-ai-internal.ts";
 
 import type { JsonRecord } from "./types.ts";
 import { asRecord, readResponseText, toNonNegativeNumber } from "./util.ts";
@@ -63,7 +67,14 @@ function toOllamaMessages(context: Context): OllamaChatMessage[] {
   const messages: OllamaChatMessage[] = [];
   const systemPrompt = context.systemPrompt?.trim();
   if (systemPrompt) messages.push({ role: "system", content: systemPrompt });
-  for (const message of context.messages) {
+  for (const message of context.messages as RuntimeMessage[]) {
+    // Newer pi hosts can inject mid-conversation system messages; map them onto
+    // Ollama's system role instead of letting them fall through to tool results.
+    if (message.role === "system") {
+      const text = getSystemMessageText(message).trim();
+      if (text) messages.push({ role: "system", content: text });
+      continue;
+    }
     if (message.role === "user") {
       const { text, images } = ollamaContentParts(message.content);
       messages.push({
