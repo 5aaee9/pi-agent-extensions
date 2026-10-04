@@ -43,6 +43,7 @@ Create `~/.pi/agent/sub2api.json`:
     "baseURL": "https://another.example.com/v1",
     "token": "replace-with-another-token",
     "api": "openai-codex-responses",
+    "compress_service_tier": "fast",
     "serverTools": {
       "responses": [{ "type": "web_search" }]
     }
@@ -79,6 +80,18 @@ When `token` is exactly `${ENV_VAR_NAME}`, the extension reads the secret from t
 The configuration directory follows `PI_CODING_AGENT_DIR` when that environment variable is set. Otherwise it defaults to `~/.pi/agent`.
 
 Restart pi after creating the file, or run `/reload` in an interactive session. Then use `/model` to select a discovered model under the configured provider.
+
+### Codex compaction service tier
+
+Set `compress_service_tier` on a provider in `sub2api.json` to override the service tier for native Codex compaction only:
+
+| Value             | Compaction request                                                                                                        |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `"fast"`          | Sends `service_tier: "priority"`                                                                                          |
+| `"ultrafast"`     | Sends `service_tier: "ultrafast"`                                                                                         |
+| `null` or omitted | Inherits the current session's tier (`/toggle-fast` or `/toggle-ultrafast`); omits `service_tier` when neither is enabled |
+
+A non-null configuration takes precedence over the session setting. It does not change ordinary conversation requests or Pi's fallback textual compaction. The relay must support the selected tier.
 
 ### Provider-hosted tools
 

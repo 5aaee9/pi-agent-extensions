@@ -55,6 +55,7 @@ export interface RelayConfig {
   anthropicBaseUrl: string;
   apiKey: string;
   api?: SupportedApi;
+  compressServiceTier?: "fast" | "ultrafast" | null;
   serverTools?: RelayServerTools;
   responsesUrl: string;
   codexResponsesUrl: string;

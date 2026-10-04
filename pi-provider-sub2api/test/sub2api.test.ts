@@ -1649,6 +1649,32 @@ describe("sub2api provider extension", () => {
     expect((error as Error).message).not.toContain("mcp-secret");
   });
 
+  it.each(["priority", "default", "FAST", "", false, 1, {}, []])(
+    "rejects invalid compress_service_tier %j before registering providers",
+    async (tier) => {
+      writeFileSync(
+        join(stateDir, "sub2api.json"),
+        JSON.stringify({
+          invalid: {
+            baseURL: "https://invalid.example",
+            token: "config-secret",
+            compress_service_tier: tier,
+          },
+        }),
+      );
+      const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      expect(await registerProviders()).toHaveLength(0);
+      expect(consoleError).toHaveBeenCalledWith(
+        expect.stringContaining("failed to load"),
+        expect.objectContaining({
+          message: expect.stringContaining(
+            "compress_service_tier must be fast, ultrafast, or null",
+          ),
+        }),
+      );
+    },
+  );
+
   it("rejects an unsupported configured API before registering providers", async () => {
     writeFileSync(
       join(stateDir, "sub2api.json"),

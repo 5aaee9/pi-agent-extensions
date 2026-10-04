@@ -114,6 +114,7 @@ export function parseRelayConfig(provider: string, value: unknown): RelayConfig 
     baseURL?: unknown;
     token?: unknown;
     api?: unknown;
+    compress_service_tier?: unknown;
     serverTools?: unknown;
   };
   if (typeof entry.baseURL !== "string" || !entry.baseURL.trim()) {
@@ -134,6 +135,16 @@ export function parseRelayConfig(provider: string, value: unknown): RelayConfig 
     );
   }
 
+  const compressServiceTier = entry.compress_service_tier;
+  if (
+    compressServiceTier !== undefined &&
+    compressServiceTier !== null &&
+    compressServiceTier !== "fast" &&
+    compressServiceTier !== "ultrafast"
+  ) {
+    throw new Error(`provider ${provider} compress_service_tier must be fast, ultrafast, or null`);
+  }
+
   const configuredApi = entry.api as SupportedApi | undefined;
   const serverTools = parseServerTools(provider, entry.serverTools);
   validateServerToolsForApi(provider, configuredApi, serverTools);
@@ -148,6 +159,7 @@ export function parseRelayConfig(provider: string, value: unknown): RelayConfig 
     anthropicBaseUrl,
     apiKey,
     api: configuredApi,
+    compressServiceTier,
     serverTools,
     responsesUrl: `${baseUrl}/responses`,
     codexResponsesUrl: `${baseUrl}/codex/responses`,

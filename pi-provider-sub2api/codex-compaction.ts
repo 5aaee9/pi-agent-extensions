@@ -84,6 +84,7 @@ export interface CodexCompactionRelay {
   provider: string;
   responsesUrl: string;
   apiKey: string;
+  compressServiceTier?: "fast" | "ultrafast" | null;
 }
 
 type JsonObject = Record<string, unknown>;
@@ -576,6 +577,7 @@ async function compactRemotely(params: {
   model: Model<any>;
   input: ResponseItem[];
   instructions: string;
+  serviceTier?: string;
   signal: AbortSignal;
 }) {
   const signal = AbortSignal.any([params.signal, AbortSignal.timeout(COMPACTION_TIMEOUT_MS)]);
@@ -591,6 +593,7 @@ async function compactRemotely(params: {
       model: params.model.id,
       input: [...params.input, { type: "compaction_trigger" }],
       instructions: params.instructions,
+      service_tier: params.serviceTier,
       stream: true,
       store: false,
     }),
@@ -714,6 +717,7 @@ function errorMessage(error: unknown) {
 export function registerCodexCompaction(
   pi: ExtensionAPI,
   getRelay: (provider: string) => CodexCompactionRelay | undefined,
+  getSessionServiceTier: () => string | undefined = () => undefined,
 ) {
   const rt = privateRuntime;
   // Hosts without pi's private serializer modules (OMP's compat shim) keep their own
@@ -750,6 +754,10 @@ export function registerCodexCompaction(
         model,
         input: built.input,
         instructions: appendCustomInstructions(ctx.getSystemPrompt(), event.customInstructions),
+        serviceTier:
+          relay.compressServiceTier === "fast"
+            ? "priority"
+            : (relay.compressServiceTier ?? getSessionServiceTier()),
         signal: event.signal,
       });
       return {

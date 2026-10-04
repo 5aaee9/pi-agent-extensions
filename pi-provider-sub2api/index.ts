@@ -130,7 +130,11 @@ export default async function (pi: ExtensionAPI) {
       () => isCurrent() && relaysByProvider.get(relay.provider) === relay,
     );
 
-  registerCodexCompaction(pi, (provider) => relaysByProvider.get(provider));
+  registerCodexCompaction(
+    pi,
+    (provider) => relaysByProvider.get(provider),
+    () => serviceTier,
+  );
 
   const [providers, cachedModelMetadata] = await Promise.all([
     Promise.all(

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Add per-provider `compress_service_tier` (`fast`, `ultrafast`, or `null`) for native Codex compaction. Explicit values override the session tier; `null` or omission inherits the current `/toggle-fast` or `/toggle-ultrafast` setting.
+
 ## 0.1.38 - 2026-10-04
 
 - Add `/toggle-daybreak` for explicit Daybreak Blue / standard selection and a `[DAYBREAK]` footer badge.

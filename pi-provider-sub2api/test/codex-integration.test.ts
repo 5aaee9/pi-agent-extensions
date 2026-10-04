@@ -21,6 +21,114 @@ afterEach(() => {
 });
 
 describe("real Codex adapter integration", () => {
+  it.each([
+    { configured: undefined, expected: undefined },
+    { configured: null, expected: undefined },
+    { configured: "fast", expected: "priority" },
+    { configured: "ultrafast", expected: "ultrafast" },
+  ])(
+    "uses compress_service_tier=$configured before the current session tier",
+    async ({ configured, expected }) => {
+      writeFileSync(
+        join(stateDir, "sub2api.json"),
+        JSON.stringify({
+          codex: {
+            baseURL: "https://codex-integration.example",
+            token: "integration-relay-token",
+            api: "openai-codex-responses",
+            compress_service_tier: configured,
+          },
+        }),
+      );
+      const requests: Record<string, unknown>[] = [];
+      vi.stubGlobal("fetch", async (input: URL | RequestInfo, init?: RequestInit) => {
+        if (String(input).endsWith("/backend-api/codex/models")) {
+          return Response.json({ models: [{ slug: "gpt-5.5" }] });
+        }
+        if (String(input).endsWith("/v1/responses")) {
+          requests.push(JSON.parse(String(init?.body)));
+          const response = {
+            id: "cmp-tier-test",
+            status: "completed",
+            output: [{ type: "compaction", encrypted_content: "opaque-tier-test" }],
+          };
+          const events = [
+            { type: "response.output_item.done", item: response.output[0] },
+            { type: "response.completed", response },
+          ];
+          return new Response(
+            events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(""),
+            {
+              headers: { "Content-Type": "text/event-stream" },
+            },
+          );
+        }
+        return new Response(null, { status: 404 });
+      });
+      type Handler = (event: any, ctx: any) => any;
+      const handlers = new Map<string, Handler>();
+      let toggleFast: Handler;
+      let toggleUltrafast: Handler;
+      let providerConfig: ProviderConfig;
+      await extension({
+        registerProvider(_name: string, config: ProviderConfig) {
+          providerConfig = config;
+        },
+        registerCommand(name: string, options: { handler: Handler }) {
+          if (name === "toggle-fast") toggleFast = options.handler;
+          if (name === "toggle-ultrafast") toggleUltrafast = options.handler;
+        },
+        on(name: string, handler: Handler) {
+          handlers.set(name, handler);
+        },
+        getAllTools: () => [],
+        getActiveTools: () => [],
+      } as unknown as ExtensionAPI);
+      const user = {
+        type: "message",
+        id: "user-1",
+        parentId: null,
+        timestamp: new Date().toISOString(),
+        message: {
+          role: "user",
+          content: [{ type: "text", text: "Remember BLUE-42." }],
+          timestamp: Date.now(),
+        },
+      };
+      const ctx = {
+        model: { ...providerConfig!.models![0], provider: "codex" },
+        hasUI: true,
+        getSystemPrompt: () => "You are Codex.",
+        ui: { notify: vi.fn<(message: string, level: string) => void>() },
+        sessionManager: { getBranch: () => [user] },
+      };
+      for (const sessionTier of [undefined, "priority", "ultrafast", undefined]) {
+        if (sessionTier === "priority") await toggleFast!("", ctx);
+        else if (requests.length) await toggleUltrafast!("", ctx);
+        const result = await handlers.get("session_before_compact")!(
+          {
+            branchEntries: [user],
+            preparation: { firstKeptEntryId: user.id, tokensBefore: 100 },
+            signal: new AbortController().signal,
+          },
+          ctx,
+        );
+        expect(result?.compaction).toBeDefined();
+        const tier = expected ?? sessionTier;
+        expect(requests.at(-1)?.service_tier).toBe(tier);
+        expect(Object.hasOwn(requests.at(-1)!, "service_tier")).toBe(tier !== undefined);
+        // The compaction override must never leak into ordinary conversation requests.
+        const ordinary = handlers.get("before_provider_request")!(
+          { payload: { model: ctx.model.id } },
+          ctx,
+        );
+        expect(ordinary?.service_tier).toBe(sessionTier);
+      }
+      expect(requests).toHaveLength(4);
+      expect(ctx.ui.notify).not.toHaveBeenCalledWith(expect.anything(), "warning");
+    },
+  );
+
   it("rewrites ultra reasoning and Fast mode into the relayed request", async () => {
     writeFileSync(
       join(stateDir, "sub2api.json"),
