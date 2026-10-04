@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.38 - 2026-10-04
+
+- Synchronize the package version for coordinated workspace releases.
+
 ## 0.1.37 - 2026-10-03
 
 - Synchronize the package version for coordinated workspace releases.

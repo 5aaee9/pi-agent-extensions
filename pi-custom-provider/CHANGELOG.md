@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.38 - 2026-10-04
+
+- Synchronize the package version for coordinated workspace releases.
+
 ## 0.1.37 - 2026-10-03
 
 - Fix the extension failing to load under pi hosts that only map the public `@earendil-works/pi-ai` entrypoints: `api/simple-options`, `api/transform-messages`, and the token estimator are now vendored into `pi-ai-internal.ts` (ported from pi-ai 0.99.1) instead of imported from unmapped `api/*` submodules. Mid-conversation system messages from newer hosts are also mapped onto Ollama's `system` role instead of falling through to tool results.
