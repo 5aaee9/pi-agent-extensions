@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.40 - 2026-10-04
 
 - Register `/openai-compress [model] [default|fast|ultrafast]` when native Codex models are available. Optional command arguments override configuration for one compaction only, with tier-only shorthand and explicit default-tier support.
 - Add per-provider `compress_model` for native Codex compaction; omitted or `null` uses the current conversation model. Overrides preserve conversation checkpoint replay and use the selected model's registered pricing when available.
