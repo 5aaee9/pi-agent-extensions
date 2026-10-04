@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.39 - 2026-10-04
 
 - Add per-provider `compress_service_tier` (`fast`, `ultrafast`, or `null`) for native Codex compaction. Explicit values override the session tier; `null` or omission inherits the current `/toggle-fast` or `/toggle-ultrafast` setting.
 
