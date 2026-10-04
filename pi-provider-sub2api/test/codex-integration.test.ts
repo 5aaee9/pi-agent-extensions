@@ -51,6 +51,8 @@ describe("real Codex adapter integration", () => {
     let providerConfig: ProviderConfig | undefined;
     let toggleUltra: ((args: string, ctx: any) => unknown) | undefined;
     let toggleFast: ((args: string, ctx: any) => unknown) | undefined;
+    let toggleUltrafast: ((args: string, ctx: any) => unknown) | undefined;
+    let toggleDaybreak: ((args: string, ctx: any) => unknown) | undefined;
     type BeforeRequestHandler = (
       event: { payload: unknown },
       ctx: {
@@ -70,6 +72,8 @@ describe("real Codex adapter integration", () => {
       registerCommand(name: string, options: { handler: (args: string, ctx: any) => unknown }) {
         if (name === "toggle-ultra") toggleUltra = options.handler;
         if (name === "toggle-fast") toggleFast = options.handler;
+        if (name === "toggle-ultrafast") toggleUltrafast = options.handler;
+        if (name === "toggle-daybreak") toggleDaybreak = options.handler;
       },
       setThinkingLevel,
     } as unknown as ExtensionAPI);
@@ -147,6 +151,7 @@ describe("real Codex adapter integration", () => {
       tools: expect.arrayContaining([{ type: "web_search" }]),
     });
     expect(transportCalls[0]!.body).not.toHaveProperty("service_tier");
+    expect(transportCalls[0]!.body).not.toHaveProperty("access_programs");
 
     expect(toggleUltra).toBeTypeOf("function");
     expect(toggleFast).toBeTypeOf("function");
@@ -180,5 +185,31 @@ describe("real Codex adapter integration", () => {
     expect(transportCalls[1]!.body).toMatchObject({
       tools: expect.arrayContaining([{ type: "web_search" }]),
     });
+
+    for (const enabled of [true, false]) {
+      await toggleUltrafast!("", commandContext);
+      await toggleDaybreak!("", commandContext);
+      controller = new AbortController();
+      const modeStream = providerConfig!.streamSimple!(
+        ultraModel as never,
+        { messages: [] } as never,
+        {
+          fetch: transportFetch,
+          signal: controller.signal,
+          reasoning: "max",
+          onPayload: (payload) => applyProviderRequestHooks(payload, ultraModel),
+        },
+      );
+      for await (const event of modeStream) events.push(event);
+      const body = transportCalls.at(-1)!.body;
+      expect(body).toMatchObject({
+        access_programs: { cyber: enabled ? "daybreak_blue" : "standard" },
+        reasoning: { effort: "ultra" },
+        tools: expect.arrayContaining([{ type: "web_search" }]),
+      });
+      expect((body as Record<string, unknown>).service_tier).toBe(
+        enabled ? "ultrafast" : undefined,
+      );
+    }
   });
 });

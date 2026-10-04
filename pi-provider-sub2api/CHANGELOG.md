@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Add `/toggle-daybreak` for explicit Daybreak Blue / standard selection and a `[DAYBREAK]` footer badge.
+- Add `/toggle-ultrafast` for the Responses ultrafast service tier and a `[ULTRAFAST]` footer badge; Fast and Ultrafast disable each other.
+
 ## 0.1.37 - 2026-10-03
 
 - Synchronize the package version for coordinated workspace releases.

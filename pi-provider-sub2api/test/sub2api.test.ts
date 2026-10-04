@@ -1074,6 +1074,12 @@ describe("sub2api provider extension", () => {
       .handler;
     const toggleFast = registerCommand.mock.calls.find(([name]) => name === "toggle-fast")?.[1]
       .handler;
+    const toggleUltrafast = registerCommand.mock.calls.find(
+      ([name]) => name === "toggle-ultrafast",
+    )?.[1].handler;
+    const toggleDaybreak = registerCommand.mock.calls.find(
+      ([name]) => name === "toggle-daybreak",
+    )?.[1].handler;
     const beforeProviderRequest = handlers.get("before_provider_request")!;
     const fastModel = {
       provider: "quota-relay",
@@ -1121,6 +1127,35 @@ describe("sub2api provider extension", () => {
     expect(footer.render().at(-1)).toBe("quota-relay · 5h 30% · d 10% [ULTRA ENABLED]");
     await toggleUltra!("", context);
     expect(footer.render().at(-1)).toBe("quota-relay · 5h 30% · d 10%");
+
+    await toggleUltrafast!("", context);
+    expect(footer.render().at(-1)).toBe("quota-relay · 5h 30% · d 10% [ULTRAFAST]");
+    expect(beforeProviderRequest({ payload: requestPayload }, fastContext)).toMatchObject({
+      service_tier: "ultrafast",
+    });
+    await toggleDaybreak!("", context);
+    expect(footer.render().at(-1)).toBe("quota-relay · 5h 30% · d 10% [ULTRAFAST] [DAYBREAK]");
+    expect(beforeProviderRequest({ payload: requestPayload }, fastContext)).toMatchObject({
+      service_tier: "ultrafast",
+      access_programs: { cyber: "daybreak_blue" },
+    });
+    await toggleFast!("", context);
+    expect(footer.render().at(-1)).toBe("quota-relay · 5h 30% · d 10% [FAST] [DAYBREAK]");
+    expect(beforeProviderRequest({ payload: requestPayload }, fastContext)).toMatchObject({
+      service_tier: "priority",
+    });
+    await toggleUltrafast!("", context);
+    await toggleUltrafast!("", context);
+    expect(footer.render().at(-1)).toBe("quota-relay · 5h 30% · d 10% [DAYBREAK]");
+    expect(beforeProviderRequest({ payload: requestPayload }, fastContext)).toMatchObject({
+      service_tier: "default",
+    });
+    await toggleDaybreak!("", context);
+    expect(footer.render().at(-1)).toBe("quota-relay · 5h 30% · d 10%");
+    expect(beforeProviderRequest({ payload: requestPayload }, fastContext)).toMatchObject({
+      access_programs: { cyber: "standard" },
+    });
+    expect(requestPayload).not.toHaveProperty("access_programs");
 
     const usageCalls = fetchCalls.filter((call) => call.url.endsWith("/usage"));
     expect(usageCalls.map((call) => call.url)).toEqual([

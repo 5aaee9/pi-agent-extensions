@@ -204,6 +204,8 @@ export function renderUsageFooter(
   ultraEnabled: boolean,
   fastEnabled: boolean,
   width: number,
+  ultrafastEnabled = false,
+  daybreakEnabled = false,
 ) {
   let cwd = formatFooterCwd(ctx.cwd, homedir());
   const branch = footerData.getGitBranch();
@@ -224,7 +226,9 @@ export function renderUsageFooter(
   }
   if (usageLine) {
     let text = ultraEnabled ? `${usageLine.text} [ULTRA ENABLED]` : usageLine.text;
-    if (fastEnabled) text += " [FAST]";
+    if (ultrafastEnabled) text += " [ULTRAFAST]";
+    else if (fastEnabled) text += " [FAST]";
+    if (daybreakEnabled) text += " [DAYBREAK]";
     lines.push(theme.fg(usageLine.color, truncateToWidth(text, width, "...")));
   }
   return lines;

@@ -83,7 +83,11 @@ export function addServerTools(payload: unknown, model: Model<any> | undefined) 
   return changed ? { ...request, tools } : undefined;
 }
 
-export function addFastServiceTier(payload: unknown, model: Model<any> | undefined) {
+export function addFastServiceTier(
+  payload: unknown,
+  model: Model<any> | undefined,
+  tier: "priority" | "ultrafast" = "priority",
+) {
   if (
     !model ||
     !relaysByProvider.has(model.provider) ||
@@ -94,5 +98,26 @@ export function addFastServiceTier(payload: unknown, model: Model<any> | undefin
   }
   const request = asRecord(payload);
   if (!request || request.model !== model.id) return undefined;
-  return { ...request, service_tier: "priority" };
+  // Ultrafast is a Responses tier; retain legacy Fast support for Chat Completions.
+  if (tier === "ultrafast" && model.api === "openai-completions") return undefined;
+  return { ...request, service_tier: tier };
+}
+
+export function addDaybreakProgram(
+  payload: unknown,
+  model: Model<any> | undefined,
+  program: "standard" | "daybreak_blue",
+) {
+  if (
+    !model ||
+    !relaysByProvider.has(model.provider) ||
+    !OPENAI.test(model.id) ||
+    (model.api !== "openai-codex-responses" && model.api !== "openai-responses")
+  )
+    return undefined;
+  const request = asRecord(payload);
+  if (!request || request.model !== model.id) return undefined;
+  const programs = asRecord(request.access_programs);
+  if (request.access_programs !== undefined && !programs) return undefined;
+  return { ...request, access_programs: { ...programs, cyber: program } };
 }

@@ -20,7 +20,12 @@ import {
   scaleModelCost,
 } from "./model-metadata.ts";
 import { refreshBilling, refreshQuota } from "./quota.ts";
-import { addFastServiceTier, addServerTools, streamCodex } from "./relay-stream.ts";
+import {
+  addDaybreakProgram,
+  addFastServiceTier,
+  addServerTools,
+  streamCodex,
+} from "./relay-stream.ts";
 import {
   billingByProvider,
   billingRefreshes,
@@ -54,7 +59,8 @@ export default async function (pi: ExtensionAPI) {
   let usageFooterLine: UsageFooterLine | undefined;
   let requestFooterRender: (() => void) | undefined;
   let ultraEnabled = false;
-  let fastEnabled = false;
+  let serviceTier: "priority" | "ultrafast" | undefined;
+  let cyberProgram: "standard" | "daybreak_blue" | undefined;
   const setUsageLine = (
     ctx: ExtensionContext,
     provider: string,
@@ -96,8 +102,10 @@ export default async function (pi: ExtensionAPI) {
             theme,
             usageFooterLine,
             ultraEnabled,
-            fastEnabled,
+            serviceTier === "priority",
             width,
+            serviceTier === "ultrafast",
+            cyberProgram === "daybreak_blue",
           ),
       };
     });
@@ -216,9 +224,30 @@ export default async function (pi: ExtensionAPI) {
   pi.registerCommand("toggle-fast", {
     description: "Toggle OpenAI priority service tier for faster responses",
     handler: async (_args, ctx) => {
-      fastEnabled = !fastEnabled;
+      serviceTier = serviceTier === "priority" ? undefined : "priority";
       requestFooterRender?.();
-      ctx.ui.notify(fastEnabled ? "Fast mode enabled" : "Fast mode disabled", "info");
+      ctx.ui.notify(serviceTier ? "Fast mode enabled" : "Fast mode disabled", "info");
+    },
+  });
+
+  pi.registerCommand("toggle-ultrafast", {
+    description: "Toggle OpenAI ultrafast service tier (replaces Fast mode)",
+    handler: async (_args, ctx) => {
+      serviceTier = serviceTier === "ultrafast" ? undefined : "ultrafast";
+      requestFooterRender?.();
+      ctx.ui.notify(serviceTier ? "Ultrafast mode enabled" : "Ultrafast mode disabled", "info");
+    },
+  });
+
+  pi.registerCommand("toggle-daybreak", {
+    description: "Toggle Daybreak Blue access program for OpenAI Responses requests",
+    handler: async (_args, ctx) => {
+      cyberProgram = cyberProgram === "daybreak_blue" ? "standard" : "daybreak_blue";
+      requestFooterRender?.();
+      ctx.ui.notify(
+        cyberProgram === "daybreak_blue" ? "Daybreak Blue enabled" : "Daybreak disabled (standard)",
+        "info",
+      );
     },
   });
 
@@ -227,8 +256,10 @@ export default async function (pi: ExtensionAPI) {
   });
 
   pi.on("before_provider_request", (event, ctx) => {
-    if (!fastEnabled) return;
-    return addFastServiceTier(event.payload, ctx.model);
+    let payload = event.payload;
+    if (serviceTier) payload = addFastServiceTier(payload, ctx.model, serviceTier) ?? payload;
+    if (cyberProgram) payload = addDaybreakProgram(payload, ctx.model, cyberProgram) ?? payload;
+    return payload === event.payload ? undefined : payload;
   });
 
   const syncRelayProviderPricing = (relay: RelayConfig) => {
