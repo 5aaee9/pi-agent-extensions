@@ -105,7 +105,7 @@ function serializeReplay(entries: SessionEntry[]) {
   );
 }
 
-function createHarness(initialBranch: SessionEntry[]) {
+function createHarness(initialBranch: SessionEntry[], compactionRelay = relay) {
   const handlers = new Map<string, Handler>();
   const notifications: Array<{ message: string; level: string }> = [];
   let branch = initialBranch;
@@ -116,10 +116,13 @@ function createHarness(initialBranch: SessionEntry[]) {
     getAllTools: () => [],
     getActiveTools: () => [],
   } as unknown as ExtensionAPI;
-  registerCodexCompaction(pi, (provider) => (provider === relay.provider ? relay : undefined));
+  registerCodexCompaction(pi, (provider) =>
+    provider === compactionRelay.provider ? compactionRelay : undefined,
+  );
 
   const context = {
     model,
+    modelRegistry: { find: vi.fn<(provider: string, id: string) => Model<any> | undefined>() },
     hasUI: true,
     getSystemPrompt: () => "You are Codex.",
     sessionManager: {
@@ -212,116 +215,148 @@ afterEach(() => {
 });
 
 describe("Codex remote compaction v2", () => {
-  it("compacts the current session and replaces Pi replay with the returned native window", async () => {
-    const user = userEntry("user-1", "Remember BLUE-42.");
-    const assistant = assistantEntry("assistant-1", "Noted.", user.id);
-    const branch = [user, assistant];
-    const harness = createHarness(branch);
-    const calls: Array<{ url: string; init?: RequestInit }> = [];
-    vi.stubGlobal("fetch", async (input: URL | RequestInfo, init?: RequestInit) => {
-      calls.push({ url: String(input), init });
-      return remoteCompactionResponse("opaque-1");
-    });
+  it.each([undefined, "gpt-5-mini"])(
+    "compacts with model override %s and replays the native window",
+    async (compressModel) => {
+      const user = userEntry("user-1", "Remember BLUE-42.");
+      const assistant = assistantEntry("assistant-1", "Noted.", user.id);
+      const branch = [user, assistant];
+      const harness = createHarness(branch, { ...relay, compressModel });
+      const calls: Array<{ url: string; init?: RequestInit }> = [];
+      vi.stubGlobal("fetch", async (input: URL | RequestInfo, init?: RequestInit) => {
+        calls.push({ url: String(input), init });
+        return remoteCompactionResponse("opaque-1");
+      });
 
-    const result = await harness.handlers.get("session_before_compact")!(
-      compactEvent(branch),
-      harness.context,
-    );
+      const result = await harness.handlers.get("session_before_compact")!(
+        compactEvent(branch),
+        harness.context,
+      );
 
-    expect(calls).toHaveLength(1);
-    expect(calls[0]!.url).toBe("https://relay.example/v1/responses");
-    expect(calls[0]!.init?.method).toBe("POST");
-    expect(calls[0]!.init?.redirect).toBe("error");
-    expect(calls[0]!.init?.signal).toBeInstanceOf(AbortSignal);
-    const headers = new Headers(calls[0]!.init?.headers);
-    expect(headers.get("authorization")).toBe("Bearer relay-token");
-    expect(headers.get("chatgpt-account-id")).toBeNull();
-    expect(headers.get("accept")).toBe("text/event-stream");
-    expect(headers.get("x-codex-beta-features")).toBe("remote_compaction_v2");
+      expect(calls).toHaveLength(1);
+      expect(calls[0]!.url).toBe("https://relay.example/v1/responses");
+      expect(calls[0]!.init?.method).toBe("POST");
+      expect(calls[0]!.init?.redirect).toBe("error");
+      expect(calls[0]!.init?.signal).toBeInstanceOf(AbortSignal);
+      const headers = new Headers(calls[0]!.init?.headers);
+      expect(headers.get("authorization")).toBe("Bearer relay-token");
+      expect(headers.get("chatgpt-account-id")).toBeNull();
+      expect(headers.get("accept")).toBe("text/event-stream");
+      expect(headers.get("x-codex-beta-features")).toBe("remote_compaction_v2");
 
-    const body = JSON.parse(String(calls[0]!.init?.body));
-    expect(body).toMatchObject({ model: model.id });
-    expect(body.instructions).toContain("You are Codex.");
-    expect(body.instructions).toContain("Preserve implementation details.");
-    expect(body.stream).toBe(true);
-    expect(body.store).toBe(false);
-    expect(body.input.at(-1)).toEqual({ type: "compaction_trigger" });
-    expect(JSON.stringify(body.input)).toContain("Remember BLUE-42.");
-    expect(JSON.stringify(body.input)).toContain("Noted.");
+      const body = JSON.parse(String(calls[0]!.init?.body));
+      expect(body).toMatchObject({ model: compressModel ?? model.id });
+      expect(body.instructions).toContain("You are Codex.");
+      expect(body.instructions).toContain("Preserve implementation details.");
+      expect(body.stream).toBe(true);
+      expect(body.store).toBe(false);
+      expect(body.input.at(-1)).toEqual({ type: "compaction_trigger" });
+      expect(JSON.stringify(body.input)).toContain("Remember BLUE-42.");
+      expect(JSON.stringify(body.input)).toContain("Noted.");
 
-    expect(result.compaction).toMatchObject({
-      summary: "[OpenAI native compaction checkpoint]",
-      firstKeptEntryId: user.id,
-      tokensBefore: 50_000,
-      usage: {
-        input: 70,
-        output: 30,
-        cacheRead: 20,
-        cacheWrite: 10,
-        reasoning: 7,
-        totalTokens: 130,
-      },
-      details: {
-        kind: "sub2api-codex-native-compaction",
-        version: 2,
-        provider: relay.provider,
-        api: "openai-codex-responses",
-        model: model.id,
-        responsesUrl: relay.responsesUrl,
-        compactResponseId: "cmp-response-opaque-1",
-      },
-    });
-
-    const checkpoint = compactionEntry(
-      "compact-1",
-      assistant.id,
-      user.id,
-      result.compaction.details,
-    );
-    const tail = userEntry("user-2", "What was the code?", checkpoint.id);
-    const compactedBranch = [user, assistant, checkpoint, tail];
-    harness.setBranch(compactedBranch);
-    const piReplay = serializeReplay([checkpoint, user, assistant, tail]);
-
-    const rewritten = harness.handlers.get("before_provider_request")!(
-      {
-        payload: {
-          model: model.id,
-          store: false,
-          previous_response_id: "must-be-removed",
-          input: piReplay,
+      expect(result.compaction).toMatchObject({
+        summary: "[OpenAI native compaction checkpoint]",
+        firstKeptEntryId: user.id,
+        tokensBefore: 50_000,
+        usage: {
+          input: 70,
+          output: 30,
+          cacheRead: 20,
+          cacheWrite: 10,
+          reasoning: 7,
+          totalTokens: 130,
         },
-      },
-      harness.context,
-    );
-
-    expect(rewritten.previous_response_id).toBeUndefined();
-    expect(rewritten.input.slice(0, 2)).toEqual(result.compaction.details.compactedWindow);
-    expect(JSON.stringify(rewritten.input)).not.toContain(result.compaction.summary);
-    expect(JSON.stringify(rewritten.input)).toContain("What was the code?");
-    expect(JSON.stringify(rewritten.input).match(/Noted\./g)).toBeNull();
-
-    const preamble = { role: "developer", content: "Fresh provider context." };
-    const injectedTail = {
-      role: "user",
-      content: [{ type: "input_text", text: "Injected by a context hook." }],
-    };
-    const rewrittenWithContext = harness.handlers.get("before_provider_request")!(
-      {
-        payload: {
+        details: {
+          kind: "sub2api-codex-native-compaction",
+          version: 2,
+          provider: relay.provider,
+          api: "openai-codex-responses",
           model: model.id,
-          store: false,
-          input: [preamble, ...piReplay, injectedTail],
+          responsesUrl: relay.responsesUrl,
+          compactResponseId: "cmp-response-opaque-1",
         },
-      },
-      harness.context,
-    );
-    expect(rewrittenWithContext.input[0]).toEqual(preamble);
-    expect(rewrittenWithContext.input.slice(1, 3)).toEqual(
-      result.compaction.details.compactedWindow,
-    );
-    expect(rewrittenWithContext.input.at(-1)).toEqual(injectedTail);
-  });
+      });
+
+      const checkpoint = compactionEntry(
+        "compact-1",
+        assistant.id,
+        user.id,
+        result.compaction.details,
+      );
+      const tail = userEntry("user-2", "What was the code?", checkpoint.id);
+      const compactedBranch = [user, assistant, checkpoint, tail];
+      harness.setBranch(compactedBranch);
+      const piReplay = serializeReplay([checkpoint, user, assistant, tail]);
+
+      const rewritten = harness.handlers.get("before_provider_request")!(
+        {
+          payload: {
+            model: model.id,
+            store: false,
+            previous_response_id: "must-be-removed",
+            input: piReplay,
+          },
+        },
+        harness.context,
+      );
+
+      expect(rewritten.previous_response_id).toBeUndefined();
+      expect(rewritten.input.slice(0, 2)).toEqual(result.compaction.details.compactedWindow);
+      expect(JSON.stringify(rewritten.input)).not.toContain(result.compaction.summary);
+      expect(JSON.stringify(rewritten.input)).toContain("What was the code?");
+      expect(JSON.stringify(rewritten.input).match(/Noted\./g)).toBeNull();
+
+      const preamble = { role: "developer", content: "Fresh provider context." };
+      const injectedTail = {
+        role: "user",
+        content: [{ type: "input_text", text: "Injected by a context hook." }],
+      };
+      const rewrittenWithContext = harness.handlers.get("before_provider_request")!(
+        {
+          payload: {
+            model: model.id,
+            store: false,
+            input: [preamble, ...piReplay, injectedTail],
+          },
+        },
+        harness.context,
+      );
+      expect(rewrittenWithContext.input[0]).toEqual(preamble);
+      expect(rewrittenWithContext.input.slice(1, 3)).toEqual(
+        result.compaction.details.compactedWindow,
+      );
+      expect(rewrittenWithContext.input.at(-1)).toEqual(injectedTail);
+    },
+  );
+
+  it.each([true, false])(
+    "uses override pricing only when its model is known (%s)",
+    async (known) => {
+      const user = userEntry("user-1", "Remember BLUE-42.");
+      const compressModel = {
+        ...model,
+        id: "gpt-5-mini",
+        cost: { input: 10, output: 20, cacheRead: 5, cacheWrite: 15 },
+      };
+      const harness = createHarness([user], { ...relay, compressModel: compressModel.id });
+      harness.context.modelRegistry.find.mockReturnValue(known ? compressModel : undefined);
+      vi.stubGlobal("fetch", async () => remoteCompactionResponse("pricing-test"));
+
+      const result = await harness.handlers.get("session_before_compact")!(
+        compactEvent([user]),
+        harness.context,
+      );
+
+      expect(harness.context.modelRegistry.find).toHaveBeenCalledWith(
+        relay.provider,
+        compressModel.id,
+      );
+      expect(result.compaction.usage.input).toBe(70);
+      expect(result.compaction.usage.cost.input).toBeCloseTo(known ? 0.0007 : 0, 10);
+      expect(result.compaction.usage.cost.output).toBeCloseTo(known ? 0.0006 : 0, 10);
+      expect(harness.context.model.id).toBe(model.id);
+    },
+  );
 
   it("falls back to Pi compaction after a single transient failure without retrying", async () => {
     const user = userEntry("user-1", "hello");
@@ -380,50 +415,55 @@ describe("Codex remote compaction v2", () => {
     expect(harness.notifications).toEqual([]);
   });
 
-  it("feeds a previous native window and its live tail into repeated compaction", async () => {
-    const user = userEntry("user-1", "Remember BLUE-42.");
-    const priorDetails: NativeCodexCompactionDetails = {
-      kind: "sub2api-codex-native-compaction",
-      version: 1,
-      provider: relay.provider,
-      api: "openai-codex-responses",
-      model: model.id,
-      responsesUrl: relay.responsesUrl,
-      compactedWindow: legacyCompactResponse("opaque-1", "compaction_summary").output,
-      compactResponseId: "first",
-      createdAt: new Date().toISOString(),
-    };
-    const prior = compactionEntry("compact-1", user.id, user.id, priorDetails);
-    const tail = userEntry("user-2", "New fact GREEN-7.", prior.id);
-    const branch = [user, prior, tail];
-    const harness = createHarness(branch);
-    let requestBody: any;
-    vi.stubGlobal("fetch", async (_input: URL | RequestInfo, init?: RequestInit) => {
-      requestBody = JSON.parse(String(init?.body));
-      return remoteCompactionResponse("opaque-2", "compaction_summary");
-    });
+  it.each([undefined, "gpt-5-mini"])(
+    "feeds a native window into repeated compaction with override %s",
+    async (compressModel) => {
+      const user = userEntry("user-1", "Remember BLUE-42.");
+      const priorDetails: NativeCodexCompactionDetails = {
+        kind: "sub2api-codex-native-compaction",
+        version: 1,
+        provider: relay.provider,
+        api: "openai-codex-responses",
+        model: model.id,
+        responsesUrl: relay.responsesUrl,
+        compactedWindow: legacyCompactResponse("opaque-1", "compaction_summary").output,
+        compactResponseId: "first",
+        createdAt: new Date().toISOString(),
+      };
+      const prior = compactionEntry("compact-1", user.id, user.id, priorDetails);
+      const tail = userEntry("user-2", "New fact GREEN-7.", prior.id);
+      const branch = [user, prior, tail];
+      const harness = createHarness(branch, { ...relay, compressModel });
+      let requestBody: any;
+      vi.stubGlobal("fetch", async (_input: URL | RequestInfo, init?: RequestInit) => {
+        requestBody = JSON.parse(String(init?.body));
+        return remoteCompactionResponse("opaque-2", "compaction_summary");
+      });
 
-    const result = await harness.handlers.get("session_before_compact")!(
-      compactEvent(branch),
-      harness.context,
-    );
+      const result = await harness.handlers.get("session_before_compact")!(
+        compactEvent(branch),
+        harness.context,
+      );
 
-    expect(requestBody.input.slice(0, 2)).toEqual(priorDetails.compactedWindow);
-    expect(JSON.stringify(requestBody.input)).toContain("New fact GREEN-7.");
-    expect(
-      requestBody.input.filter((item: any) => item.type === "compaction_summary"),
-    ).toHaveLength(1);
-    expect(requestBody.input.at(-1)).toEqual({ type: "compaction_trigger" });
-    expect(result.compaction.details.compactedWindow.at(-1)).toMatchObject({
-      type: "compaction_summary",
-      encrypted_content: "opaque-2",
-    });
-    expect(
-      result.compaction.details.compactedWindow.filter(
-        (item: any) => item.type === "compaction_summary",
-      ),
-    ).toHaveLength(1);
-  });
+      expect(requestBody.model).toBe(compressModel ?? model.id);
+      expect(result.compaction.details.model).toBe(model.id);
+      expect(requestBody.input.slice(0, 2)).toEqual(priorDetails.compactedWindow);
+      expect(JSON.stringify(requestBody.input)).toContain("New fact GREEN-7.");
+      expect(
+        requestBody.input.filter((item: any) => item.type === "compaction_summary"),
+      ).toHaveLength(1);
+      expect(requestBody.input.at(-1)).toEqual({ type: "compaction_trigger" });
+      expect(result.compaction.details.compactedWindow.at(-1)).toMatchObject({
+        type: "compaction_summary",
+        encrypted_content: "opaque-2",
+      });
+      expect(
+        result.compaction.details.compactedWindow.filter(
+          (item: any) => item.type === "compaction_summary",
+        ),
+      ).toHaveLength(1);
+    },
+  );
 
   it("retains recent user messages within the v2 replay budget", async () => {
     const oldUser = userEntry("user-old", `OLD-OVERSIZED-${"x".repeat(300_000)}`);

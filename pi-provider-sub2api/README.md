@@ -81,6 +81,26 @@ The configuration directory follows `PI_CODING_AGENT_DIR` when that environment 
 
 Restart pi after creating the file, or run `/reload` in an interactive session. Then use `/model` to select a discovered model under the configured provider.
 
+### Codex compaction model
+
+Set `compress_model` on a provider in `sub2api.json` to use a different model for native Codex compaction:
+
+```json
+{
+  "codex-relay": {
+    "baseURL": "https://relay.example.com/v1",
+    "token": "${SUB2API_TOKEN}",
+    "api": "openai-codex-responses",
+    "compress_model": "gpt-5-mini",
+    "compress_service_tier": "fast"
+  }
+}
+```
+
+Omitting `compress_model` or setting it to `null` uses the current conversation model. A configured value must be a non-empty model ID, without surrounding whitespace or control characters (maximum 256 characters). Requests still use this provider's endpoint and credentials; the selected model must support native compaction on that relay. It does not change the conversation model, checkpoint replay identity, or Pi's fallback textual compaction. `compress_service_tier` applies independently.
+
+Model IDs do not need to appear in discovery. Usage costs use the selected model's registered pricing when available; undiscovered override models retain token usage but report zero estimated cost rather than the conversation model's prices.
+
 ### Codex compaction service tier
 
 Set `compress_service_tier` on a provider in `sub2api.json` to override the service tier for native Codex compaction only:

@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import { parseServerTools, validateServerToolsForApi } from "./server-tools.ts";
 import { CONFIG_FILENAME, SUPPORTED_APIS } from "./types.ts";
 import type { RelayConfig, SupportedApi } from "./types.ts";
-import { base64Encode, hasControlCharacters } from "./util.ts";
+import { base64Encode, hasControlCharacters, isSafeModelId } from "./util.ts";
 
 export function getAgentDir() {
   const configured = process.env.PI_CODING_AGENT_DIR?.trim();
@@ -115,6 +115,7 @@ export function parseRelayConfig(provider: string, value: unknown): RelayConfig 
     token?: unknown;
     api?: unknown;
     compress_service_tier?: unknown;
+    compress_model?: unknown;
     serverTools?: unknown;
   };
   if (typeof entry.baseURL !== "string" || !entry.baseURL.trim()) {
@@ -145,6 +146,11 @@ export function parseRelayConfig(provider: string, value: unknown): RelayConfig 
     throw new Error(`provider ${provider} compress_service_tier must be fast, ultrafast, or null`);
   }
 
+  const compressModel = entry.compress_model;
+  if (compressModel !== undefined && compressModel !== null && !isSafeModelId(compressModel)) {
+    throw new Error(`provider ${provider} compress_model must be a valid model ID or null`);
+  }
+
   const configuredApi = entry.api as SupportedApi | undefined;
   const serverTools = parseServerTools(provider, entry.serverTools);
   validateServerToolsForApi(provider, configuredApi, serverTools);
@@ -160,6 +166,7 @@ export function parseRelayConfig(provider: string, value: unknown): RelayConfig 
     apiKey,
     api: configuredApi,
     compressServiceTier,
+    compressModel,
     serverTools,
     responsesUrl: `${baseUrl}/responses`,
     codexResponsesUrl: `${baseUrl}/codex/responses`,

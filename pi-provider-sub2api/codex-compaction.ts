@@ -85,6 +85,7 @@ export interface CodexCompactionRelay {
   responsesUrl: string;
   apiKey: string;
   compressServiceTier?: "fast" | "ultrafast" | null;
+  compressModel?: string | null;
 }
 
 type JsonObject = Record<string, unknown>;
@@ -749,9 +750,20 @@ export function registerCodexCompaction(
         relay,
         event.branchEntries as SessionEntry[],
       );
+      const compressModelId = relay.compressModel ?? model.id;
+      // Keep serialization and checkpoint identity tied to the conversation model.
+      // Unknown relay model IDs are valid overrides, but must not use its prices.
+      const compressModel =
+        compressModelId === model.id
+          ? model
+          : (ctx.modelRegistry.find(relay.provider, compressModelId) ?? {
+              ...model,
+              id: compressModelId,
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            });
       const compacted = await compactRemotely({
         relay,
-        model,
+        model: compressModel,
         input: built.input,
         instructions: appendCustomInstructions(ctx.getSystemPrompt(), event.customInstructions),
         serviceTier:

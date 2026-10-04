@@ -1675,6 +1675,30 @@ describe("sub2api provider extension", () => {
     },
   );
 
+  it.each(["", " ", " gpt-5-mini", "gpt-5-mini ", "gpt\n5", "x".repeat(257), false, 1, {}, []])(
+    "rejects invalid compress_model %j before registering providers",
+    async (compressModel) => {
+      writeFileSync(
+        join(stateDir, "sub2api.json"),
+        JSON.stringify({
+          invalid: {
+            baseURL: "https://invalid.example",
+            token: "config-secret",
+            compress_model: compressModel,
+          },
+        }),
+      );
+      const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      expect(await registerProviders()).toHaveLength(0);
+      expect(consoleError).toHaveBeenCalledWith(
+        expect.stringContaining("failed to load"),
+        expect.objectContaining({
+          message: expect.stringContaining("compress_model must be a valid model ID or null"),
+        }),
+      );
+    },
+  );
+
   it("rejects an unsupported configured API before registering providers", async () => {
     writeFileSync(
       join(stateDir, "sub2api.json"),

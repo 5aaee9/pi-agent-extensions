@@ -21,14 +21,18 @@ afterEach(() => {
 });
 
 describe("real Codex adapter integration", () => {
-  it.each([
-    { configured: undefined, expected: undefined },
-    { configured: null, expected: undefined },
-    { configured: "fast", expected: "priority" },
-    { configured: "ultrafast", expected: "ultrafast" },
-  ])(
-    "uses compress_service_tier=$configured before the current session tier",
-    async ({ configured, expected }) => {
+  it.each(
+    [
+      { configured: undefined, expected: undefined },
+      { configured: null, expected: undefined },
+      { configured: "fast", expected: "priority" },
+      { configured: "ultrafast", expected: "ultrafast" },
+    ].flatMap((tier) =>
+      [undefined, null, "gpt-5-mini"].map((compressModel) => ({ ...tier, compressModel })),
+    ),
+  )(
+    "uses compress_service_tier=$configured and compress_model=$compressModel before session defaults",
+    async ({ configured, expected, compressModel }) => {
       writeFileSync(
         join(stateDir, "sub2api.json"),
         JSON.stringify({
@@ -37,6 +41,7 @@ describe("real Codex adapter integration", () => {
             token: "integration-relay-token",
             api: "openai-codex-responses",
             compress_service_tier: configured,
+            compress_model: compressModel,
           },
         }),
       );
@@ -97,6 +102,7 @@ describe("real Codex adapter integration", () => {
       };
       const ctx = {
         model: { ...providerConfig!.models![0], provider: "codex" },
+        modelRegistry: { find: () => undefined },
         hasUI: true,
         getSystemPrompt: () => "You are Codex.",
         ui: { notify: vi.fn<(message: string, level: string) => void>() },
@@ -114,6 +120,8 @@ describe("real Codex adapter integration", () => {
           ctx,
         );
         expect(result?.compaction).toBeDefined();
+        expect(requests.at(-1)?.model).toBe(compressModel ?? ctx.model.id);
+        expect(result.compaction.details.model).toBe(ctx.model.id);
         const tier = expected ?? sessionTier;
         expect(requests.at(-1)?.service_tier).toBe(tier);
         expect(Object.hasOwn(requests.at(-1)!, "service_tier")).toBe(tier !== undefined);

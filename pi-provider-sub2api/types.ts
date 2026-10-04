@@ -56,6 +56,7 @@ export interface RelayConfig {
   apiKey: string;
   api?: SupportedApi;
   compressServiceTier?: "fast" | "ultrafast" | null;
+  compressModel?: string | null;
   serverTools?: RelayServerTools;
   responsesUrl: string;
   codexResponsesUrl: string;
