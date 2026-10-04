@@ -101,6 +101,22 @@ Omitting `compress_model` or setting it to `null` uses the current conversation 
 
 Model IDs do not need to appear in discovery. Usage costs use the selected model's registered pricing when available; undiscovered override models retain token usage but report zero estimated cost rather than the conversation model's prices.
 
+### One-off OpenAI compaction
+
+When discovery finds models routed through `openai-codex-responses` and the host supports native compaction, the extension registers `/openai-compress [model] [tier]`. It can only run while the current model is a Sub2API Codex model and the session is idle.
+
+```text
+/openai-compress
+/openai-compress gpt-5-mini
+/openai-compress fast
+/openai-compress gpt-5-mini ultrafast
+/openai-compress default
+```
+
+Both arguments are optional. A single `default`, `fast`, or `ultrafast` argument is treated as the tier, not a model name. Explicit arguments override `compress_model` / `compress_service_tier` for this compaction only; omitted arguments keep the configured defaults and then fall back to the current conversation model/session tier. `default` explicitly sends `service_tier: "default"`, `fast` sends `"priority"`, and `ultrafast` sends `"ultrafast"`.
+
+This does not change the selected conversation model, session toggles, configuration, or later automatic compactions. Failed command-triggered native compaction is cancelled rather than silently falling back to a different textual compaction path. The command remains registered when switching models, but rejects unsupported models at execution time.
+
 ### Codex compaction service tier
 
 Set `compress_service_tier` on a provider in `sub2api.json` to override the service tier for native Codex compaction only:

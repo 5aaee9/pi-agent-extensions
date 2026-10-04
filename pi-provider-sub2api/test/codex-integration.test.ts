@@ -21,6 +21,39 @@ afterEach(() => {
 });
 
 describe("real Codex adapter integration", () => {
+  it.each([
+    { api: "openai-codex-responses", id: "gpt-5.5", enabled: true },
+    { api: "anthropic-messages", id: "claude-sonnet-4-6", enabled: false },
+    { api: "openai-responses", id: "gpt-5.5", enabled: false },
+    { api: "openai-codex-responses", id: undefined, enabled: false },
+  ])(
+    "registers openai-compress only for native Codex models ($api / $id)",
+    async ({ api, id, enabled }) => {
+      writeFileSync(
+        join(stateDir, "sub2api.json"),
+        JSON.stringify({
+          relay: { baseURL: "https://command.example", token: "test-token", api },
+        }),
+      );
+      vi.stubGlobal("fetch", async (input: URL | RequestInfo) => {
+        if (String(input).endsWith("/backend-api/codex/models"))
+          return Response.json({ models: id ? [{ slug: id }] : [] });
+        if (String(input).endsWith("/v1/models"))
+          return Response.json({ data: id ? [{ id }] : [] });
+        return new Response(null, { status: 404 });
+      });
+      const commands: string[] = [];
+      await extension({
+        registerProvider() {},
+        registerCommand(name: string) {
+          commands.push(name);
+        },
+        on() {},
+      } as unknown as ExtensionAPI);
+      expect(commands.includes("openai-compress")).toBe(enabled);
+    },
+  );
+
   it.each(
     [
       { configured: undefined, expected: undefined },

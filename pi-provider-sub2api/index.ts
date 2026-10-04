@@ -130,12 +130,6 @@ export default async function (pi: ExtensionAPI) {
       () => isCurrent() && relaysByProvider.get(relay.provider) === relay,
     );
 
-  registerCodexCompaction(
-    pi,
-    (provider) => relaysByProvider.get(provider),
-    () => serviceTier,
-  );
-
   const [providers, cachedModelMetadata] = await Promise.all([
     Promise.all(
       relays.map(async (relay) => {
@@ -145,6 +139,18 @@ export default async function (pi: ExtensionAPI) {
     ),
     loadCachedModelMetadata(),
   ]);
+
+  registerCodexCompaction(
+    pi,
+    (provider) => relaysByProvider.get(provider),
+    () => serviceTier,
+    providers.some(({ relay, models }) =>
+      models.some(
+        (model) =>
+          !EXCLUDED.test(model.id) && getModelApi(model.id, relay.api) === "openai-codex-responses",
+      ),
+    ),
+  );
 
   const discoveredModelsByProvider = new Map(
     providers.map(({ relay, models }) => [relay.provider, models]),

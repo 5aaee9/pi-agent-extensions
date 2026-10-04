@@ -3,6 +3,7 @@ import { convertResponsesMessages } from "@earendil-works/pi-ai/api/openai-respo
 import {
   convertToLlm,
   sessionEntryToContextMessages,
+  type CompactOptions,
   type ExtensionAPI,
   type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
@@ -107,21 +108,30 @@ function serializeReplay(entries: SessionEntry[]) {
 
 function createHarness(initialBranch: SessionEntry[], compactionRelay = relay) {
   const handlers = new Map<string, Handler>();
+  const commands = new Map<string, Handler>();
   const notifications: Array<{ message: string; level: string }> = [];
   let branch = initialBranch;
   const pi = {
     on(name: string, handler: Handler) {
       handlers.set(name, handler);
     },
+    registerCommand(name: string, options: { handler: Handler }) {
+      commands.set(name, options.handler);
+    },
     getAllTools: () => [],
     getActiveTools: () => [],
   } as unknown as ExtensionAPI;
-  registerCodexCompaction(pi, (provider) =>
-    provider === compactionRelay.provider ? compactionRelay : undefined,
+  registerCodexCompaction(
+    pi,
+    (provider) => (provider === compactionRelay.provider ? compactionRelay : undefined),
+    () => "priority",
+    true,
   );
 
   const context = {
     model,
+    isIdle: () => true,
+    compact: vi.fn<(options?: CompactOptions) => void>(),
     modelRegistry: { find: vi.fn<(provider: string, id: string) => Model<any> | undefined>() },
     hasUI: true,
     getSystemPrompt: () => "You are Codex.",
@@ -137,6 +147,7 @@ function createHarness(initialBranch: SessionEntry[], compactionRelay = relay) {
   };
   return {
     handlers,
+    commands,
     context,
     notifications,
     setBranch(next: SessionEntry[]) {
@@ -212,6 +223,176 @@ function remoteCompactionResponse(encryptedContent: string, itemType = "compacti
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+});
+
+describe("/openai-compress", () => {
+  it.each([
+    { args: "", expectedModel: "gpt-config", expectedTier: "ultrafast" },
+    { args: "gpt-command", expectedModel: "gpt-command", expectedTier: "ultrafast" },
+    { args: "default", expectedModel: "gpt-config", expectedTier: "default" },
+    { args: "fast", expectedModel: "gpt-config", expectedTier: "priority" },
+    { args: "ultrafast", expectedModel: "gpt-config", expectedTier: "ultrafast" },
+    { args: "gpt-command default", expectedModel: "gpt-command", expectedTier: "default" },
+    { args: "gpt-command fast", expectedModel: "gpt-command", expectedTier: "priority" },
+    {
+      args: "  gpt-command   ultrafast  ",
+      expectedModel: "gpt-command",
+      expectedTier: "ultrafast",
+    },
+  ])(
+    "applies '$args' only to the requested compaction",
+    async ({ args, expectedModel, expectedTier }) => {
+      const user = userEntry("user-1", "Remember BLUE-42.");
+      const harness = createHarness([user], {
+        ...relay,
+        compressModel: "gpt-config",
+        compressServiceTier: "ultrafast",
+      });
+      const requests: any[] = [];
+      vi.stubGlobal("fetch", async (_input: URL | RequestInfo, init?: RequestInit) => {
+        requests.push(JSON.parse(String(init?.body)));
+        return remoteCompactionResponse("command-test");
+      });
+      await harness.commands.get("openai-compress")!(args, harness.context);
+      expect(harness.context.compact).toHaveBeenCalledTimes(1);
+      const options = harness.context.compact.mock.calls[0]![0]!;
+      const event = { ...compactEvent([user]), customInstructions: options.customInstructions };
+      const result = await harness.handlers.get("session_before_compact")!(event, harness.context);
+      expect(requests[0]).toMatchObject({
+        model: expectedModel,
+        service_tier: expectedTier,
+        instructions: "You are Codex.",
+      });
+      expect(result.compaction.details.model).toBe(model.id);
+      options.onComplete!(result.compaction);
+      await harness.handlers.get("session_before_compact")!(compactEvent([user]), harness.context);
+      expect(requests[1]).toMatchObject({ model: "gpt-config", service_tier: "ultrafast" });
+      expect(harness.context.model).toBe(model);
+    },
+  );
+
+  it("inherits the current model and session tier with no command or config overrides", async () => {
+    const user = userEntry("user-1", "hello");
+    const harness = createHarness([user]);
+    const requests: any[] = [];
+    vi.stubGlobal("fetch", async (_input: URL | RequestInfo, init?: RequestInit) => {
+      requests.push(JSON.parse(String(init?.body)));
+      return remoteCompactionResponse("command-defaults");
+    });
+    await harness.commands.get("openai-compress")!("", harness.context);
+    const options = harness.context.compact.mock.calls[0]![0]!;
+    await harness.handlers.get("session_before_compact")!(
+      { ...compactEvent([user]), customInstructions: options.customInstructions },
+      harness.context,
+    );
+    expect(requests[0]).toMatchObject({ model: model.id, service_tier: "priority" });
+  });
+
+  it.each(["gpt-5.5 invalid", "gpt-5.5 fast extra", "x".repeat(257)])(
+    "rejects malformed arguments %s",
+    async (args) => {
+      const harness = createHarness([]);
+      await harness.commands.get("openai-compress")!(args, harness.context);
+      expect(harness.context.compact).not.toHaveBeenCalled();
+      expect(harness.notifications.at(-1)?.message).toContain("Usage:");
+    },
+  );
+
+  it("rejects unsupported models and busy sessions", async () => {
+    const harness = createHarness([]);
+    await harness.commands.get("openai-compress")!("", {
+      ...harness.context,
+      model: { ...model, api: "anthropic-messages" },
+    });
+    await harness.commands.get("openai-compress")!("", {
+      ...harness.context,
+      model: { ...model, provider: "other" },
+    });
+    await harness.commands.get("openai-compress")!("", { ...harness.context, isIdle: () => false });
+    expect(harness.context.compact).not.toHaveBeenCalled();
+    expect(harness.notifications).toHaveLength(3);
+  });
+
+  it("does not let unrelated compactions consume the override and blocks duplicate commands", async () => {
+    const user = userEntry("user-1", "hello");
+    const harness = createHarness([user]);
+    const requests: any[] = [];
+    vi.stubGlobal("fetch", async (_input: URL | RequestInfo, init?: RequestInit) => {
+      requests.push(JSON.parse(String(init?.body)));
+      return remoteCompactionResponse("command-interleaving");
+    });
+    const command = harness.commands.get("openai-compress")!;
+    await command("gpt-command default", harness.context);
+    await command("gpt-other fast", harness.context);
+    expect(harness.context.compact).toHaveBeenCalledTimes(1);
+    const options = harness.context.compact.mock.calls[0]![0]!;
+    await harness.handlers.get("session_before_compact")!(compactEvent([user]), harness.context);
+    const result = await harness.handlers.get("session_before_compact")!(
+      { ...compactEvent([user]), customInstructions: options.customInstructions },
+      harness.context,
+    );
+    expect(requests.map(({ model, service_tier }) => ({ model, service_tier }))).toEqual([
+      { model: model.id, service_tier: "priority" },
+      { model: "gpt-command", service_tier: "default" },
+    ]);
+    options.onComplete!(result.compaction);
+    await command("", harness.context);
+    expect(harness.context.compact).toHaveBeenCalledTimes(2);
+  });
+
+  it("clears pending state after startup errors and cancellation callbacks", async () => {
+    const harness = createHarness([]);
+    const command = harness.commands.get("openai-compress")!;
+    harness.context.compact.mockImplementationOnce(() => {
+      throw new Error("already compacting");
+    });
+    await command("gpt-command", harness.context);
+    await command("gpt-command", harness.context);
+    expect(harness.context.compact).toHaveBeenCalledTimes(2);
+    harness.context.compact.mock.calls[1]![0]!.onError!(new Error("cancelled"));
+    await command("", harness.context);
+    expect(harness.context.compact).toHaveBeenCalledTimes(3);
+  });
+
+  it("cancels a failed command rather than falling back with its internal marker", async () => {
+    const user = userEntry("user-1", "hello");
+    const harness = createHarness([user]);
+    vi.stubGlobal("fetch", async () => new Response("unsupported", { status: 404 }));
+    await harness.commands.get("openai-compress")!("", harness.context);
+    const options = harness.context.compact.mock.calls[0]![0]!;
+    const result = await harness.handlers.get("session_before_compact")!(
+      { ...compactEvent([user]), customInstructions: options.customInstructions },
+      harness.context,
+    );
+    expect(result).toEqual({ cancel: true });
+  });
+
+  it.each(["session", "model"])(
+    "cancels if the %s changes before the command hook",
+    async (changed) => {
+      const user = userEntry("user-1", "hello");
+      const harness = createHarness([user]);
+      const fetchMock = vi.fn<typeof fetch>();
+      vi.stubGlobal("fetch", fetchMock);
+      await harness.commands.get("openai-compress")!("gpt-command", harness.context);
+      const options = harness.context.compact.mock.calls[0]![0]!;
+      const ctx = {
+        ...harness.context,
+        model: changed === "model" ? { ...model, id: "gpt-other" } : model,
+        sessionManager: {
+          ...harness.context.sessionManager,
+          getSessionId: () => (changed === "session" ? "other-session" : "session-1"),
+        },
+      };
+      expect(
+        await harness.handlers.get("session_before_compact")!(
+          { ...compactEvent([user]), customInstructions: options.customInstructions },
+          ctx,
+        ),
+      ).toEqual({ cancel: true });
+      expect(fetchMock).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe("Codex remote compaction v2", () => {

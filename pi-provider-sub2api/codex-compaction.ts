@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { calculateCost, type Model, type Tool, type Usage } from "@earendil-works/pi-ai";
 import {
   type ExtensionAPI,
@@ -5,6 +6,7 @@ import {
   type SessionBeforeCompactEvent,
   type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
+import { isSafeModelId } from "./util.ts";
 
 // Pi's extension loader aliases the public pi-ai package root to its compat entrypoint.
 // Resolve our pinned serializer runtime first, then import its private modules by absolute
@@ -715,19 +717,105 @@ function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 
+type CommandCompactionOptions = {
+  model?: string;
+  serviceTier?: "default" | "priority" | "ultrafast";
+};
+
+function parseCompressArguments(args: string): CommandCompactionOptions | undefined {
+  const parts = args.trim() ? args.trim().split(/\s+/) : [];
+  const tiers = { default: "default", fast: "priority", ultrafast: "ultrafast" } as const;
+  const isTier = (value: string): value is keyof typeof tiers => Object.hasOwn(tiers, value);
+  if (!parts.length) return {};
+  if (parts.length === 1 && isTier(parts[0]!)) return { serviceTier: tiers[parts[0]!] };
+  if (parts.length > 2 || !isSafeModelId(parts[0])) return undefined;
+  const tier = parts[1];
+  if (tier !== undefined && !isTier(tier)) return undefined;
+  return { model: parts[0], serviceTier: tier === undefined ? undefined : tiers[tier] };
+}
+
 export function registerCodexCompaction(
   pi: ExtensionAPI,
   getRelay: (provider: string) => CodexCompactionRelay | undefined,
   getSessionServiceTier: () => string | undefined = () => undefined,
+  enableCommand = false,
 ) {
   const rt = privateRuntime;
   // Hosts without pi's private serializer modules (OMP's compat shim) keep their own
   // compaction path; native Codex compaction is a pi-only enhancement.
   if (!rt) return;
 
+  let pending:
+    | (CommandCompactionOptions & {
+        marker: string;
+        sessionId: string;
+        provider: string;
+        conversationModel: string;
+      })
+    | undefined;
+
+  if (enableCommand) {
+    pi.registerCommand("openai-compress", {
+      description: "Compact with OpenAI: [model] [default|fast|ultrafast] (one request only)",
+      handler: async (args, ctx) => {
+        const relay = supportedRelay(ctx, getRelay);
+        if (!relay || !ctx.model) {
+          ctx.ui.notify("/openai-compress requires a Sub2API OpenAI Codex model.", "warning");
+          return;
+        }
+        const options = parseCompressArguments(args);
+        if (!options) {
+          ctx.ui.notify("Usage: /openai-compress [model] [default|fast|ultrafast]", "warning");
+          return;
+        }
+        if (pending || !ctx.isIdle()) {
+          ctx.ui.notify("Wait for the active request or compaction to finish.", "warning");
+          return;
+        }
+        const request = {
+          ...options,
+          marker: `sub2api-openai-compress:${randomUUID()}`,
+          sessionId: ctx.sessionManager.getSessionId(),
+          provider: relay.provider,
+          conversationModel: ctx.model.id,
+        };
+        pending = request;
+        const clear = () => {
+          if (pending === request) pending = undefined;
+        };
+        const onError = (error: Error) => {
+          clear();
+          ctx.ui.notify(`OpenAI compaction failed: ${errorMessage(error)}`, "error");
+        };
+        try {
+          ctx.compact({
+            // Correlate the asynchronous hook with this command, not an unrelated
+            // automatic/manual compaction. Never send the marker to the provider.
+            customInstructions: request.marker,
+            onComplete: () => {
+              clear();
+              ctx.ui.notify("OpenAI compaction completed.", "info");
+            },
+            onError,
+          });
+        } catch (error) {
+          onError(error instanceof Error ? error : new Error(String(error)));
+        }
+      },
+    });
+  }
+
   pi.on("session_before_compact", async (event: SessionBeforeCompactEvent, ctx) => {
+    const command = pending?.marker === event.customInstructions ? pending : undefined;
     const relay = supportedRelay(ctx, getRelay);
     const model = ctx.model;
+    if (
+      command &&
+      (command.sessionId !== ctx.sessionManager.getSessionId() ||
+        command.provider !== relay?.provider ||
+        command.conversationModel !== model?.id)
+    )
+      return { cancel: true };
     if (!relay || !model) return undefined;
 
     const priorCheckpoint = resolveNativeCheckpoint(
@@ -750,7 +838,7 @@ export function registerCodexCompaction(
         relay,
         event.branchEntries as SessionEntry[],
       );
-      const compressModelId = relay.compressModel ?? model.id;
+      const compressModelId = command?.model ?? relay.compressModel ?? model.id;
       // Keep serialization and checkpoint identity tied to the conversation model.
       // Unknown relay model IDs are valid overrides, but must not use its prices.
       const compressModel =
@@ -765,11 +853,15 @@ export function registerCodexCompaction(
         relay,
         model: compressModel,
         input: built.input,
-        instructions: appendCustomInstructions(ctx.getSystemPrompt(), event.customInstructions),
+        instructions: appendCustomInstructions(
+          ctx.getSystemPrompt(),
+          command ? undefined : event.customInstructions,
+        ),
         serviceTier:
-          relay.compressServiceTier === "fast"
+          command?.serviceTier ??
+          (relay.compressServiceTier === "fast"
             ? "priority"
-            : (relay.compressServiceTier ?? getSessionServiceTier()),
+            : (relay.compressServiceTier ?? getSessionServiceTier())),
         signal: event.signal,
       });
       return {
@@ -792,7 +884,12 @@ export function registerCodexCompaction(
         },
       };
     } catch (error) {
-      if (event.signal.aborted || error instanceof NativeCheckpointError || hasNativeCheckpoint) {
+      if (
+        command ||
+        event.signal.aborted ||
+        error instanceof NativeCheckpointError ||
+        hasNativeCheckpoint
+      ) {
         if (!event.signal.aborted && ctx.hasUI) {
           ctx.ui.notify(`Codex native compaction stopped: ${errorMessage(error)}`, "error");
         }
