@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Restore Anthropic catalog context windows without adopting catalog output caps; retain relay-safe output defaults and unknown-model context fallbacks.
+- Parse Anthropic `max_input_tokens` during model discovery, with remote context limits taking precedence over catalog values.
+
 ## 0.1.41 - 2026-10-08
 
 - Synchronize the package version with `@indexyz/pi-autocompact` for coordinated workspace releases.

@@ -19,6 +19,7 @@ function pickRemoteContextWindow(model: Record<string, unknown>) {
     model.contextWindow,
     model.context_length,
     model.max_context_tokens,
+    model.max_input_tokens,
     limit?.context,
     limits?.context,
   );

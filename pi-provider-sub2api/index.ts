@@ -164,14 +164,15 @@ export default async function (pi: ExtensionAPI) {
         const api = getModelApi(model.id, relay.api);
         const reasoning = model.reasoning ?? REASONING.test(model.id);
         const builtinMetadata = getBuiltinModelMetadata(model.id, api, cachedModelMetadata);
-        // Keep Anthropic's relay-safe limits: pi's native catalog can advertise a
-        // larger output cap than some Sub2API deployments accept. Its pricing is
-        // still authoritative when available.
-        const builtinLimits = api === "anthropic-messages" ? undefined : builtinMetadata;
-        const contextWindow = model.contextWindow ?? builtinLimits?.contextWindow ?? 200000;
+        // Catalog context windows apply to Anthropic too. Only its output cap
+        // needs a relay-safe fallback: some Sub2API deployments reject the
+        // larger output limits advertised by pi's native catalog.
+        const builtinMaxTokens =
+          api === "anthropic-messages" ? undefined : builtinMetadata?.maxTokens;
+        const contextWindow = model.contextWindow ?? builtinMetadata?.contextWindow ?? 200000;
         const defaultMaxTokens = Math.min(getDefaultMaxTokens(model.id), contextWindow);
         const maxTokens =
-          firstMaxTokensWithinContext(contextWindow, model.maxTokens, builtinLimits?.maxTokens) ??
+          firstMaxTokensWithinContext(contextWindow, model.maxTokens, builtinMaxTokens) ??
           defaultMaxTokens;
         return {
           id: model.id,
