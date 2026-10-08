@@ -17,7 +17,8 @@
     "pi-custom-provider",
     "pi-continue",
     "pi-skill",
-    "pi-model-trace"
+    "pi-model-trace",
+    "pi-autocompact"
   ],
   "type": "module",
   "scripts": {
@@ -33,7 +34,8 @@
     "pack:custom-provider": "npm pack --workspace @indexyz/pi-custom-provider --dry-run",
     "pack:continue": "npm pack --workspace @indexyz/pi-continue --dry-run",
     "pack:skill": "npm pack --workspace @indexyz/pi-skill --dry-run",
-    "pack:model-trace": "npm pack --workspace @indexyz/pi-model-trace --dry-run"
+    "pack:model-trace": "npm pack --workspace @indexyz/pi-model-trace --dry-run",
+    "pack:autocompact": "npm pack --workspace @indexyz/pi-autocompact --dry-run"
   },
   "devDependencies": {
     "oxfmt": "^0.62.0",
@@ -49,7 +51,8 @@
       "./pi-custom-provider/index.ts",
       "./pi-continue/index.ts",
       "./pi-skill/index.ts",
-      "./pi-model-trace/index.ts"
+      "./pi-model-trace/index.ts",
+      "./pi-autocompact/index.ts"
     ]
   }
 }

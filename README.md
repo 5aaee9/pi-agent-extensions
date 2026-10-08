@@ -8,6 +8,7 @@ A collection of extensions for the [pi coding agent](https://github.com/earendil
 - [`@indexyz/pi-custom-provider`](./pi-custom-provider) — generic OpenAI Chat Compatible, Anthropic Messages, and OpenAI Responses providers with model discovery and caching.
 - [`@indexyz/pi-continue`](./pi-continue) — resume an interrupted or failed turn with pi's currently selected model.
 - [`@indexyz/pi-skill`](./pi-skill) — Codex-style `$skill-name` invocation anywhere in a prompt.
+- [`@indexyz/pi-autocompact`](./pi-autocompact) — session-only per-model context compaction thresholds via `/autocompact 300k`, with optional global defaults.
 
 The repository root is a private npm workspace. Install packages from npm with:
 
@@ -16,6 +17,7 @@ pi install npm:@indexyz/pi-provider-sub2api
 pi install npm:@indexyz/pi-custom-provider
 pi install npm:@indexyz/pi-continue
 pi install npm:@indexyz/pi-skill
+pi install npm:@indexyz/pi-autocompact
 ```
 
 For local development:
@@ -29,6 +31,7 @@ pi -e ./pi-provider-sub2api/index.ts
 pi -e ./pi-custom-provider/index.ts
 pi -e ./pi-continue/index.ts
 pi -e ./pi-skill/index.ts
+pi -e ./pi-autocompact/index.ts
 ```
 
 ## Releases

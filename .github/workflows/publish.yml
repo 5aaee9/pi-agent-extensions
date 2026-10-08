@@ -45,6 +45,7 @@ jobs:
             "pi-continue"
             "pi-skill"
             "pi-model-trace"
+            "pi-autocompact"
           )
           release_version="${RELEASE_TAG#v}"
 
