@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.41 - 2026-10-08
+
+- Synchronize the package version with `@indexyz/pi-autocompact` for coordinated workspace releases.
+
 ## 0.1.40 - 2026-10-04
 
 - Register `/openai-compress [model] [default|fast|ultrafast]` when native Codex models are available. Optional command arguments override configuration for one compaction only, with tier-only shorthand and explicit default-tier support.

@@ -1,6 +1,6 @@
 {
   "name": "@indexyz/pi-model-trace",
-  "version": "0.1.40",
+  "version": "0.1.41",
   "description": "Attribute the model actually serving pi via ModelTrace numeric fingerprinting (/model-trace)",
   "keywords": [
     "fingerprint",
