@@ -1,4 +1,6 @@
+import { exec } from "node:child_process";
 import { readFile } from "node:fs/promises";
+import { promisify } from "node:util";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 
@@ -78,6 +80,31 @@ export function normalizeBaseUrls(value: string) {
   };
 }
 
+// Do not attach the child-process error: it can contain the command and secrets.
+export async function resolveCredentialCommand(value: string, signal?: AbortSignal) {
+  let output: string;
+  try {
+    const result = await promisify(exec)(value.slice(1), {
+      encoding: "utf8",
+      timeout: 10_000,
+      killSignal: "SIGKILL",
+      maxBuffer: 64 * 1024,
+      signal,
+    });
+    output = result.stdout.trim();
+  } catch {
+    throw new Error(
+      "Credential command failed (nonzero exit, timeout, cancellation, or output limit)",
+    );
+  }
+  if (!output || hasControlCharacters(output)) {
+    throw new Error(
+      "Credential command must output a non-empty single-line value without control characters",
+    );
+  }
+  return output;
+}
+
 export function getAgentDir() {
   const configured = process.env.PI_CODING_AGENT_DIR?.trim();
   if (!configured) return join(homedir(), ".pi", "agent");
@@ -99,7 +126,12 @@ export function getConfigPath() {
 }
 
 export function isConfigExpression(value: string) {
-  return value.startsWith("!") || /\$(?:[A-Z_][A-Z0-9_]*|\{[A-Z_][A-Z0-9_]*\})/.test(value);
+  return (
+    value.startsWith("!") ||
+    value.startsWith("$!") ||
+    value.includes("$$") ||
+    /\$(?:[A-Z_][A-Z0-9_]*|\{[A-Z_][A-Z0-9_]*\})/.test(value)
+  );
 }
 
 export function escapeProviderLiteral(value: string) {
@@ -111,8 +143,9 @@ export function toProviderValue(value: string) {
   return isConfigExpression(value) ? value : escapeProviderLiteral(value);
 }
 
-export function resolveConfigValue(value: string | undefined) {
-  if (!value || value.startsWith("!")) return value?.startsWith("!") ? undefined : value;
+export async function resolveConfigValue(value: string | undefined, signal?: AbortSignal) {
+  if (!value) return value;
+  if (value.startsWith("!")) return resolveCredentialCommand(value, signal);
   return value
     .replace(/\$\$/g, ESCAPED_DOLLAR_PLACEHOLDER)
     .replace(/\$!/g, "!")

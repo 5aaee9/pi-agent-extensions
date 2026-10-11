@@ -1,4 +1,6 @@
+import { exec } from "node:child_process";
 import { readFile } from "node:fs/promises";
+import { promisify } from "node:util";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -6,6 +8,31 @@ import { parseServerTools, validateServerToolsForApi } from "./server-tools.ts";
 import { CONFIG_FILENAME, SUPPORTED_APIS } from "./types.ts";
 import type { RelayConfig, SupportedApi } from "./types.ts";
 import { base64Encode, hasControlCharacters, isSafeModelId } from "./util.ts";
+
+// Do not attach the child-process error: it can contain the command and secrets.
+export async function resolveCredentialCommand(value: string, signal?: AbortSignal) {
+  let output: string;
+  try {
+    const result = await promisify(exec)(value.slice(1), {
+      encoding: "utf8",
+      timeout: 10_000,
+      killSignal: "SIGKILL",
+      maxBuffer: 64 * 1024,
+      signal,
+    });
+    output = result.stdout.trim();
+  } catch {
+    throw new Error(
+      "Credential command failed (nonzero exit, timeout, cancellation, or output limit)",
+    );
+  }
+  if (!output || hasControlCharacters(output)) {
+    throw new Error(
+      "Credential command must output a non-empty single-line value without control characters",
+    );
+  }
+  return output;
+}
 
 export function getAgentDir() {
   const configured = process.env.PI_CODING_AGENT_DIR?.trim();
@@ -80,6 +107,7 @@ export function normalizeBaseUrls(value: string) {
 const ENV_REFERENCE_PATTERN = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/;
 
 function resolveToken(provider: string, configured: string): string {
+  if (configured.startsWith("$!")) return configured.slice(1);
   const match = ENV_REFERENCE_PATTERN.exec(configured);
   if (!match) return configured;
   const name = match[1]!;
@@ -179,7 +207,18 @@ export async function loadRelayConfigs(configPath: string) {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new Error("top-level value must be an object keyed by provider name");
   }
-  return Object.entries(parsed).map(([provider, value]) => parseRelayConfig(provider, value));
+  const relays: RelayConfig[] = [];
+  for (const [provider, value] of Object.entries(parsed)) {
+    const relay = parseRelayConfig(provider, value);
+    // Only configuration expressions execute; environment values and command
+    // output are literal secrets, even when they begin with ! or contain $.
+    const configuredToken = (value as { token: string }).token;
+    if (configuredToken.startsWith("!")) {
+      relay.apiKey = await resolveCredentialCommand(configuredToken);
+    }
+    relays.push(relay);
+  }
+  return relays;
 }
 
 export function escapeConfigLiteral(value: string) {

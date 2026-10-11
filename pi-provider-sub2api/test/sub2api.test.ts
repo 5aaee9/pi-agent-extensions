@@ -112,7 +112,7 @@ const relayDefinitions = {
   },
   "中继-codex": {
     baseURL: "http://codex.example/v1/",
-    token: specialToken,
+    token: `$${specialToken}`,
     api: "openai-codex-responses",
   },
   "anthropic-only": {
@@ -1715,6 +1715,35 @@ describe("sub2api provider extension", () => {
       expect.stringContaining("failed to load"),
       expect.objectContaining({ message: expect.stringContaining("unsupported api") }),
     );
+  });
+
+  it("uses command stdout for discovery, billing, and registered credentials", async () => {
+    writeFileSync(
+      join(stateDir, "sub2api.json"),
+      JSON.stringify({
+        command: {
+          baseURL: "https://command.example",
+          token: "!printf '%s\\n' 'command-key'",
+          api: "openai-responses",
+        },
+      }),
+    );
+    const calls: FetchCall[] = [];
+    vi.stubGlobal("fetch", async (input: URL | RequestInfo, init?: RequestInit) => {
+      const url = input instanceof Request ? input.url : String(input);
+      calls.push({ url, init });
+      return url.endsWith("/v1/models")
+        ? Response.json({ data: [{ id: "test-model" }] })
+        : new Response(null, { status: 404 });
+    });
+    const registrations = await registerProviders();
+    expect(registrations).toHaveLength(1);
+    expect(registrations[0]!.config.apiKey).toBe("command-key");
+    expect(calls.some(({ url }) => url.endsWith("/v1/models"))).toBe(true);
+    expect(calls.some(({ url }) => url.endsWith("/v1/sub2api/billing"))).toBe(true);
+    for (const call of calls) {
+      expect(new Headers(call.init?.headers).get("authorization")).toBe("Bearer command-key");
+    }
   });
 
   it("resolves an environment variable token reference when the variable is set", async () => {

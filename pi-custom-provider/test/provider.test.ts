@@ -111,6 +111,72 @@ describe("upstream model metadata", () => {
 });
 
 describe("custom provider extension", () => {
+  it.each(["openai-completions", "anthropic-messages", "openai-responses", "ollama-chat"])(
+    "uses command credentials for %s discovery while preserving runtime expressions",
+    async (api) => {
+      const keyCommand = "!printf '%s\\n' 'command-key'";
+      await writeFile(
+        join(agentDir, "custom-provider.json"),
+        JSON.stringify({
+          modelsDev: false,
+          providers: {
+            command: {
+              baseURL: "https://command.example",
+              api,
+              apiKey: keyCommand,
+              headers: { "x-extra": "!printf extra-value" },
+              cache: false,
+            },
+          },
+        }),
+      );
+      const calls: RequestInit[] = [];
+      vi.stubGlobal("fetch", async (_input: URL | RequestInfo, init?: RequestInit) => {
+        calls.push(init ?? {});
+        return Response.json({ data: [{ id: "test-model" }] });
+      });
+      const harness = registerProviders();
+      await extension(harness.pi);
+      const provider = harness.registrations[0]!.config;
+      expect(provider.apiKey).toBe(keyCommand);
+      expect(provider.headers?.["x-extra"]).toBe("!printf extra-value");
+      expect(provider.models).toHaveLength(1);
+      expect(calls.length).toBeGreaterThan(0);
+      for (const call of calls) {
+        const headers = new Headers(call.headers);
+        expect(headers.get(api === "anthropic-messages" ? "x-api-key" : "authorization")).toBe(
+          api === "anthropic-messages" ? "command-key" : "Bearer command-key",
+        );
+        expect(headers.get("x-extra")).toBe("extra-value");
+      }
+    },
+  );
+
+  it("does not make an unauthenticated discovery request when a command fails", async () => {
+    await writeFile(
+      join(agentDir, "custom-provider.json"),
+      JSON.stringify({
+        modelsDev: false,
+        providers: {
+          command: {
+            baseURL: "https://command.example",
+            apiKey: "!printf secret >&2; exit 1",
+            fallbackModels: [{ id: "fallback" }],
+          },
+        },
+      }),
+    );
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    vi.stubGlobal("fetch", fetch);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const harness = registerProviders();
+    await extension(harness.pi);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(harness.registrations[0]!.config.models![0]!.id).toBe("fallback");
+    expect(warn).toHaveBeenCalled();
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("secret");
+  });
+
   it("registers all three APIs and reads models from their configured upstream endpoints", async () => {
     await writeFile(
       join(agentDir, "custom-provider.json"),

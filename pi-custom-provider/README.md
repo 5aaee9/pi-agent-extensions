@@ -70,8 +70,29 @@ Ollama 本身不要求鉴权，但 pi 会过滤没有 credential 的 provider，
 
 - `apiKey`、`api_key` 或 `token`
 - `$ENV_NAME` / `${ENV_NAME}` 环境变量引用
-- `headers` 自定义请求头
+- `!command`：执行 shell 命令，以标准输出作为 API key；模型发现和聊天请求均支持
+- `headers` 自定义请求头，值也支持 `!command`
 - Anthropic discovery 默认发送 `x-api-key`；如网关要求其他认证，可用 `headers` 覆盖或设置 `authHeader: "authorization"`
+
+### 从命令读取 API Key
+
+```json
+{
+  "providers": {
+    "gateway": {
+      "baseURL": "https://gateway.example.com/v1",
+      "apiKey": "!/home/you/bin/get-api-key",
+      "api": "openai-responses"
+    }
+  }
+}
+```
+
+扩展在实际联网发现模型时执行命令（包括启动、强制刷新及 Ollama 模型详情查询）；命中模型缓存时不会为发现执行命令。命令结果不缓存、不写入模型缓存文件，聊天请求仍由 Pi 解析原始表达式。自定义请求头也可以使用命令，例如 `"Authorization": "!printf 'Bearer %s' \"$(/home/you/bin/get-api-key)\""`，命令必须占据整个配置值。
+
+模型发现使用异步命令执行，超时为 10 秒，输出上限为 64 KiB，并支持取消。标准输出应只包含 Key 或请求头值；会去掉首尾空白，拒绝空值及内嵌控制字符。命令失败不会发送缺少凭证的发现请求，而是按现有规则使用模型缓存或 `fallbackModels`。错误日志不包含命令、标准输出或标准错误；聊天阶段的执行限制由 Pi 控制。
+
+命令以 Pi 的权限和环境通过系统 shell 执行，仅配置可信的非交互命令，建议使用绝对路径。`$!` 表示字面量开头的 `!`，`$$` 表示字面量 `$`；命令输出和环境变量内容不会再次作为表达式执行。
 
 ## 模型元数据
 

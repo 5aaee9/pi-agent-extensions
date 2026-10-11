@@ -75,7 +75,23 @@ A `token` may reference an environment variable instead of a literal secret, kee
 }
 ```
 
-When `token` is exactly `${ENV_VAR_NAME}`, the extension reads the secret from that environment variable when pi starts. The variable must be set to a non-empty value, otherwise loading fails with an error naming the missing variable. Any other literal value is used as-is.
+When `token` is exactly `${ENV_VAR_NAME}`, the extension reads the secret from that environment variable when pi starts. The variable must be set to a non-empty value, otherwise loading fails with an error naming the missing variable.
+
+A leading `!` executes a shell command and uses its trimmed standard output as the token:
+
+```json
+{
+  "my-relay": {
+    "baseURL": "https://relay.example.com",
+    "token": "!/home/you/bin/get-api-key",
+    "api": "openai-responses"
+  }
+}
+```
+
+The command runs once per configuration load (startup or `/reload`). The resolved token is reused for model discovery, billing/quota, chat, and Codex compaction; it is not written back to the configuration. Reload after a short-lived token expires. Commands run with Pi's permissions and environment through the system shell, so only use trusted, non-interactive commands, preferably with absolute paths.
+
+Commands have a 10-second timeout and a 64 KiB output limit. Standard output must contain only the key; surrounding whitespace is trimmed. Empty output, embedded control characters, nonzero exit, or timeout fail configuration loading, without logging the command or its output. To configure a literal token starting with `!`, use `$!` instead. Environment values and command output are never evaluated again as expressions; other literal tokens retain their existing behavior.
 
 The configuration directory follows `PI_CODING_AGENT_DIR` when that environment variable is set. Otherwise it defaults to `~/.pi/agent`.
 

@@ -13,12 +13,12 @@ import { DEFAULT_CONTEXT_WINDOW, DEFAULT_MAX_TOKENS, MAX_RESPONSE_BYTES } from "
 import type { CacheDocument, DiscoveredModel, JsonRecord, ProviderDefinition } from "./types.ts";
 import { asRecord, fetchJson, mergeCompat, toPositiveInteger } from "./util.ts";
 
-export function discoveryHeaders(provider: ProviderDefinition) {
+export async function discoveryHeaders(provider: ProviderDefinition, signal?: AbortSignal) {
   const headers: Record<string, string> = {};
   for (const [key, value] of Object.entries(provider.headers)) {
-    headers[key] = resolveConfigValue(value) ?? value;
+    headers[key] = (await resolveConfigValue(value, signal)) ?? value;
   }
-  const apiKey = resolveConfigValue(provider.apiKey);
+  const apiKey = await resolveConfigValue(provider.apiKey, signal);
   if (apiKey && !Object.keys(headers).some((key) => key.toLowerCase() === provider.authHeader)) {
     if (provider.authHeader === "x-api-key") headers["x-api-key"] = apiKey;
     else headers.Authorization = `Bearer ${apiKey}`;
@@ -32,7 +32,7 @@ export async function fetchModels(provider: ProviderDefinition, signal: AbortSig
   const payload = await fetchJson(
     provider.modelsURL,
     signal,
-    discoveryHeaders(provider),
+    await discoveryHeaders(provider, signal),
     MAX_RESPONSE_BYTES,
   );
   const root = asRecord(payload);
@@ -63,7 +63,7 @@ async function enrichOllamaModels(
   signal: AbortSignal,
 ): Promise<JsonRecord[]> {
   const showURL = `${provider.ollamaBaseURL}/api/show`;
-  const headers = discoveryHeaders(provider);
+  const headers = await discoveryHeaders(provider, signal);
   const result = Array.from<JsonRecord>({ length: records.length });
   let cursor = 0;
   const worker = async () => {
