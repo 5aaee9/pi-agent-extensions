@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.43 - 2026-10-11
+
+- Resolve `!command` API keys and headers during model discovery, including Ollama metadata requests, while retaining Pi's runtime credential expressions.
+- Add asynchronous, cancellable command execution with a timeout, output limit, and secret-safe failures; discovery retains its cache/fallback behavior.
+
 ## 0.1.42 - 2026-10-08
 
 - Synchronize the package version with `@indexyz/pi-provider-sub2api` for coordinated workspace releases.

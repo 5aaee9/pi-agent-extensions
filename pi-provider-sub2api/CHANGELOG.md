@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.43 - 2026-10-11
+
+- Support `!command` tokens at configuration load, reusing trimmed stdout for discovery, billing/quota, and model requests. Use `$!` for a literal leading bang.
+- Bound credential commands with a timeout and output limit; reject failed or invalid output without logging secrets.
+
 ## 0.1.42 - 2026-10-08
 
 - Restore Anthropic catalog context windows without adopting catalog output caps; retain relay-safe output defaults and unknown-model context fallbacks.
