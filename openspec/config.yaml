@@ -13,15 +13,19 @@ context: |
   the nearest root resolves to the package. Do not create package-scoped
   changes or specs here.
 
-  Repository: npm workspaces (package-lock.json) with six Pi extension
-  packages in root-level pi-*/ directories, published independently as
-  @indexyz/<name>. Each package owns its tsconfig.json, vitest.config.ts, and
-  dev dependencies (including its pinned Pi host version). oxlint and oxfmt
-  run from the root. Default branch: main.
+  Repository: npm workspaces (package-lock.json) with seven packages in
+  root-level directories, published independently as @indexyz/<name>: six Pi
+  extensions in pi-*/ directories and one dsh package in dsh-*/. Each package
+  owns its tsconfig.json, vitest.config.ts, and dev dependencies (including its
+  pinned host version); a pi package ships the TypeScript sources Pi loads,
+  a dsh package builds lib/ and client.js and commits them. oxlint and oxfmt
+  run from the root and ignore a dsh package's generated output. Default
+  branch: main.
 
   Constraints: follow AGENTS.md and docs/conventions.md. The root contains no
   extension runtime code. All code is strict TypeScript (.ts); never add .js,
-  .mjs, or .cjs files. Releases follow docs/releases.md.
+  .mjs, or .cjs source files, and never hand-edit a dsh package's committed
+  build output. Releases follow docs/releases.md.
 
 rules:
   proposal:

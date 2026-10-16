@@ -1,7 +1,7 @@
 // Pure decisions of the publication plan.
 import { findChangelogSection } from "./changelog.ts";
 import type { ReleaseState } from "./github.ts";
-import { isRecord } from "./json.ts";
+import { isRecord, type Manifest } from "./json.ts";
 
 const short = (sha: string): string => sha.slice(0, 7);
 
@@ -10,6 +10,35 @@ export interface PlannedPackage {
   readonly name: string;
   readonly dir: string;
   readonly version: string;
+}
+
+/**
+ * How an installed tarball is verified before upload.
+ *
+ * `pi` loads it in the pinned Pi host, which every Pi extension allows because it
+ * declares Pi resources. A package Pi cannot load declares `release.smoke`, a
+ * TypeScript script the engine runs against the installed copy instead.
+ */
+export type SmokeCheck =
+  | { readonly kind: "declared"; readonly script: string }
+  | { readonly kind: "pi" };
+
+/**
+ * Chooses the smoke check for one package, or fails when it declares none.
+ *
+ * @param manifest - the manifest at the package's version commit.
+ * @returns the check `scripts/release/build.ts` runs.
+ */
+export function smokeCheck(manifest: Manifest): SmokeCheck {
+  if (manifest.smoke !== null) {
+    return { kind: "declared", script: manifest.smoke };
+  }
+  if (manifest.piResources.length > 0) {
+    return { kind: "pi" };
+  }
+  throw new Error(
+    `${manifest.name} declares neither Pi resources nor "release.smoke", so nothing can verify its installed tarball`,
+  );
 }
 
 /** "unknown" means GitHub could not be asked (dry-run without access). */

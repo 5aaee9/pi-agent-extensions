@@ -23,10 +23,17 @@ A package's `openspec/specs/` is the current description of what that extension 
 
 ## Create a new extension
 
-1. Choose a name: `pi-<topic>`, lowercase, hyphenated. The directory is `pi-<topic>/` at the repository root, the npm `name` is `@indexyz/pi-<topic>`, and the commit scope is `<topic>`.
-2. Create the package from the templates below (copy the root `LICENSE` into it). Replace `<topic>` and the placeholder text.
-3. Add the directory to the root `package.json` `workspaces` array and its entry (`./pi-<topic>/index.ts`) to the root `pi.extensions` array.
-4. Initialize the package's OpenSpec root and set its context:
+A `dsh-<topic>/` package for the DeepSeek Harness follows the same steps with these differences; the templates below are Pi's and do not apply to it (`docs/architecture.md`, "A dsh package", has its anatomy):
+
+1. The directory is `dsh-<topic>/` at the repository root, the npm `name` is `@indexyz/dsh-<topic>`, and the commit scope is `<topic>` (spelled out when a `pi-<topic>/` package would share it).
+2. Its `package.json` declares a `dsh` manifest (`dsh.bundle.patch`, `dsh.client`) and no `pi` manifest, its build scripts (`build`, `build:host` with `tsc -p tsconfig.build.json`, `build:client` with `tsdown`), and `"release": { "smoke": "test/smoke-release.ts" }`; its imported `@deepseek-ai/*` hosts are exact `devDependencies` pins with `"*"` peers.
+3. It commits its build output — `lib/` and `client.js` — and `files` ships it; the root oxfmt and oxlint configs ignore those paths, and no hand edit touches them.
+4. It joins the root `workspaces` array, and never the root `pi.extensions`.
+5. Verify it with the dsh path in "Verify" below instead of the Pi load smoke test, and record its release decision like any package.
+
+6. Choose a name: `pi-<topic>`, lowercase, hyphenated. The directory is `pi-<topic>/` at the repository root, the npm `name` is `@indexyz/pi-<topic>`, and the commit scope is `<topic>`.2. Create the package from the templates below (copy the root `LICENSE` into it). Replace `<topic>` and the placeholder text.
+7. Add the directory to the root `package.json` `workspaces` array and its entry (`./pi-<topic>/index.ts`) to the root `pi.extensions` array.
+8. Initialize the package's OpenSpec root and set its context:
 
    ```bash
    openspec init pi-<topic> --tools none --no-animation
@@ -48,12 +55,12 @@ A package's `openspec/specs/` is the current description of what that extension 
      @indexyz/pi-<topic> per ../docs/releases.md when published files change.
    ```
 
-5. Run `npm install` so the workspace links the package and `package-lock.json` records it.
-6. Propose the first change from `pi-<topic>/`, then implement it following `docs/conventions.md`. Consult Pi's docs and the closest shipped example (`docs/pi-reference.md`) before using an API.
-7. Verify (next section).
-8. Write the package `README.md` and add a row to the table in the root `README.md`.
-9. Record the release decision (`docs/releases.md`): `npm run change -- --minor @indexyz/pi-<topic> -m "First release: <what it does>"` when it should ship (the template's `0.0.0` becomes `0.1.0` at the first preparation), or a `none` intent with the reason it should not ship yet. The first upload of a new package needs the owner (`docs/releases.md`, "First release of a new package").
-10. Archive the change, then commit: `feat(<topic>): <summary>`.
+9. Run `npm install` so the workspace links the package and `package-lock.json` records it.
+10. Propose the first change from `pi-<topic>/`, then implement it following `docs/conventions.md`. Consult Pi's docs and the closest shipped example (`docs/pi-reference.md`) before using an API.
+11. Verify (next section).
+12. Write the package `README.md` and add a row to the table in the root `README.md`.
+13. Record the release decision (`docs/releases.md`): `npm run change -- --minor @indexyz/pi-<topic> -m "First release: <what it does>"` when it should ship (the template's `0.0.0` becomes `0.1.0` at the first preparation), or a `none` intent with the reason it should not ship yet. The first upload of a new package needs the owner (`docs/releases.md`, "First release of a new package").
+14. Archive the change, then commit: `feat(<topic>): <summary>`.
 
 ### `pi-<topic>/package.json`
 
@@ -231,7 +238,7 @@ MIT
 
 Every change ends with all of these, run from the repository root:
 
-1. `npm run check`: oxfmt, oxlint, every package's `tsc` and Vitest, and the release-script tests must all pass.
+1. `npm run check`: oxfmt, oxlint, every package's `tsc`, each package's build, Vitest, and the release-script tests must all pass.
 2. Load smoke test without a model call, after `npm install`:
 
    ```bash
@@ -240,10 +247,19 @@ Every change ends with all of these, run from the repository root:
 
    Replace `pi-skill` with the package you changed. When the package pins a Pi version different from the root's (today `pi-autocompact`), use its own binary: `pi-autocompact/node_modules/.bin/pi`. Exit code 0 and a `"success":true` response listing the package's commands mean the extension loaded. A load failure prints `Failed to load extension` and exits non-zero.
 
-3. For behavior that needs a live session (providers, UI, events), run `pi -e ./<name>/index.ts` interactively and exercise the feature. State in the final report exactly what was exercised.
+   A `dsh-<topic>/` package has no Pi load to run. Its equivalent is the script its manifest declares, which the release engine also runs against the packed and installed tarball:
+
+   ```bash
+   npm run build --workspace @indexyz/dsh-autocompact
+   node dsh-autocompact/test/smoke-release.ts dsh-autocompact
+   ```
+
+   Then install it into a dsh profile from the checkout (`dsh plugin --profile <profile> add ./dsh-<topic>`) and confirm the Harness sees its row and its page. Name the profile you used in the report.
+
+3. For behavior that needs a live session (providers, UI, events), run `pi -e ./<name>/index.ts` interactively and exercise the feature; a dsh package is exercised in a Harness started with the profile you installed into. State in the final report exactly what was exercised.
 4. Release-impact gate, as CI runs it on pull requests, once the change is committed on a branch: `npm run release:gate -- --base origin/main --head HEAD`. It fails when a package's published content changed without a release decision (`docs/releases.md`).
 
-A running Pi session keeps the extension code it loaded at startup. After editing a package, restart Pi (or `/reload`) before testing again.
+A running Pi session keeps the extension code it loaded at startup. After editing a package, restart Pi (or `/reload`) before testing again. A Harness picks up a rebuilt `client.js` of an installed dsh package on a page refresh, and needs a restart for its host half.
 
 ## Change an existing extension
 

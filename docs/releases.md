@@ -24,6 +24,8 @@ Every package publishes as `@indexyz/<name>` from the root-level directory `<nam
 
 Runtime identifiers (commands, settings files, session entry types) never change with any of these. The private workspace root is never versioned or published (changesets `privatePackages` is off for it).
 
+A `dsh-<topic>/` package follows the same forms with its own prefix: `@indexyz/dsh-autocompact` lives in `dsh-autocompact/`, its commit scope is `autocompact` (spelled out, `dsh-autocompact`, when a `pi-<topic>/` package would share it), and its tags read `@indexyz/dsh-autocompact@0.1.0`. It is not a Pi extension, so `pi -e` and `pi install npm:` do not apply to it; `docs/architecture.md` covers how a dsh profile installs it.
+
 Versions are independent per package. There is no repository version, and no `v<version>` tag is created any more; the existing `v*` tags stay as history and pushing one publishes nothing.
 
 ## Tooling
@@ -144,7 +146,7 @@ The **version commit** of a package's current version is the newest commit on th
 1. **Plan** (permissions `contents: read`, no publishing credentials): `npm ci`, `npm run check`, then `node scripts/release/plan.ts --out <dir>`:
    - validates every intent file on disk;
    - for every package: its version commit, whether the version is on npm (`npm view`; a 404 means absent, any other failure fails the run), its tag `@indexyz/<name>@<version>` (an existing tag is accepted when its commit's manifest carries the version; otherwise the run fails), its GitHub Release, and the exact `## <version>` changelog section;
-   - **uploads** are the versions absent from npm. Each needs exactly one non-empty `## <version>` section at its version commit. Each is built in a `git worktree` at its version commit: `npm ci`, `npm pack --workspace <name>` (whose `prepack` runs the package's typecheck and tests on that snapshot), inspection of the tarball (manifest name and version, `package.json`, `README.md`, `CHANGELOG.md`, `LICENSE`, every `files` and `pi` path, nothing under `test/` or `openspec/`), an install with `npm install --omit=peer` into an empty directory, and a load of the installed copy with that snapshot's `pi` (`-ne --mode rpc`, answering `get_commands`, `PI_OFFLINE=1`, empty `PI_CODING_AGENT_DIR`). The tarball's SHA-256 goes into `release-plan.json`;
+   - **uploads** are the versions absent from npm. Each needs exactly one non-empty `## <version>` section at its version commit. Each is built in a `git worktree` at its version commit: `npm ci`, `npm pack --workspace <name>` (whose `prepack` runs the package's typecheck, build and tests on that snapshot), inspection of the tarball (manifest name and version, `package.json`, `README.md`, `CHANGELOG.md`, `LICENSE`, every `files` and `pi` path, nothing under `test/` or `openspec/`), an install with `npm install --omit=peer` into an empty directory (`--legacy-peer-deps` as well for a package with a `dsh` manifest), and a load of the installed copy with that snapshot's `pi` (`-ne --mode rpc`, answering `get_commands`, `PI_OFFLINE=1`, empty `PI_CODING_AGENT_DIR`) — or, for a package that declares `release.smoke`, the check described in "Packages Pi does not load". The tarball's SHA-256 goes into `release-plan.json`;
    - **record work** is every published (or uploading) version whose tag is missing, or whose GitHub Release is missing while an exact section exists;
    - with at least one upload or record item, it uploads the `release-batch` artifact and lets the publish job run. Any failure blocks the whole batch.
 2. **Publish** (permissions `contents: write` and `id-token: write`; the only job with OIDC): `node scripts/release/publish.ts --dir <dir>`:
@@ -182,6 +184,20 @@ Never change versions, prepare again, unpublish, or overwrite to retry. Fix publ
 2. Or dispatch the workflow on `main`: `gh workflow run publish.yml --ref main`. It plans from the current `main` head and converges the same way: tags still point at each version's commit, not at the head.
 3. If the failure was caused by the package itself (the plan rejected the snapshot, or npm rejected the tarball's content), the version cannot be repaired in place: abandon it as described in "Do not stack preparations", land the fix with its own intent, and prepare the next version.
 
+## Packages Pi does not load
+
+Every non-private workspace package is a release candidate, and the plan verifies each one by loading its installed tarball in Pi. A package Pi cannot load — a `dsh-<topic>/` package is a Cordis plugin for the DeepSeek Harness, not a Pi extension — declares its own check in its manifest instead:
+
+```json
+"release": { "smoke": "test/smoke-release.ts" }
+```
+
+The script is a relative `.ts` path, runs from the version commit's worktree under `node` with the installed package directory as its only argument, and must exit 0; its own output is the failure detail shown when it does not. It is the package's replacement for the Pi load and nothing else: the tarball inspection, the isolated install, the version, the upload, the tag and the Release are unchanged. A package that declares neither Pi resources nor `release.smoke` fails its plan, naming both, because nothing would verify what it publishes.
+
+Such a package also declares its host packages as `"*"` peers, and npm resolves peers against the registry while installing the tarball, which fails when those prereleases conflict. So a package with a `dsh` manifest is installed with `--omit=peer --legacy-peer-deps` instead of `--omit=peer`: the tarball still lands alone in the empty directory, and the declared check decides whether what landed is usable. Every other package is installed exactly as before.
+
+A dsh package's script is expected to check what its host will actually load — for `dsh-autocompact` that is the packaged `client.js` evaluated against the Harness module-loader contract, plus the presence of the built host entry the manifest points at. Hand verification runs the same script.
+
 ## First release of a new package
 
 npm configures a trusted publisher in an existing package's settings, so a package that has never been published cannot be uploaded by CI. Its first version is published once by the owner:
@@ -197,11 +213,11 @@ Agents never perform this bootstrap.
 
 Each item is checked by the owner; missing items are reported, never guessed.
 
-| Item                                                                                                                                                                   | Check                                                                                                                     |
-| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| Trusted publisher for each of the six packages: owner `5aaee9`, repository `pi-agent-extensions`, workflow `publish.yml`, no environment, allowed action `npm publish` | each package's settings on npmjs.com; unchanged by this setup                                                             |
-| The publish job has no GitHub `environment` and is the only job with `id-token: write`                                                                                 | `.github/workflows/publish.yml`                                                                                           |
-| The publish job can push tags and create Releases                                                                                                                      | `contents: write` on that job; `GH_TOKEN` is the run's `github.token`                                                     |
-| The first run tags `0.1.43` by itself                                                                                                                                  | after the adoption merge, `git ls-remote --tags origin '@indexyz/*'` lists six `@indexyz/<name>@0.1.43` tags at `b997bd2` |
+| Item                                                                                                                                                                                                                      | Check                                                                                                                     |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| Trusted publisher for every published package, including a new one after its first manual publish: owner `5aaee9`, repository `pi-agent-extensions`, workflow `publish.yml`, no environment, allowed action `npm publish` | each package's settings on npmjs.com; unchanged by this setup                                                             |
+| The publish job has no GitHub `environment` and is the only job with `id-token: write`                                                                                                                                    | `.github/workflows/publish.yml`                                                                                           |
+| The publish job can push tags and create Releases                                                                                                                                                                         | `contents: write` on that job; `GH_TOKEN` is the run's `github.token`                                                     |
+| The first run tags `0.1.43` by itself                                                                                                                                                                                     | after the adoption merge, `git ls-remote --tags origin '@indexyz/*'` lists six `@indexyz/<name>@0.1.43` tags at `b997bd2` |
 
 `main` has no branch protection today, so pushing to it publishes. Whether to require pull requests for `main` is the owner's decision; this procedure works with both direct pushes and merges.

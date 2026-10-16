@@ -1,3 +1,9 @@
 {
-  "ignorePatterns": [".pi-subagents/**", ".claude/**", ".agents/skills/openspec-*/**"]
+  "ignorePatterns": [
+    ".pi-subagents/**",
+    ".claude/**",
+    ".agents/skills/openspec-*/**",
+    "dsh-*/client.js",
+    "dsh-*/lib/**"
+  ]
 }

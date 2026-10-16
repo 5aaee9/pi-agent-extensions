@@ -27,7 +27,7 @@
 └── .oxfmtrc.json                  formatter settings
 ```
 
-The packages today are `pi-provider-sub2api`, `pi-custom-provider`, `pi-continue`, `pi-skill`, `pi-model-trace`, and `pi-autocompact`; the root `package.json` lists them in `workspaces`.
+The packages today are `pi-provider-sub2api`, `pi-custom-provider`, `pi-continue`, `pi-skill`, `pi-model-trace`, `pi-autocompact`, and the dsh package `dsh-autocompact`; the root `package.json` lists them in `workspaces`.
 
 Agent-facing files follow one rule: `AGENTS.md` and `.agents/` are the shared, harness-neutral surface. `.claude` is only a symlink to `.agents`, and `CLAUDE.md` contains nothing but `@AGENTS.md`. No harness gets files of its own.
 
@@ -59,11 +59,40 @@ Rules that follow from this layout:
 - `files` lists every shipped file explicitly (each `.ts` module, `README.md`, `CHANGELOG.md`, `LICENSE`, data files). A new module that is not added to `files` is missing from the published package; the publication plan rejects a tarball that lacks a declared file.
 - `test/`, `tsconfig.json`, `vitest.config.ts`, and `openspec/` are never in `files`.
 
+### A dsh package
+
+`dsh-<topic>/` holds a package for the DeepSeek Harness instead of Pi. Its shape follows the same rules with the differences the Harness forces:
+
+```
+dsh-<topic>/
+├── package.json        @indexyz/dsh-<topic>, version, files allowlist, dsh manifest, scripts, peer and dev dependencies
+├── index.ts            host half entry, compiled to lib/index.js
+├── src/                host implementation modules, plus src/client/ for the browser half
+├── client.js           the browser half, bundled by tsdown to this one path
+├── lib/                compiled host half, the tarball's main entry and types
+├── cordis.patch.yml    the Loader patch the dsh manifest points at
+├── README.md           what it does, how to install, commands and configuration it provides
+├── CHANGELOG.md        release notes; new sections are written by `changeset version` and reviewed
+├── LICENSE             MIT, shipped in the tarball
+├── test/
+│   └── *.test.ts       Vitest tests
+├── tsconfig.json       the package's strict compiler settings
+├── tsconfig.build.json the emit configuration for lib/
+├── tsdown.config.ts    the browser bundle configuration
+├── vitest.config.ts    the package's test configuration
+└── openspec/           the package's own OpenSpec root: specs/ and changes/
+```
+
+- The Harness loads built files, not sources: `lib/` from `tsc`, and `client.js` from tsdown, which the web module loader fetches and evaluates as one CommonJS artifact (`window.__ModuleLoader__.load`). Both are build output and are committed, because installing the package from a local directory (`link:`) never runs the build; the root oxfmt and oxlint configs ignore them, and no hand edit ever touches them.
+- The host half declares the `dsh` manifest (its bundle patch) and a `client` half naming the platform and the client services it needs; it declares no `pi` manifest, and the root `pi` manifest never lists it.
+- Its scripts are its own (`build`, `build:host`, `build:client`, `typecheck`, `test`, `check`, `prepack`); the root `build` fan-out skips packages that declare none, so a pi package is unaffected.
+- `release.smoke` names a `.ts` script the release engine runs against the packed and installed tarball, because Pi cannot load a dsh package (`docs/releases.md`, "Packages Pi does not load").
+
 ## Package scripts and tooling
 
-Every package defines the same scripts: `test` (`vitest run`), `test:watch`, `typecheck` (`tsc --noEmit`), `check` (typecheck and tests), and `prepack` (`npm run check`, so packing a package always runs its own checks). The root scripts fan out with `--workspaces`: `npm run typecheck` and `npm test` run every package's script.
+Every package defines the same scripts: `test` (`vitest run`), `test:watch`, `typecheck` (`tsc --noEmit`), `check` (typecheck and tests), and `prepack` (`npm run check`, so packing a package always runs its own checks). A dsh package adds its build to `check` and `prepack`. The root scripts fan out with `--workspaces`: `npm run typecheck`, `npm run build` (with `--if-present`), and `npm test` run every package's script.
 
-Each package's `devDependencies` pin the Pi host packages it builds against, plus `typescript`, `vitest`, and `@types/node`. Pinned Pi versions may differ between packages (`docs/pi-reference.md`); npm then installs the differing version inside that package's own `node_modules/`.
+Each package's `devDependencies` pin the host packages it builds against, plus `typescript`, `vitest`, and `@types/node`. For a pi package those hosts are Pi's; for a dsh package they are the `@deepseek-ai/dsh-*` packages and `@deepseek-ai/schemastery`. Pinned host versions may differ between packages (`docs/pi-reference.md`); npm then installs the differing version inside that package's own `node_modules/`.
 
 ## OpenSpec roots
 
@@ -84,7 +113,7 @@ Specs describe the current behavior of the thing in their root, so a package's s
 - Host-provided packages are `peerDependencies` with `"*"` and exact pins in `devDependencies`. List only the ones the package imports.
 - Real runtime dependencies would go in the package's `dependencies`, never the root. Installed packages load from their own directory, so a package may not rely on another package's dependencies.
 - `engines.node` is `>=22.19.0`.
-- The root `package.json` is private and carries a `pi` manifest listing every `./pi-*/index.ts`, so installing the whole repository from git loads every package.
+- The root `package.json` is private and carries a `pi` manifest listing every `./pi-*/index.ts`, so installing the whole repository from git loads every pi package; the dsh package is installed into a dsh profile on its own, so the root manifest does not list it.
 
 ## Release records
 
@@ -95,3 +124,7 @@ Release state lives in committed files and in the registry, never in CI configur
 Pi reads `package.json`, resolves the `pi` manifest, and imports each extension entry from TypeScript source. There is no build step and no `dist/`. The default export runs once per extension runtime; a `/reload` replaces the runtime. Because loading happens in-process, an extension has the same permissions as Pi itself.
 
 The full contract (lifecycle, events, commands, providers, UI, errors) is in Pi's own documentation; see `docs/pi-reference.md` for where to find it.
+
+## How the Harness loads a dsh package
+
+The Harness reads the `dsh` manifest, mounts the Loader patch it names, and loads the host half from the built `lib/` entry; its web frontend fetches the declared `client.js` and evaluates it with `window.__ModuleLoader__`, which is why the browser half is one bundled CommonJS file whose only imports are `react` and `react/jsx-runtime`. Host packages such as `@deepseek-ai/dsh-*` are supplied by the installation, not by the package. `docs/conventions.md` and the package's README cover the rest.

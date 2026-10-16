@@ -8,5 +8,5 @@
   "env": {
     "builtin": true
   },
-  "ignorePatterns": [".pi-subagents/**"]
+  "ignorePatterns": [".pi-subagents/**", "dsh-*/client.js", "dsh-*/lib/**"]
 }
