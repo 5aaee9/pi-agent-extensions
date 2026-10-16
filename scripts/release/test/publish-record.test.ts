@@ -33,7 +33,7 @@ void test("tag at an older commit carrying the version: the Release comes from t
   );
   assert.equal(result.ok, true);
   assert.deepEqual(actions, [
-    'gh release create @indexyz/pi-skill@0.1.44 target=1 notes="### Patch Changes\\n\\n- Notes at the tag.\\n"',
+    'gh release create @indexyz/pi-skill@0.1.44 tag notes="### Patch Changes\\n\\n- Notes at the tag.\\n"',
   ]);
 });
 
@@ -52,7 +52,7 @@ void test("tag at a commit without the version fails and is never moved", () => 
   assert.deepEqual(actions, []);
 });
 
-void test("Release missing: creates only the Release", () => {
+void test("Release missing: creates only the Release, naming no target commitish", () => {
   const { ops, actions } = world({
     commits: { [V1]: { version: "0.1.44", changelog: section("0.1.44", "- Fix.") } },
     tags: { "@indexyz/pi-skill@0.1.44": V1 },
@@ -60,7 +60,25 @@ void test("Release missing: creates only the Release", () => {
   });
   runPublish({ uploads: [], records: [record("@indexyz/pi-skill", "0.1.44")] }, ops);
   assert.equal(actions.length, 1);
-  assert.match(actions[0] ?? "", /^gh release create @indexyz\/pi-skill@0.1.44 target=1/u);
+  assert.match(actions[0] ?? "", /^gh release create @indexyz\/pi-skill@0\.1\.44 tag /u);
+});
+
+void test("an existing tag fixes the Release commit, so no target SHA is named", () => {
+  // GitHub requires the `workflows` permission for a Release that targets a SHA
+  // whose diff to the default branch touches `.github/workflows/**`, which the
+  // Actions token cannot have. A version whose tag predates such a change must
+  // still be recorded, and the tag already decides the Release's commit.
+  const { ops, actions } = world({
+    commits: { [V1]: { version: "0.1.42", changelog: section("0.1.42", "- Old.") } },
+    tags: { "@indexyz/pi-skill@0.1.42": V1 },
+    registry: ["@indexyz/pi-skill@0.1.42"],
+  });
+  const result = runPublish({ uploads: [], records: [record("@indexyz/pi-skill", "0.1.42")] }, ops);
+  assert.equal(result.ok, true);
+  assert.equal(outcomeOf(result, "@indexyz/pi-skill").release, "created");
+  assert.deepEqual(actions, [
+    'gh release create @indexyz/pi-skill@0.1.42 tag notes="### Patch Changes\\n\\n- Old.\\n"',
+  ]);
 });
 
 void test("legacy dated heading: a tag and a Release from that section", () => {

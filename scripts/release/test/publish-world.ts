@@ -104,9 +104,8 @@ function recordOps(
     changelogAt: (commit) => facts.commits?.[commit]?.changelog ?? null,
     releaseExists: (tag) => (facts.releases ?? []).includes(tag),
     createRelease: ({ tag, target, notes }) => {
-      recorder.action(
-        `gh release create ${tag} target=${target.slice(0, 1)} notes=${JSON.stringify(notes)}`,
-      );
+      const commitish = target === null ? "tag" : `target=${target.slice(0, 1)}`;
+      recorder.action(`gh release create ${tag} ${commitish} notes=${JSON.stringify(notes)}`);
     },
     log: () => {
       // The report is asserted through the returned outcomes.

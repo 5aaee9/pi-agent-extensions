@@ -136,6 +136,7 @@ function ensureRelease(
   item: PublishRecord,
   tag: string,
   recordCommit: string,
+  tagOutcome: TagOutcome,
   ops: PublishOps,
 ): ReleaseOutcome {
   const section = findChangelogSection(ops.changelogAt(recordCommit, item.dir) ?? "", item.version);
@@ -146,7 +147,13 @@ function ensureRelease(
   if (ops.releaseExists(tag)) {
     return "existing";
   }
-  ops.createRelease({ tag, target: recordCommit, notes: section.body });
+  // GitHub demands the `workflows` permission for a Release whose target SHA
+  // differs from the default branch in `.github/workflows/**`, and the Actions
+  // token can never hold it. A tag this run pushed still names its commit, in
+  // case the API has not seen the new ref yet; a tag that already existed fixes
+  // the commit by itself, so that Release is created without a target.
+  const target = tagOutcome === "created" ? recordCommit : null;
+  ops.createRelease({ tag, target, notes: section.body });
   ops.log(`released ${tag}`);
   return "created";
 }
@@ -175,7 +182,10 @@ function recordVersion(item: PublishRecord, upload: UploadOutcome, ops: PublishO
     return { tag: "failed", release: "unchanged", error: `${tag}: ${errorMessage(error)}` };
   }
   try {
-    return { tag: tagOutcome, release: ensureRelease(item, tag, recordCommit, ops) };
+    return {
+      tag: tagOutcome,
+      release: ensureRelease(item, tag, recordCommit, tagOutcome, ops),
+    };
   } catch (error) {
     return { tag: tagOutcome, release: "failed", error: `${tag}: ${errorMessage(error)}` };
   }

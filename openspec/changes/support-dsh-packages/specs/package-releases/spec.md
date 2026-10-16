@@ -98,3 +98,22 @@ A version's changelog section SHALL be headed `## <version>` or `## <version> - 
 
 - **WHEN** a changelog holds both `## 0.2.0` and `## 0.2.0 - 2026-10-16` with bodies
 - **THEN** the version fails as a duplicate section, naming the count
+
+### Requirement: A Release for an existing tag names no target commitish
+
+When recording a version whose tag already existed, the publish step SHALL create the GitHub Release without a target commitish, because GitHub requires the `workflows` permission — which a GitHub Actions token can never hold — for a Release that names a target SHA whose comparison with the default branch touches `.github/workflows/**`, and the tag the version already carries determines the commit the Release is attached to. Only a tag the same run created SHALL be named as the target, so that a ref the API has not yet observed cannot resolve to the default branch instead. The Release's title, tag, target commit, and body SHALL otherwise be unchanged: the tag `@indexyz/<name>@<version>` and the exact changelog section at the record commit.
+
+#### Scenario: A version whose commit predates a workflow change
+
+- **WHEN** `@indexyz/pi-skill@0.1.43` is on the registry, its tag exists at `b997bd2`, and `main` has changed `.github/workflows/**` since
+- **THEN** the Release for that tag is created with no target commitish, from the section at the tag's commit, instead of failing with `HTTP 403: Resource not accessible by integration`
+
+#### Scenario: A tag this run created
+
+- **WHEN** the run has just pushed the tag at the version commit and then creates the Release
+- **THEN** the Release names that version commit as its target
+
+#### Scenario: The Release already exists
+
+- **WHEN** the Release for the tag is present
+- **THEN** neither a tag nor a Release is created, and no target commitish is sent

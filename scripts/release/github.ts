@@ -21,7 +21,11 @@ export function releaseState(tag: string): ReleaseState {
 
 export interface NewRelease {
   readonly tag: string;
-  readonly target: string;
+  /**
+   * The commit the Release's tag is created from, or `null` when the tag
+   * already exists and fixes the commit itself.
+   */
+  readonly target: string | null;
   readonly notes: string;
 }
 
@@ -30,17 +34,11 @@ export function createRelease({ tag, target, notes }: NewRelease): void {
   try {
     const file = join(dir, "notes.md");
     writeFileSync(file, notes);
-    runChecked("gh", [
-      "release",
-      "create",
-      tag,
-      "--target",
-      target,
-      "--title",
-      tag,
-      "--notes-file",
-      file,
-    ]);
+    const args = ["release", "create", tag, "--title", tag, "--notes-file", file];
+    if (target !== null) {
+      args.push("--target", target);
+    }
+    runChecked("gh", args);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
