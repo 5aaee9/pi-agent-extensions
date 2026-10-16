@@ -20,6 +20,7 @@ const changesetsStyle = `# Changelog
 test("extracts a changesets-style section up to the next version heading", () => {
   assert.deepEqual(findChangelogSection(changesetsStyle, "0.1.44"), {
     ok: true,
+    count: 1,
     body: "### Patch Changes\n\n- Restore the cache hit rate in the custom footer.\n  Second line of the same entry.\n",
   });
 });
@@ -65,6 +66,7 @@ test("headings inside fenced code blocks are ignored", () => {
   ].join("\n");
   assert.deepEqual(findChangelogSection(text, "0.2.0"), {
     ok: true,
+    count: 1,
     body: "- Example config:\n\n  ```md\n  ## 0.3.0\n  ```\n",
   });
   assert.equal(findChangelogSection(text, "0.3.0").ok, false);

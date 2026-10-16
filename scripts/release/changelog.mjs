@@ -4,8 +4,9 @@ const FENCE = /^\s{0,3}(`{3,}|~{3,})/;
 const HEADING = /^(#{1,2})\s+(.*?)\s*#*\s*$/;
 
 /**
- * Returns `{ ok: true, body }` for exactly one non-empty `## <version>` section,
- * or `{ ok: false, reason }` when it is missing, duplicated, or empty. Headings
+ * Returns `{ ok: true, count: 1, body }` for exactly one non-empty
+ * `## <version>` section, or `{ ok: false, count, reason }` when it is missing,
+ * duplicated, or empty (`count` is the number of matching headings). Headings
  * that carry anything after the version (such as a date) do not match, and
  * headings inside fenced code blocks are ignored.
  */
@@ -42,14 +43,18 @@ export function findChangelogSection(text, version) {
   }
 
   if (sections.length === 0) {
-    return { ok: false, reason: `CHANGELOG.md has no "## ${version}" section` };
+    return { ok: false, count: 0, reason: `CHANGELOG.md has no "## ${version}" section` };
   }
   if (sections.length > 1) {
-    return { ok: false, reason: `CHANGELOG.md has ${sections.length} "## ${version}" sections` };
+    return {
+      ok: false,
+      count: sections.length,
+      reason: `CHANGELOG.md has ${sections.length} "## ${version}" sections`,
+    };
   }
   const body = sections[0].join("\n").trim();
   if (!body) {
-    return { ok: false, reason: `CHANGELOG.md has an empty "## ${version}" section` };
+    return { ok: false, count: 1, reason: `CHANGELOG.md has an empty "## ${version}" section` };
   }
-  return { ok: true, body: `${body}\n` };
+  return { ok: true, count: 1, body: `${body}\n` };
 }
