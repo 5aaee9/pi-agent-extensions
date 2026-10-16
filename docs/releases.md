@@ -113,8 +113,9 @@ Do this only on an explicit release request. Source changes and their intents mu
    ```
 
 5. Review before committing: every manifest version, every new `CHANGELOG.md` section, the consumed and remaining intent files, and the lockfile diff (only the bumped packages' `version` entries should change). Edit the section prose freely; keep its `## <version>` heading and never edit versions by hand. A README update that belongs to the release may join the preparation.
-6. Commit: `chore(release): prepare @indexyz/pi-skill 0.2.0` (name every prepared package and version).
-7. Verify the snapshot exactly as CI will:
+6. Run `npm run check`. The publish workflow runs it on `main` before planning, so a preparation that fails it (for example a generated section that does not pass `format:check`) blocks every upload, and a direct push to `main` skips `lint.yml`.
+7. Commit: `chore(release): prepare @indexyz/pi-skill 0.2.0` (name every prepared package and version).
+8. Verify the snapshot exactly as CI will:
 
    ```bash
    node scripts/release/plan.mjs --dry-run
@@ -122,7 +123,7 @@ Do this only on an explicit release request. Source changes and their intents mu
 
    It plans from `HEAD`: for every prepared version it builds the tarball at that version's commit, inspects it, installs it in isolation, and loads it in Pi. It needs network access (npm registry, `git fetch` from `origin`, and `gh` when available) and writes nothing to the registry or GitHub; without GitHub access it reports Release state as unknown. Fix any failure by revising the preparation on the branch (below) before handing it over.
 
-8. Hand over: report the planned versions and the dry-run result, and stop. Push the branch, open a pull request, push to `main`, or merge only when the request explicitly asks for that action. A request to prepare a release is not permission to publish.
+9. Hand over: report the planned versions and the dry-run result, and stop. Push the branch, open a pull request, push to `main`, or merge only when the request explicitly asks for that action. A request to prepare a release is not permission to publish.
 
 ### Do not stack preparations
 
