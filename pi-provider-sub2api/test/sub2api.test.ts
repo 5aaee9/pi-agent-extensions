@@ -2,8 +2,14 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
-import type { ExtensionAPI, ProviderConfig } from "@earendil-works/pi-coding-agent";
+import type {
+  ExtensionAPI,
+  ExtensionContext,
+  ProviderConfig,
+} from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import { renderUsageFooter } from "../footer.ts";
 
 type CodexStream = (
   model: Record<string, any>,
@@ -297,6 +303,74 @@ async function loadProviderComposer() {
 }
 
 describe("sub2api provider extension", () => {
+  it.each<{
+    name: string;
+    messages: { role?: string; input?: number; cacheRead?: number; cacheWrite?: number }[];
+    expected: string | undefined;
+  }>([
+    {
+      name: "latest response rather than cumulative usage",
+      messages: [{ input: 90_000 }, { input: 1_000, cacheRead: 9_000 }],
+      expected: "CH90.0%",
+    },
+    {
+      name: "cache writes in the prompt denominator",
+      messages: [{ input: 1_000, cacheRead: 8_000, cacheWrite: 1_000 }],
+      expected: "CH80.0%",
+    },
+    {
+      name: "zero hits after an earlier cache hit",
+      messages: [{ cacheRead: 9_000 }, { input: 1_000 }],
+      expected: "CH0.0%",
+    },
+    {
+      name: "cache writes without cache reads",
+      messages: [{ input: 1_000, cacheWrite: 9_000 }],
+      expected: "CH0.0%",
+    },
+    {
+      name: "tool usage does not replace the latest assistant rate",
+      messages: [
+        { input: 1_000, cacheRead: 9_000 },
+        { role: "toolResult", input: 9_000, cacheRead: 1_000 },
+      ],
+      expected: "CH90.0%",
+    },
+    { name: "no cached usage", messages: [{ input: 1_000 }], expected: undefined },
+    { name: "empty session", messages: [], expected: undefined },
+    {
+      name: "latest response has no prompt tokens",
+      messages: [{ cacheRead: 9_000 }, {}],
+      expected: undefined,
+    },
+  ])("renders cache hit rate for $name", ({ messages, expected }) => {
+    const entries = messages.map(
+      ({ role = "assistant", input = 0, cacheRead = 0, cacheWrite = 0 }) => ({
+        type: "message",
+        message: { role, usage: { input, cacheRead, cacheWrite } },
+      }),
+    );
+    const context = {
+      ...createFooterContext({ provider: "relay", id: "gpt-test" }, createFooterHarness()),
+      sessionManager: { getEntries: () => entries, getSessionName: () => undefined },
+    } as unknown as ExtensionContext;
+    const footer = renderUsageFooter(
+      context,
+      {
+        getGitBranch: () => null,
+        getAvailableProviderCount: () => 1,
+        getExtensionStatuses: () => new Map(),
+        onBranchChange: () => () => {},
+      },
+      context.ui.theme,
+      undefined,
+      false,
+      false,
+      200,
+    );
+    expect(footer[1]!.match(/CH[\d.]+%/)?.[0]).toBe(expected);
+  });
+
   it("registers native Anthropic, Codex, Responses, and Completions model APIs", async () => {
     writeFileSync(join(stateDir, "sub2api.json"), JSON.stringify(relayDefinitions));
 

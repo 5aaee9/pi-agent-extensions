@@ -114,18 +114,26 @@ function collectFooterUsage(ctx: ExtensionContext) {
     cacheWrite: 0,
     cost: 0,
   };
+  let latestCacheHitRate: number | undefined;
   for (const entry of ctx.sessionManager.getEntries()) {
     const record = asRecord(entry);
     if (record?.type === "message") {
       const message = asRecord(record.message);
       if (message?.role === "assistant" || message?.role === "toolResult") {
         addFooterUsage(totals, message.usage);
+        if (message.role === "assistant") {
+          const usage = asRecord(message.usage);
+          const cacheRead = firstNumber(usage?.cacheRead) ?? 0;
+          const promptTokens =
+            (firstNumber(usage?.input) ?? 0) + cacheRead + (firstNumber(usage?.cacheWrite) ?? 0);
+          latestCacheHitRate = promptTokens > 0 ? (cacheRead / promptTokens) * 100 : undefined;
+        }
       }
     } else if (record?.type === "branch_summary" || record?.type === "compaction") {
       addFooterUsage(totals, record.usage);
     }
   }
-  return totals;
+  return { ...totals, latestCacheHitRate };
 }
 
 function formatFooterCwd(cwd: string, home: string) {
@@ -159,6 +167,9 @@ function renderFooterStats(
   if (totals.output) parts.push(`↓${formatFooterTokens(totals.output)}`);
   if (totals.cacheRead) parts.push(`R${formatFooterTokens(totals.cacheRead)}`);
   if (totals.cacheWrite) parts.push(`W${formatFooterTokens(totals.cacheWrite)}`);
+  if ((totals.cacheRead > 0 || totals.cacheWrite > 0) && totals.latestCacheHitRate !== undefined) {
+    parts.push(`CH${totals.latestCacheHitRate.toFixed(1)}%`);
+  }
   if (totals.cost || ctx.model?.provider === "kimi-coding") {
     parts.push(
       `$${totals.cost.toFixed(3)}${ctx.model?.provider === "kimi-coding" ? " (sub)" : ""}`,
