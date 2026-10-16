@@ -64,13 +64,13 @@ export function validateIntent(
   return problems;
 }
 
-/** The single package an intent names, or `undefined` when it is invalid. */
-export function intentPackage(text: string): string | undefined {
+/** The single release an intent records, or `undefined` when it is invalid. */
+export function intentRelease(text: string): Release | undefined {
   const parsed = parseIntent(text);
   if (!parsed.ok || parsed.releases.length !== 1) {
     return undefined;
   }
-  return parsed.releases[0]?.name;
+  return parsed.releases[0];
 }
 
 /** Validates every intent file on disk the way changesets reads them. */

@@ -6,7 +6,7 @@ import { parseArgs } from "node:util";
 
 import { decidePackage, decisionHelp } from "./gate-core.ts";
 import { git, manifestVersionAt, showFile } from "./git.ts";
-import { intentPackage, isIntentPath, validateIntent } from "./intents.ts";
+import { intentRelease, isIntentPath, validateIntent } from "./intents.ts";
 import { listPackages } from "./workspace.ts";
 
 const { values } = parseArgs({
@@ -35,9 +35,10 @@ for (const path of headIntents) {
   problems.push(...validateIntent(path, atHead(path) ?? "", names));
 }
 
-// Intents this pull request added, modified, or deleted, by package name.
+// Packages with an intent this pull request added or modified, and packages
+// with a positive (patch, minor, major) intent it deleted, as a preparation does.
 const touched = new Set<string>();
-const deleted = new Set<string>();
+const consumed = new Set<string>();
 const intentChanges = git(
   ["diff", "--name-status", "--no-renames", mergeBase, head, "--", ".changeset/"],
   cwd,
@@ -47,9 +48,16 @@ for (const line of intentChanges.split("\n")) {
   if (status === undefined || path === undefined || !isIntentPath(path)) {
     continue;
   }
-  const name = intentPackage((status === "D" ? atBase(path) : atHead(path)) ?? "");
-  if (name !== undefined) {
-    (status === "D" ? deleted : touched).add(name);
+  if (status === "D") {
+    const release = intentRelease(atBase(path) ?? "");
+    if (release !== undefined && release.type !== "none") {
+      consumed.add(release.name);
+    }
+  } else {
+    const release = intentRelease(atHead(path) ?? "");
+    if (release !== undefined) {
+      touched.add(release.name);
+    }
   }
 }
 
@@ -74,7 +82,7 @@ for (const pkg of packages) {
     baseChangelog: atBase(`${pkg.dir}/CHANGELOG.md`),
     headChangelog: atHead(`${pkg.dir}/CHANGELOG.md`),
     touchedIntent: touched.has(pkg.name),
-    deletedIntent: deleted.has(pkg.name),
+    consumedIntent: consumed.has(pkg.name),
   });
   if (decision.status === "none") {
     console.log(`${pkg.name}: no published changes`);

@@ -176,7 +176,7 @@ Rerunning the original workflow run, or dispatching the workflow on `main`, SHAL
 
 ### Requirement: Pull requests declare their release impact per package
 
-On every pull request, CI SHALL compare the head with its merge base and, for each package whose published content changed (its `package.json`, `README.md`, `LICENSE`, `CHANGELOG.md`, or any path listed in `files`), require a decision contributed by that pull request: an intent file added or modified in the pull request that names the package with a non-empty summary, or a release preparation for that package (version changed, a `## <new version>` changelog section added, at least one intent naming the package removed, and no published file of that package changed other than `package.json`, `CHANGELOG.md`, and `README.md`). An intent already pending on the base branch MUST NOT count. Changes limited to tests, `openspec/`, root tooling, or repository documentation SHALL need no decision. A version change without the other preparation signs SHALL fail the gate.
+On every pull request, CI SHALL compare the head with its merge base and, for each package whose published content changed (its `package.json`, `README.md`, `LICENSE`, `CHANGELOG.md`, or any path listed in `files`), require a decision contributed by that pull request: an intent file added or modified in the pull request that names the package with a non-empty summary, or a release preparation for that package (version changed, a `## <new version>` changelog section added, at least one positive (`patch`, `minor`, or `major`) intent naming the package removed, and no published file of that package changed other than `package.json`, `CHANGELOG.md`, and `README.md`). An intent already pending on the base branch MUST NOT count. Changes limited to tests, `openspec/`, root tooling, or repository documentation SHALL need no decision. A version change without the other preparation signs SHALL fail the gate.
 
 #### Scenario: Source change without a decision
 
@@ -197,6 +197,11 @@ On every pull request, CI SHALL compare the head with its merge base and, for ea
 
 - **WHEN** a pull request bumps `pi-skill` to `0.2.0`, adds a `## 0.2.0` section, and deletes the consumed intent
 - **THEN** the gate accepts the preparation as `pi-skill`'s decision without a new intent
+
+#### Scenario: Hand bump that deletes only a none intent
+
+- **WHEN** a pull request raises `pi-skill` to `0.2.0`, adds a `## 0.2.0` section, and deletes only a `none` intent naming `@indexyz/pi-skill`
+- **THEN** the gate fails for `pi-skill`, because no positive intent was consumed
 
 #### Scenario: Source change hidden in a preparation
 

@@ -28,8 +28,8 @@ export interface GateInput {
   readonly headChangelog: string | null;
   /** An intent naming the package was added or modified. */
   readonly touchedIntent: boolean;
-  /** An intent naming the package was deleted. */
-  readonly deletedIntent: boolean;
+  /** A positive (patch, minor, or major) intent naming the package was deleted. */
+  readonly consumedIntent: boolean;
 }
 
 export type GateDecision =
@@ -62,8 +62,8 @@ export function decidePackage(input: GateInput): GateDecision {
   } else if (baseSection.count > 0) {
     missing.push(`a "## ${headVersion}" section that the base branch does not already have`);
   }
-  if (!input.deletedIntent) {
-    missing.push("a consumed (deleted) intent naming the package");
+  if (!input.consumedIntent) {
+    missing.push("a consumed (deleted) patch, minor, or major intent naming the package");
   }
   if (missing.length > 0) {
     return {

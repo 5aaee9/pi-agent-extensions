@@ -15,7 +15,7 @@ const base: GateInput = {
   baseChangelog: "# Changelog\n\n## 0.1.0 - 2026-01-01\n\n- First.\n",
   headChangelog: "# Changelog\n\n## 0.1.0 - 2026-01-01\n\n- First.\n",
   touchedIntent: false,
-  deletedIntent: false,
+  consumedIntent: false,
 };
 const prepared: GateInput = {
   ...base,
@@ -23,7 +23,7 @@ const prepared: GateInput = {
   headVersion: "0.2.0",
   headChangelog:
     "# Changelog\n\n## 0.2.0\n\n### Minor Changes\n\n- New.\n\n## 0.1.0 - 2026-01-01\n\n- First.\n",
-  deletedIntent: true,
+  consumedIntent: true,
 };
 
 void test("published paths follow the files allowlist plus the always-published files", () => {
@@ -179,4 +179,21 @@ void test("cli: a release preparation that consumed its intent passes", () => {
   const result = runGate(r, mainTip);
   assert.equal(result.code, 0, result.output);
   assert.match(result.output, /release preparation for 0\.2\.0/u);
+});
+
+void test("cli: a version bump that deletes only a none intent is not a preparation", () => {
+  const r = fixture();
+  r.write(".changeset/docs.md", intent("@indexyz/pi-a", "none", "README only."));
+  const mainTip = r.commit("none intent on main");
+  r.git("switch", "--quiet", "-c", "hand-bump");
+  r.remove(".changeset/docs.md");
+  r.write("pi-a/package.json", manifest("0.2.0"));
+  r.write(
+    "pi-a/CHANGELOG.md",
+    "# Changelog\n\n## 0.2.0\n\n### Minor Changes\n\n- Unapproved.\n\n## 0.1.0 - 2026-01-01\n\n- First.\n",
+  );
+  r.commit("hand-edited version");
+  const result = runGate(r, mainTip);
+  assert.equal(result.code, 1, result.output);
+  assert.match(result.output, /consumed \(deleted\) patch, minor, or major intent/u);
 });
