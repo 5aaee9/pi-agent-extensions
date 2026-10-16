@@ -86,8 +86,13 @@ export function runPublish(plan, ops) {
     let step;
     try {
       if (!ops.registryHas(item.name, item.version)) {
-        ops.log(`${tag} is not on the registry; not recorded`);
-        continue;
+        if (state.upload === "failed" || state.upload === "not attempted") {
+          ops.log(`${tag} is not on the registry; not recorded`);
+          continue;
+        }
+        // Published (or planned as published) but not visible yet: fail so a
+        // rerun creates the missing records instead of reporting success.
+        throw new Error("not visible on the registry yet; rerun the workflow to record it");
       }
       step = "tag";
       let recordCommit = ops.tagCommit(tag);

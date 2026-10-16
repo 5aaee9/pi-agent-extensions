@@ -306,3 +306,20 @@ test("a failed tag push is reported as a tag failure, not a Release failure", ()
   assert.deepEqual([outcome.tag, outcome.release], ["failed", "unchanged"]);
   assert.match(result.errors[0], /git push failed/);
 });
+
+test("an upload that succeeded but is not visible on the registry yet fails the run without recording", () => {
+  const { ops, actions } = world({
+    commits: { [V1]: { version: "0.1.44", changelog: section("0.1.44", "- Fix.") } },
+    registry: [],
+    publish: { "pi-skill.tgz": { ok: true } },
+  });
+  const plan = {
+    uploads: [upload("@indexyz/pi-skill", "0.1.44")],
+    records: [record("@indexyz/pi-skill", "0.1.44")],
+  };
+  const result = runPublish(plan, ops);
+  assert.equal(result.ok, false);
+  assert.equal(result.outcomes.get("@indexyz/pi-skill").upload, "published");
+  assert.match(result.errors[0], /pi-skill@0.1.44: not visible on the registry yet/);
+  assert.deepEqual(actions, ["npm publish pi-skill.tgz"]);
+});
