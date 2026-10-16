@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.44
+
+### Patch Changes
+
+- Show the cache hit rate (CH<percent>%) of the latest response in the custom footer again, next to the cache read and write totals.
+
 ## 0.1.43 - 2026-10-11
 
 - Support `!command` tokens at configuration load, reusing trimmed stdout for discovery, billing/quota, and model requests. Use `$!` for a literal leading bang.
