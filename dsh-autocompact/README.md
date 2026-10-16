@@ -8,6 +8,11 @@ agent. This is the dsh port of [`@indexyz/pi-autocompact`](https://github.com/5a
 dsh plugin --profile web add @indexyz/dsh-autocompact
 ```
 
+It is built and tested against dsh `0.2.0-rc.2` and declares that range as
+`engines.dsh` (`>=0.2.0-rc.2 <0.3.0-0`), which the plugin market reads before it
+installs: on a harness outside it the market refuses the install instead of
+installing something that breaks. Node `22.19.0` or newer is required as well.
+
 ```text
 /autocompact 300k    # 300,000 tokens, current session/model only
 /autocompact 0.3m    # same threshold; k/m are decimal units
