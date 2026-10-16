@@ -111,7 +111,7 @@ function recordWork(
     notices.push(`${tag}: GitHub Release state unknown (no GitHub access in dry-run)`);
   }
   if (base.needsTag && !hasSection) {
-    notices.push(`${tag}: no exact "## ${base.version}" section; it gets a tag and no Release`);
+    notices.push(`${tag}: no "## ${base.version}" section; it gets a tag and no Release`);
   }
   // An unknown state (dry-run without GitHub access) is reported as work.
   const needsRelease = release !== undefined && release !== "present";

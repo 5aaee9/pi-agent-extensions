@@ -107,7 +107,7 @@ void test("an absent version with a duplicate section fails", () => {
   assert.match(result.errors[0] ?? "", /2 "## 0.1.44" sections/u);
 });
 
-void test("0.1.43 untagged with a dated heading is tag work only", () => {
+void test("0.1.43 untagged with a dated heading is tag and Release work", () => {
   const { ops: doubles, calls } = recordingOps({
     commits: { [V1]: { version: "0.1.43", changelog: dated } },
     registry: ["@indexyz/pi-skill@0.1.43"],
@@ -115,12 +115,15 @@ void test("0.1.43 untagged with a dated heading is tag work only", () => {
   const result = planPackage(pkg("0.1.43"), doubles);
   assert.equal(result.upload, null);
   assert.equal(recordOf(result.record).needsTag, true);
-  assert.equal(recordOf(result.record).needsRelease, false);
-  assert.match(result.notices[0] ?? "", /tag and no Release/u);
-  assert.ok(!calls.some((call) => call.startsWith("gh")), "no Release lookup without a section");
+  assert.equal(recordOf(result.record).needsRelease, true);
+  assert.deepEqual(result.notices, []);
+  assert.ok(
+    calls.some((call) => call.startsWith("gh")),
+    "the dated section is read",
+  );
 });
 
-void test("0.1.43 tagged with a dated heading and no Release is no work", () => {
+void test("0.1.43 tagged with a dated heading and no Release is Release work", () => {
   const result = planPackage(
     pkg("0.1.43"),
     ops({
@@ -129,10 +132,11 @@ void test("0.1.43 tagged with a dated heading and no Release is no work", () => 
       tags: { "@indexyz/pi-skill@0.1.43": V1 },
     }),
   );
-  assert.deepEqual(result, { errors: [], notices: [], upload: null, record: null });
+  const record = recordOf(result.record);
+  assert.deepEqual([record.needsTag, record.needsRelease, record.recordCommit], [false, true, V1]);
 });
 
-void test("a second plan after the tags exist is empty", () => {
+void test("a second plan after the tags exist is Release work for the dated sections", () => {
   const names = ["pi-skill", "pi-continue"];
   const packages: readonly PlannedPackage[] = names.map((dir) => ({
     name: `@indexyz/${dir}`,
@@ -147,7 +151,11 @@ void test("a second plan after the tags exist is empty", () => {
       tags: Object.fromEntries(packages.map((p) => [`${p.name}@0.1.43`, V1])),
     }),
   );
-  assert.deepEqual(plan, { errors: [], notices: [], uploads: [], records: [] });
+  assert.deepEqual(
+    plan.records.map((record) => record.needsRelease),
+    [true, true],
+  );
+  assert.deepEqual([plan.errors, plan.notices, plan.uploads], [[], [], []]);
 });
 
 void test("a published, tagged version with a section and no Release is Release work", () => {

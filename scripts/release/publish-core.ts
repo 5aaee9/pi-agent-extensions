@@ -48,12 +48,7 @@ export type UploadOutcome =
   | "failed"
   | "not attempted";
 export type TagOutcome = "unchanged" | "created" | "existing" | "failed";
-export type ReleaseOutcome =
-  | "unchanged"
-  | "created"
-  | "existing"
-  | "none (no exact section)"
-  | "failed";
+export type ReleaseOutcome = "unchanged" | "created" | "existing" | "none (no section)" | "failed";
 
 export interface Outcome {
   readonly name: string;
@@ -136,7 +131,7 @@ function ensureTag(item: PublishRecord, tag: string, ops: PublishOps): [string, 
   return [existing, "existing"];
 }
 
-/** Creates the GitHub Release when missing and the record commit has an exact section. */
+/** Creates the GitHub Release when missing and the record commit has a section for that version. */
 function ensureRelease(
   item: PublishRecord,
   tag: string,
@@ -146,7 +141,7 @@ function ensureRelease(
   const section = findChangelogSection(ops.changelogAt(recordCommit, item.dir) ?? "", item.version);
   if (!section.ok) {
     ops.log(`notice: ${tag}: ${section.reason}; no GitHub Release`);
-    return "none (no exact section)";
+    return "none (no section)";
   }
   if (ops.releaseExists(tag)) {
     return "existing";

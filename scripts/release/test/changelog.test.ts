@@ -25,10 +25,27 @@ void test("extracts a changesets-style section up to the next version heading", 
   });
 });
 
-void test("a dated legacy heading does not match the bare version", () => {
-  const result = findChangelogSection(changesetsStyle, "0.1.43");
+void test("a section whose heading carries its date matches the version it names", () => {
+  assert.deepEqual(findChangelogSection(changesetsStyle, "0.1.43"), {
+    ok: true,
+    count: 1,
+    body: "- Older entry.\n",
+  });
+});
+
+void test("a heading with trailing text other than a date does not match", () => {
+  for (const heading of ["## 0.1.43 (unreleased)", "## 0.1.43-draft", "## 0.1.430 - 2026-10-11"]) {
+    const result = findChangelogSection(`# Changelog\n\n${heading}\n\n- A\n`, "0.1.43");
+    assert.equal(result.ok, false, `expected "${heading}" not to match`);
+    assert.match(result.reason, /no "## 0.1.43" section/u);
+  }
+});
+
+void test("the same version named once bare and once dated is a duplicate", () => {
+  const text = "# Changelog\n\n## 0.2.0\n\n- A\n\n## 0.2.0 - 2026-10-16\n\n- B\n";
+  const result = findChangelogSection(text, "0.2.0");
   assert.equal(result.ok, false);
-  assert.match(result.reason, /no "## 0.1.43" section/u);
+  assert.match(result.reason, /2 "## 0.2.0" sections/u);
 });
 
 void test("a duplicate section is an error", () => {

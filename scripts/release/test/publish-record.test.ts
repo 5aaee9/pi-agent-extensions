@@ -63,7 +63,7 @@ void test("Release missing: creates only the Release", () => {
   assert.match(actions[0] ?? "", /^gh release create @indexyz\/pi-skill@0.1.44 target=1/u);
 });
 
-void test("legacy dated heading: a tag and no Release", () => {
+void test("legacy dated heading: a tag and a Release from that section", () => {
   const { ops, actions } = world({
     commits: {
       [V1]: { version: "0.1.43", changelog: "# Changelog\n\n## 0.1.43 - 2026-10-11\n\n- Old.\n" },
@@ -75,8 +75,9 @@ void test("legacy dated heading: a tag and no Release", () => {
   assert.deepEqual(actions, [
     "git tag @indexyz/pi-skill@0.1.43 1",
     "git push @indexyz/pi-skill@0.1.43",
+    'gh release create @indexyz/pi-skill@0.1.43 target=1 notes="- Old.\\n"',
   ]);
-  assert.equal(outcomeOf(result, "@indexyz/pi-skill").release, "none (no exact section)");
+  assert.equal(outcomeOf(result, "@indexyz/pi-skill").release, "created");
 });
 
 void test("already complete: nothing to do", () => {

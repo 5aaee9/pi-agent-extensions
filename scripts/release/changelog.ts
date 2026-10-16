@@ -1,17 +1,21 @@
-// Extracts the exact `## <version>` section from a CHANGELOG.md.
+// Extracts the `## <version>` section from a CHANGELOG.md.
 
 const FENCE = /^\s{0,3}(?<marker>`{3,}|~{3,})/u;
 const HEADING = /^(?<level>#{1,2})\s+(?<text>.*?)\s*#*\s*$/u;
+/** `## <version>`, optionally carrying the date it was cut, as history does. */
+const SECTION = /^(?<version>\S+)(?:\s*[-–—]\s*\d{4}-\d{2}-\d{2})?$/u;
 
 export type ChangelogSection =
   | { readonly ok: true; readonly count: 1; readonly body: string }
   | { readonly ok: false; readonly count: number; readonly reason: string };
 
 /**
- * Returns the body of exactly one non-empty `## <version>` section, or the
- * reason it is missing, duplicated, or empty (`count` is the number of matching
- * headings). Headings that carry anything after the version (such as a date)
- * do not match, and headings inside fenced code blocks are ignored.
+ * Returns the body of exactly one non-empty section for `version`, or the reason
+ * it is missing, duplicated, or empty (`count` is the number of matching
+ * headings). A heading names the version with or without the date it was cut
+ * (`## 0.1.44` and `## 0.1.43 - 2026-10-11` both match their own version); any
+ * other trailing text does not match, and headings inside fenced code blocks are
+ * ignored.
  */
 export function findChangelogSection(text: string, version: string): ChangelogSection {
   const sections: string[][] = [];
@@ -35,7 +39,8 @@ export function findChangelogSection(text: string, version: string): ChangelogSe
     const heading = HEADING.exec(line)?.groups;
     if (heading !== undefined) {
       current = undefined;
-      if (heading["level"] === "##" && heading["text"] === version) {
+      const headingText = heading["level"] === "##" ? (heading["text"] ?? "") : "";
+      if (SECTION.exec(headingText)?.groups?.["version"] === version) {
         current = [];
         sections.push(current);
       }

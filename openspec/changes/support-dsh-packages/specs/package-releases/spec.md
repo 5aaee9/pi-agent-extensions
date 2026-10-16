@@ -79,3 +79,22 @@ When a package declares no `release.smoke`, the plan SHALL load its installed ta
 
 - **WHEN** a dsh package's upload passes its declared check and reaches the registry
 - **THEN** its tag `@indexyz/<name>@<version>` and its GitHub Release are created from its version commit exactly as for a Pi package
+
+### Requirement: A dated section heading names its version
+
+A version's changelog section SHALL be headed `## <version>` or `## <version> - <YYYY-MM-DD>`, the date the section was cut. Both forms SHALL select exactly that version's section, so a version whose section carries a date is verified for upload and recorded with a tag and a Release like any other, and its section body SHALL be that Release's notes. A heading that carries anything else after the version SHALL NOT match, and one version named once bare and once dated SHALL remain the duplicate-section error. The dated history the six Pi packages already carry SHALL be read this way, so a run records their missing Releases from those sections; this supersedes the `adopt-independent-package-releases` change, which states that a dated heading matches no version and therefore creates no Release.
+
+#### Scenario: a version whose section carries a date
+
+- **WHEN** a package's changelog holds `## 0.1.43 - 2026-10-11` with a body, and the version is absent from npm or its Release is missing
+- **THEN** the plan reads that body as the `0.1.43` section: the upload check passes for it, and the missing Release is created from it
+
+#### Scenario: trailing text that is not a date
+
+- **WHEN** a heading reads `## 0.1.43 (unreleased)`, `## 0.1.43-draft`, or `## 0.1.430 - 2026-10-11`, and `0.1.43` needs a section
+- **THEN** no section matches, and the version fails as it would with no section at all
+
+#### Scenario: the same version bare and dated
+
+- **WHEN** a changelog holds both `## 0.2.0` and `## 0.2.0 - 2026-10-16` with bodies
+- **THEN** the version fails as a duplicate section, naming the count
