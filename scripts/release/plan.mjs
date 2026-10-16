@@ -26,7 +26,7 @@ import { git, manifestVersionAt, showFile, tagCommit } from "./git.mjs";
 import { releaseState } from "./github.mjs";
 import { validateIntent } from "./intents.mjs";
 import { registryHas } from "./npm.mjs";
-import { inspectTarball, planPackages, rpcAnswered } from "./plan-core.mjs";
+import { inspectTarball, parsePackOutput, planPackages, rpcAnswered } from "./plan-core.mjs";
 import { findVersionCommit } from "./version-commit.mjs";
 import { listPackages } from "./workspace.mjs";
 
@@ -99,7 +99,7 @@ function buildUpload(upload) {
   });
   try {
     runChecked("npm", ["ci", "--no-audit", "--no-fund"], { cwd: worktree });
-    const packed = JSON.parse(
+    const packed = parsePackOutput(
       runChecked("npm", ["pack", "--workspace", upload.name, "--pack-destination", out, "--json"], {
         cwd: worktree,
       }),

@@ -141,3 +141,16 @@ export function rpcAnswered(stdout) {
     }
   });
 }
+
+/**
+ * Parses `npm pack --json` output, which lifecycle scripts (prepack) may
+ * precede on stdout; the JSON array is the last thing printed.
+ */
+export function parsePackOutput(stdout) {
+  const text = stdout.trimEnd();
+  const start = text.startsWith("[") ? 0 : text.lastIndexOf("\n[") + 1;
+  if (start === 0 && !text.startsWith("[")) {
+    throw new Error("npm pack printed no JSON result");
+  }
+  return JSON.parse(text.slice(start));
+}
