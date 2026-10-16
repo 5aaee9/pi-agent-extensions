@@ -35,5 +35,5 @@
 
 ## 5. Integration verification and handover
 
-- [ ] 5.1 Run `npm run check`, `node scripts/release/gate.mjs --base origin/main --head HEAD`, `node scripts/release/version-commit.mjs` for all six packages (expect `b997bd2`), `node scripts/release/plan.mjs` against `main` (expect no uploads, six tag items, no Release items), and the RPC smoke load for all six packages; record the exact commands and results in the pull request description
+- [x] 5.1 Run `npm run check`, `node scripts/release/gate.mjs --base origin/main --head HEAD`, `node scripts/release/version-commit.mjs` for all six packages (expect `b997bd2`), `node scripts/release/plan.mjs` against `main` (expect no uploads, six tag items, no Release items), and the RPC smoke load for all six packages; record the exact commands and results in the pull request description
 - [x] 5.2 Confirm the change contains no version changes, no positive intent other than the `pi-provider-sub2api` patch, and no live publication; state in the handover that merging runs `publish.yml` with nothing to upload and six `0.1.43` tags to create, that the owner should confirm the trusted publishers name `publish.yml` with no environment, and that the first independent release happens only on an explicit request
