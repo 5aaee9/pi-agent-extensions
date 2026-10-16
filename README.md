@@ -41,7 +41,7 @@ npm run check
 pi -e ./pi-provider-sub2api/index.ts
 ```
 
-`npm run check` runs formatting, lint, typechecks, and tests for every package. Try any package from a checkout with `pi -e ./<name>/index.ts`.
+`npm run check` runs the format check, lint, every package's typecheck and tests, and the release-script tests. Try any package from a checkout with `pi -e ./<name>/index.ts`.
 
 Contributors and coding agents start with [`AGENTS.md`](./AGENTS.md), which links the rest of [`docs/`](./docs).
 

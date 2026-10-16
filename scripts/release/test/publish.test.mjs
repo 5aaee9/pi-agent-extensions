@@ -20,8 +20,11 @@ function world({
   releases = [],
   publish = {},
   hashes = {},
+  failingViews = [],
+  failingPush = false,
 }) {
   const actions = [];
+  const views = [];
   const ops = {
     sha256: (tarball) => hashes[tarball] ?? "good",
     npmPublish: (tarball) => {
@@ -31,7 +34,10 @@ function world({
       return { ok: outcome.ok, output: outcome.output ?? "" };
     },
     registryHas: (name, version) => {
-      if (registry === "error") throw new Error("npm view failed (exit 1) E500");
+      views.push(`${name}@${version}`);
+      if (registry === "error" || failingViews.includes(`${name}@${version}`)) {
+        throw new Error("npm view failed (exit 1) E500");
+      }
       return registry.includes(`${name}@${version}`);
     },
     tagCommit: (tag) => tags[tag] ?? null,
@@ -40,7 +46,10 @@ function world({
       actions.push(`git tag ${tag} ${commit.slice(0, 1)}`);
       tags[tag] = commit;
     },
-    pushTag: (tag) => actions.push(`git push ${tag}`),
+    pushTag: (tag) => {
+      if (failingPush) throw new Error("git push failed (exit 128)");
+      actions.push(`git push ${tag}`);
+    },
     changelogAt: (commit) => commits[commit]?.changelog ?? null,
     releaseExists: (tag) => releases.includes(tag),
     createRelease: ({ tag, target, notes }) =>
@@ -49,7 +58,7 @@ function world({
       ),
     log: () => {},
   };
-  return { ops, actions };
+  return { ops, actions, views };
 }
 
 const record = (name, version, versionCommit = V1) => ({
@@ -236,4 +245,64 @@ test("a registry lookup failure in the record step is an error, not absence", ()
   assert.equal(result.ok, false);
   assert.match(result.errors[0], /E500/);
   assert.deepEqual(actions, []);
+});
+
+test("a failed registry re-check after an already-published error fails that upload but still records earlier uploads", () => {
+  const registry = [];
+  const { ops, actions, views } = world({
+    commits: { [V1]: { version: "0.1.44", changelog: section("0.1.44", "- Fix.") } },
+    registry,
+    failingViews: ["@indexyz/pi-continue@0.1.44"],
+    publish: {
+      "pi-skill.tgz": { ok: true, adds: "@indexyz/pi-skill@0.1.44" },
+      "pi-continue.tgz": {
+        ok: false,
+        output: "npm error 403 You cannot publish over the previously published versions: 0.1.44.",
+      },
+    },
+  });
+  const plan = {
+    uploads: [
+      upload("@indexyz/pi-skill", "0.1.44"),
+      upload("@indexyz/pi-continue", "0.1.44"),
+      upload("@indexyz/pi-autocompact", "0.1.44"),
+    ],
+    records: [
+      record("@indexyz/pi-skill", "0.1.44"),
+      record("@indexyz/pi-continue", "0.1.44"),
+      record("@indexyz/pi-autocompact", "0.1.44"),
+    ],
+  };
+  const result = runPublish(plan, ops);
+  assert.equal(result.ok, false);
+  assert.deepEqual(
+    [...result.outcomes].map(([name, o]) => `${name} ${o.upload} ${o.tag}`),
+    [
+      "@indexyz/pi-skill published created",
+      "@indexyz/pi-continue failed unchanged",
+      "@indexyz/pi-autocompact not attempted unchanged",
+    ],
+  );
+  assert.ok(
+    views.includes("@indexyz/pi-skill@0.1.44"),
+    "the earlier upload is confirmed and recorded",
+  );
+  assert.ok(actions.includes("git tag @indexyz/pi-skill@0.1.44 1"));
+  assert.match(
+    result.errors[0],
+    /pi-continue@0.1.44: npm publish failed[\s\S]*registry re-check failed: npm view failed/,
+  );
+});
+
+test("a failed tag push is reported as a tag failure, not a Release failure", () => {
+  const { ops } = world({
+    commits: { [V1]: { version: "0.1.44", changelog: section("0.1.44", "- Fix.") } },
+    registry: ["@indexyz/pi-skill@0.1.44"],
+    failingPush: true,
+  });
+  const result = runPublish({ uploads: [], records: [record("@indexyz/pi-skill", "0.1.44")] }, ops);
+  assert.equal(result.ok, false);
+  const outcome = result.outcomes.get("@indexyz/pi-skill");
+  assert.deepEqual([outcome.tag, outcome.release], ["failed", "unchanged"]);
+  assert.match(result.errors[0], /git push failed/);
 });

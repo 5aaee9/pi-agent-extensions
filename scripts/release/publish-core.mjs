@@ -54,18 +54,24 @@ export function runPublish(plan, ops) {
       state.upload = "published";
       uploaded.push(upload);
       ops.log(`published ${label}`);
-    } else if (
-      ALREADY_PUBLISHED.test(result.output) &&
-      ops.registryHas(upload.name, upload.version)
-    ) {
-      state.upload = "already published";
-      uploaded.push(upload);
-      ops.log(`${label} was already published`);
-    } else {
-      state.upload = "failed";
-      uploadFailed = true;
-      errors.push(`${label}: npm publish failed\n${result.output}`);
+      continue;
     }
+    let failure = `${label}: npm publish failed\n${result.output}`;
+    if (ALREADY_PUBLISHED.test(result.output)) {
+      try {
+        if (ops.registryHas(upload.name, upload.version)) {
+          state.upload = "already published";
+          uploaded.push(upload);
+          ops.log(`${label} was already published`);
+          continue;
+        }
+      } catch (error) {
+        failure += `\nregistry re-check failed: ${error instanceof Error ? error.message : String(error)}`;
+      }
+    }
+    state.upload = "failed";
+    uploadFailed = true;
+    errors.push(failure);
   }
 
   const candidates = [...plan.records];
@@ -76,11 +82,14 @@ export function runPublish(plan, ops) {
   for (const item of candidates) {
     const state = outcome(item);
     const tag = `${item.name}@${item.version}`;
+    // The record step that failed, for the report; a registry failure is neither.
+    let step;
     try {
       if (!ops.registryHas(item.name, item.version)) {
         ops.log(`${tag} is not on the registry; not recorded`);
         continue;
       }
+      step = "tag";
       let recordCommit = ops.tagCommit(tag);
       if (recordCommit === null) {
         ops.createTag(tag, item.versionCommit);
@@ -98,6 +107,7 @@ export function runPublish(plan, ops) {
         state.tag = "existing";
       }
 
+      step = "release";
       const section = findChangelogSection(
         ops.changelogAt(recordCommit, item.dir) ?? "",
         item.version,
@@ -115,7 +125,7 @@ export function runPublish(plan, ops) {
       state.release = "created";
       ops.log(`released ${tag}`);
     } catch (error) {
-      state.release = state.release === "unchanged" ? "failed" : state.release;
+      if (step) state[step] = "failed";
       errors.push(`${tag}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
