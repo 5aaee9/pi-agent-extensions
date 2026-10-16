@@ -1,0 +1,36 @@
+# Proposal
+
+## Why
+
+Every release of this workspace bumps all six `@indexyz/*` packages to one shared version and republishes them from a `v<version>` tag, so a fix in `pi-provider-sub2api` forces new versions of `pi-skill`, `pi-continue`, and the others with changelog entries that say only "Synchronize the package version". The repository also carries no agent instructions or runbook, so the release decision lives in a human's head and a tag rather than in reviewed files. The sibling repository `pi-extensions` already runs agent-managed, independently versioned releases; this change brings that model here, adjusted to this repository's npm workspace, root-level package directories, and the npm trusted publishers that are already bound to `.github/workflows/publish.yml`.
+
+## What Changes
+
+- **Independent versions per package.** The shared-version requirement, `scripts/check-workspace-versions.mjs`, the `check:versions` script, and the repository-wide `v*` tag disappear. Each package keeps its current `0.1.43` and moves on its own from there. **BREAKING** for the release procedure only: pushing a `v*` tag no longer publishes anything; published npm versions and package names are untouched.
+- **Release intents recorded with the change.** Every pull request that changes a package's published content records a release decision as a `.changeset/<id>.md` intent (`patch`, `minor`, `major`, or `none` with a reason) written for users, naming the full `@indexyz/<name>`. Intents are consumed by the agent, never by CI.
+- **Agent-prepared releases.** On an explicit release request, an agent consumes pending intents locally (all of them, or a subset by ignoring packages), reviews the resulting versions and `CHANGELOG.md` sections, and lands them as a release commit on `main` (through a pull request or a direct push, as the owner decides). Pushing that commit to `main` is the publication boundary.
+- **CI publishes only what is missing from the registry and records every published version.** `publish.yml` keeps its file name and directory because the npm trusted publishers for all six packages are bound to it, but it now runs on pushes to `main` (and on manual dispatch from `main`, for retries) instead of on tags. A plan job without publishing credentials determines which package versions are absent from npm, builds each one from the commit that introduced that version, rejects a version that lacks a unique `## <version>` changelog section or whose packed tarball does not load in Pi, and works out which published versions still lack their tag or GitHub Release; only then does the publish job (the only job with `id-token: write`) upload the verified tarballs and create the missing `@indexyz/<name>@<version>` tags, each at the version's commit, and the missing GitHub Releases carrying that version's changelog section. Artifacts and records are derived from the committed state, so any rerun completes an interrupted release with exactly what was prepared. A push that changes no version and leaves no record missing is a successful no-op.
+- **Release-impact gate on pull requests.** `lint.yml` keeps its file name and gains a per-package check: a pull request that changes a package's published files must add or modify an intent naming that package (or be a release preparation). An intent already pending on `main` does not cover new changes.
+- **One agent instruction surface, merged from both repositories.** `AGENTS.md` (rules, commands, index), `CLAUDE.md` containing only `@AGENTS.md`, `docs/architecture.md`, `docs/conventions.md`, `docs/workflow.md`, `docs/releases.md`, `docs/pi-reference.md`, and `.agents/skills/pi-extension-dev/SKILL.md` are created from the reference repository's documents and rewritten for this repository: npm (not pnpm), oxlint and oxfmt (not Biome), root-level `pi-*/` package directories, per-package `tsconfig.json`, `vitest.config.ts`, and dev dependencies, the `@indexyz` scope, the `main` branch, and the existing commit-scope convention. The empty `openspec/config.yaml` gets this repository's context and rules, and each package gets its own OpenSpec root at `<pkg>/openspec/` for package-scoped changes.
+- **Removed obsolete paths.** The six `pack:*` root scripts, the README "Releases" section, and the package READMEs' release checklists go; the root README documents the new install, tag, and release model instead.
+- **Decisions for content already on `main`.** The fix merged in `52e5517` changed `pi-provider-sub2api`'s published files after `0.1.43` without a release decision; this change records its `patch` intent, and `none` intents for the five packages whose only published change is their README.
+
+## Capabilities
+
+### New Capabilities
+
+- `package-releases`: how packages are versioned, which package versions CI publishes from `main`, how tags and GitHub Releases record them, what the pull-request release-impact gate enforces, and how a failed or partial publication is retried.
+- `agent-release-workflow`: the procedure agents follow to record release intents during feature work, prepare and review a release locally, hand it over for publication, and report the outcome truthfully.
+- `agent-guidance`: the repository's agent instruction surface (`AGENTS.md`, `CLAUDE.md`, `docs/`, the `pi-extension-dev` skill, OpenSpec roots) and the invariants it must keep true for this repository.
+
+### Modified Capabilities
+
+None; the repository has no main specs yet.
+
+## Impact
+
+- **Workflows:** `.github/workflows/publish.yml` (trigger, jobs, permissions; file name and path unchanged) and `.github/workflows/lint.yml` (adds the release-impact gate and intent validation; file name unchanged). No npm-side configuration changes: trusted publishing binds owner, repository, and workflow file name only.
+- **Root tooling:** `package.json` (new `@changesets/cli`, `@changesets/read`, and `@changesets/parse` dev dependencies, new `change`/`release`/`test:scripts` scripts, removed `check:versions` and `pack:*`), `package-lock.json`, new `.changeset/config.json`, `.changeset/changelog.mjs`, and `.changeset/README.md`, new `scripts/release/` tooling (release-impact gate, version-commit lookup, changelog section extraction, the plan step that builds and verifies tarballs at each version's commit, and the publish step that uploads and records) with tests, removed `scripts/check-workspace-versions.mjs`.
+- **Packages:** no runtime code changes. `CHANGELOG.md` files keep their history and receive new sections in the changesets format. Each package gains an `openspec/` root (excluded from `files`) and an updated README; six intent files record those decisions.
+- **Documentation:** new `AGENTS.md`, `CLAUDE.md`, `docs/*.md`, `.agents/skills/pi-extension-dev/SKILL.md`; updated root `README.md` and each package README's install section; filled `openspec/config.yaml`.
+- **Published artifacts:** none during this change. Merging it runs the new workflow once with nothing to upload; that run creates the six `@indexyz/<name>@0.1.43` tags at the commit that set those versions. The first independent release happens later, on an explicit request, and publishes only packages with pending positive intents.
