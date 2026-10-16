@@ -1,7 +1,8 @@
 // Publish step (CI only; needs npm trusted publishing and contents: write):
 //   node scripts/release/publish.ts --dir <dir>
-// Uploads the tarballs verified by plan.ts, then creates missing tags and
-// GitHub Releases for every published version in the plan.
+// Uploads the tarballs verified by plan.ts, waits out registry propagation,
+// then creates missing tags and GitHub Releases for every published version in
+// the plan.
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 

@@ -1,10 +1,20 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { interpretView } from "../npm.ts";
+import { interpretView, viewArgs } from "../npm.ts";
 
 const view = (code: number, stdout: string, stderr = ""): boolean =>
   interpretView({ code, stdout, stderr }, "@indexyz/pi-skill", "0.1.44");
+
+void test("a lookup revalidates, because the publish step waits on it", () => {
+  assert.deepEqual(viewArgs("@indexyz/pi-skill", "0.1.44"), [
+    "view",
+    "@indexyz/pi-skill@0.1.44",
+    "version",
+    "--json",
+    "--prefer-online",
+  ]);
+});
 
 void test("a successful response confirming the version means present", () => {
   assert.equal(view(0, '"0.1.44"\n'), true);

@@ -29,9 +29,20 @@ export function interpretView(result: RunResult, name: string, version: string):
   );
 }
 
+/**
+ * The arguments of a registry lookup. The lookup decides what the registry
+ * serves right now — the publish step waits on it for a version it has just
+ * uploaded — so it revalidates with `--prefer-online`: npm shares its cache
+ * with the upload, and a cached package document from before that upload would
+ * keep answering that the version is absent.
+ */
+export function viewArgs(name: string, version: string): string[] {
+  return ["view", `${name}@${version}`, "version", "--json", "--prefer-online"];
+}
+
 /** Whether `<name>@<version>` is on the registry (see `interpretView`). */
 export function registryHas(name: string, version: string): boolean {
-  const result = run("npm", ["view", `${name}@${version}`, "version", "--json"]);
+  const result = run("npm", viewArgs(name, version));
   return interpretView(result, name, version);
 }
 

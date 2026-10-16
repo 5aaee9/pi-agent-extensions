@@ -1,4 +1,6 @@
 // Real Git, npm, and GitHub implementations of the plan and publish operations.
+import { performance } from "node:perf_hooks";
+
 import { runChecked } from "./exec.ts";
 import { manifestVersionAt, showFile, tagCommit } from "./git.ts";
 import { createRelease, releaseState } from "./github.ts";
@@ -35,6 +37,15 @@ export function createPublishOps(cwd: string): PublishOps {
     sha256: sha256File,
     npmPublish,
     registryHas,
+    // Monotonic elapsed time: the wait budget is a hard ceiling, and a wall
+    // clock a time correction moves backwards would extend it.
+    now: () => performance.now(),
+    sleep: (ms) => {
+      // The whole engine is synchronous (`spawnSync`, `gh`), and the publish job
+      // has nothing else to do while it waits out registry propagation, so the
+      // sleep blocks without spinning instead of turning the step asynchronous.
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+    },
     tagCommit: (tag) => tagCommit(tag, cwd),
     manifestVersionAt: (commit, dir) => manifestVersionAt(commit, dir, cwd),
     createTag: (tag, commit) => {

@@ -4,17 +4,14 @@ import { test } from "node:test";
 import { runPublish } from "../publish-core.ts";
 import { V1, outcomeOf, record, section, summary, upload, world } from "./publish-world.ts";
 
+const ALREADY = "npm error 403 You cannot publish over the previously published versions: 0.1.44.";
+
 void test("already published during upload: counted as published and recorded", () => {
   const registry = ["@indexyz/pi-skill@0.1.44"];
-  const { ops, actions } = world({
+  const { ops, actions, waits } = world({
     commits: { [V1]: { version: "0.1.44", changelog: section("0.1.44", "- Fix.") } },
     registry,
-    publish: {
-      "pi-skill.tgz": {
-        ok: false,
-        output: "npm error 403 You cannot publish over the previously published versions: 0.1.44.",
-      },
-    },
+    publish: { "pi-skill.tgz": { ok: false, output: ALREADY } },
   });
   const plan = {
     uploads: [upload("@indexyz/pi-skill", "0.1.44")],
@@ -23,6 +20,7 @@ void test("already published during upload: counted as published and recorded", 
   const result = runPublish(plan, ops);
   assert.equal(result.ok, true);
   assert.equal(outcomeOf(result, "@indexyz/pi-skill").upload, "already published");
+  assert.deepEqual(waits, []);
   assert.deepEqual(actions.slice(0, 3), [
     "npm publish pi-skill.tgz",
     "git tag @indexyz/pi-skill@0.1.44 1",
@@ -31,7 +29,7 @@ void test("already published during upload: counted as published and recorded", 
 });
 
 void test("second upload fails after the first succeeded: the first is recorded, later uploads are not attempted", () => {
-  const { ops, actions } = world({
+  const { ops, actions, waits } = world({
     commits: { [V1]: { version: "0.1.44", changelog: section("0.1.44", "- Fix.") } },
     registry: [],
     publish: {
@@ -65,6 +63,8 @@ void test("second upload fails after the first succeeded: the first is recorded,
   assert.ok(actions.includes("git tag @indexyz/pi-skill@0.1.44 1"));
   assert.ok(!actions.some((a) => a.includes("pi-continue@") || a.includes("pi-autocompact@")));
   assert.match(result.errors[0] ?? "", /pi-continue@0.1.44: npm publish failed/u);
+  // A failed and an unattempted upload are not waited for.
+  assert.deepEqual(waits, []);
 });
 
 void test("a tarball whose hash differs from the plan stops everything before upload", () => {
@@ -76,16 +76,13 @@ void test("a tarball whose hash differs from the plan stops everything before up
 });
 
 void test("a failed registry re-check after an already-published error fails that upload but still records earlier uploads", () => {
-  const { ops, actions, views } = world({
+  const { ops, actions, views, waits } = world({
     commits: { [V1]: { version: "0.1.44", changelog: section("0.1.44", "- Fix.") } },
     registry: [],
     failingViews: ["@indexyz/pi-continue@0.1.44"],
     publish: {
       "pi-skill.tgz": { ok: true, adds: "@indexyz/pi-skill@0.1.44" },
-      "pi-continue.tgz": {
-        ok: false,
-        output: "npm error 403 You cannot publish over the previously published versions: 0.1.44.",
-      },
+      "pi-continue.tgz": { ok: false, output: ALREADY },
     },
   });
   const plan = {
@@ -116,21 +113,6 @@ void test("a failed registry re-check after an already-published error fails tha
     result.errors[0] ?? "",
     /pi-continue@0.1.44: npm publish failed[\s\S]*registry re-check failed: npm view failed/u,
   );
-});
-
-void test("an upload that succeeded but is not visible on the registry yet fails the run without recording", () => {
-  const { ops, actions } = world({
-    commits: { [V1]: { version: "0.1.44", changelog: section("0.1.44", "- Fix.") } },
-    registry: [],
-    publish: { "pi-skill.tgz": { ok: true } },
-  });
-  const plan = {
-    uploads: [upload("@indexyz/pi-skill", "0.1.44")],
-    records: [record("@indexyz/pi-skill", "0.1.44")],
-  };
-  const result = runPublish(plan, ops);
-  assert.equal(result.ok, false);
-  assert.equal(outcomeOf(result, "@indexyz/pi-skill").upload, "published");
-  assert.match(result.errors[0] ?? "", /pi-skill@0.1.44: not visible on the registry yet/u);
-  assert.deepEqual(actions, ["npm publish pi-skill.tgz"]);
+  // A lookup that fails is not absence, so nothing is waited for.
+  assert.deepEqual(waits, []);
 });

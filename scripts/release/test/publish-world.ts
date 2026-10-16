@@ -25,8 +25,14 @@ interface CommitFacts {
 interface UploadBehaviour {
   readonly ok: boolean;
   readonly output?: string;
-  /** A version the registry shows once this upload succeeds. */
+  /**
+   * A version the registry serves for this upload — because npm accepted it, or
+   * because npm refused it as already published. Absent means the registry
+   * never serves the version this upload names.
+   */
   readonly adds?: string;
+  /** Registry propagation: milliseconds before `adds` starts being served. */
+  readonly visibleAfter?: number;
 }
 
 export interface World {
@@ -41,10 +47,17 @@ export interface World {
   readonly failingPush?: boolean;
 }
 
+/** The virtual clock the wait budget is measured against. */
+interface Clock {
+  readonly now: () => number;
+  readonly advance: (ms: number) => void;
+}
+
 /** Collects what the doubles observe. */
 interface Recorder {
   readonly action: (line: string) => void;
   readonly view: (spec: string) => void;
+  readonly wait: (ms: number) => void;
 }
 
 export interface Doubles {
@@ -53,21 +66,54 @@ export interface Doubles {
   readonly actions: readonly string[];
   /** Registry lookups, in order. */
   readonly views: readonly string[];
+  /** Every waited duration, in order; their sum is the run's total waiting. */
+  readonly waits: readonly number[];
+}
+
+/** A clock the wait can advance without spending real time. */
+function virtualClock(): Clock {
+  let elapsed = 0;
+  return {
+    now: () => elapsed,
+    advance: (ms) => {
+      elapsed += ms;
+    },
+  };
+}
+
+/** The clock and the sleep the wait budget runs on. */
+function timeOps(clock: Clock, recorder: Recorder): Pick<PublishOps, "now" | "sleep"> {
+  return {
+    now: () => clock.now(),
+    sleep: (ms) => {
+      recorder.wait(ms);
+      clock.advance(ms);
+    },
+  };
 }
 
 /** Registry doubles: uploads may add versions; lookups may fail. */
 function registryOps(
   facts: World,
   recorder: Recorder,
+  clock: Clock,
 ): Pick<PublishOps, "npmPublish" | "registryHas" | "sha256"> {
   const registry = facts.registry === "error" ? "error" : [...(facts.registry ?? [])];
+  /** Versions the registry does not serve before `at`, in milliseconds. */
+  const propagating: { readonly spec: string; readonly at: number }[] = [];
   return {
     sha256: (tarball) => facts.hashes?.[tarball] ?? "good",
     npmPublish: (tarball): PublishResult => {
       recorder.action(`npm publish ${tarball}`);
-      const outcome = facts.publish?.[tarball] ?? { ok: true };
-      if (outcome.ok && outcome.adds !== undefined && registry !== "error") {
-        registry.push(outcome.adds);
+      const outcome: UploadBehaviour = facts.publish?.[tarball] ?? { ok: true };
+      const added = outcome.adds;
+      if (added !== undefined && registry !== "error") {
+        const propagation = outcome.visibleAfter ?? 0;
+        if (propagation === 0) {
+          registry.push(added);
+        } else {
+          propagating.push({ spec: added, at: clock.now() + propagation });
+        }
       }
       return { ok: outcome.ok, output: outcome.output ?? "" };
     },
@@ -77,7 +123,10 @@ function registryOps(
       if (registry === "error" || (facts.failingViews ?? []).includes(spec)) {
         throw new Error("npm view failed (exit 1) E500");
       }
-      return registry.includes(spec);
+      return (
+        registry.includes(spec) ||
+        propagating.some((entry) => entry.spec === spec && clock.now() >= entry.at)
+      );
     },
   };
 }
@@ -86,7 +135,7 @@ function registryOps(
 function recordOps(
   facts: World,
   recorder: Recorder,
-): Omit<PublishOps, "npmPublish" | "registryHas" | "sha256"> {
+): Omit<PublishOps, "npmPublish" | "registryHas" | "sha256" | "now" | "sleep"> {
   const tags: Record<string, string> = { ...facts.tags };
   return {
     tagCommit: (tag) => tags[tag] ?? null,
@@ -113,10 +162,12 @@ function recordOps(
   };
 }
 
-/** Command doubles recording every side effect and registry lookup. */
+/** Command doubles recording every side effect, registry lookup, and wait. */
 export function world(facts: World): Doubles {
   const actions: string[] = [];
   const views: string[] = [];
+  const waits: number[] = [];
+  const clock = virtualClock();
   const recorder: Recorder = {
     action: (line) => {
       actions.push(line);
@@ -124,11 +175,19 @@ export function world(facts: World): Doubles {
     view: (spec) => {
       views.push(spec);
     },
+    wait: (ms) => {
+      waits.push(ms);
+    },
   };
   return {
-    ops: { ...registryOps(facts, recorder), ...recordOps(facts, recorder) },
+    ops: {
+      ...timeOps(clock, recorder),
+      ...registryOps(facts, recorder, clock),
+      ...recordOps(facts, recorder),
+    },
     actions,
     views,
+    waits,
   };
 }
 

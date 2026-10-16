@@ -99,7 +99,7 @@ void test("legacy dated heading: a tag and a Release from that section", () => {
 });
 
 void test("already complete: nothing to do", () => {
-  const { ops, actions } = world({
+  const { ops, actions, waits } = world({
     commits: { [V1]: { version: "0.1.44", changelog: section("0.1.44", "- Fix.") } },
     tags: { "@indexyz/pi-skill@0.1.44": V1 },
     registry: ["@indexyz/pi-skill@0.1.44"],
@@ -108,13 +108,31 @@ void test("already complete: nothing to do", () => {
   const result = runPublish({ uploads: [], records: [record("@indexyz/pi-skill", "0.1.44")] }, ops);
   assert.equal(result.ok, true);
   assert.deepEqual(actions, []);
+  assert.deepEqual(waits, []);
 });
 
 void test("a registry lookup failure in the record step is an error, not absence", () => {
-  const { ops, actions } = world({ registry: "error" });
+  const { ops, actions, waits } = world({ registry: "error" });
   const result = runPublish({ uploads: [], records: [record("@indexyz/pi-skill", "0.1.44")] }, ops);
   assert.equal(result.ok, false);
   assert.match(result.errors[0] ?? "", /E500/u);
+  assert.deepEqual(actions, []);
+  assert.deepEqual(waits, [], "a failing lookup is not waited on");
+});
+
+void test("a version the plan confirmed but the registry no longer shows is waited for and then fails", () => {
+  const { ops, actions, waits } = world({ registry: [] });
+  const result = runPublish({ uploads: [], records: [record("@indexyz/pi-skill", "0.1.44")] }, ops);
+  assert.equal(result.ok, false);
+  assert.equal(outcomeOf(result, "@indexyz/pi-skill").tag, "unchanged");
+  assert.match(
+    result.errors[0] ?? "",
+    /pi-skill@0\.1\.44: not visible on the registry after 30 minutes of waiting; rerun the workflow to record it/u,
+  );
+  assert.equal(
+    waits.reduce((sum, value) => sum + value, 0),
+    1_800_000,
+  );
   assert.deepEqual(actions, []);
 });
 
