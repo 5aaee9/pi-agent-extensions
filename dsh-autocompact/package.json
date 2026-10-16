@@ -1,0 +1,109 @@
+{
+  "name": "@indexyz/dsh-autocompact",
+  "version": "0.1.0",
+  "description": "Set session-only per-model automatic compaction thresholds with /autocompact",
+  "keywords": [
+    "compaction",
+    "context",
+    "cordis",
+    "deepseek-harness",
+    "dsh",
+    "dsh-package",
+    "plugin"
+  ],
+  "homepage": "https://github.com/5aaee9/pi-agent-extensions/tree/main/dsh-autocompact#readme",
+  "bugs": {
+    "url": "https://github.com/5aaee9/pi-agent-extensions/issues"
+  },
+  "license": "MIT",
+  "author": "5aaee9",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/5aaee9/pi-agent-extensions.git",
+    "directory": "dsh-autocompact"
+  },
+  "files": [
+    "lib",
+    "src",
+    "client.js",
+    "cordis.patch.yml",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "npm run build:host && npm run build:client",
+    "build:host": "tsc -p tsconfig.build.json",
+    "build:client": "tsdown",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm run build && npm test",
+    "prepack": "npm run check"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "4.0.5",
+    "@deepseek-ai/dsh-agent": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-agent-preset-registry": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-commands": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-compaction": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-llm": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-session": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-token-meter": "0.2.0-rc.2",
+    "@deepseek-ai/schemastery": "^3.18.4",
+    "@types/node": "^24.0.0",
+    "@types/react": "^18.3.31",
+    "@types/react-test-renderer": "^18.3.1",
+    "react": "^18.3.1",
+    "react-test-renderer": "^18.3.1",
+    "tsdown": "^0.23.1",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/dsh-agent": "*",
+    "@deepseek-ai/dsh-agent-preset-registry": "*",
+    "@deepseek-ai/dsh-commands": "*",
+    "@deepseek-ai/dsh-compaction": "*",
+    "@deepseek-ai/dsh-llm": "*",
+    "@deepseek-ai/dsh-session": "*",
+    "@deepseek-ai/dsh-token-meter": "*",
+    "@deepseek-ai/schemastery": "*"
+  },
+  "release": {
+    "smoke": "test/smoke-release.ts"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-api-remotes",
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ]
+    }
+  }
+}

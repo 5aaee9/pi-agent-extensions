@@ -1,0 +1,7 @@
+# Bundle patch layer: the row loads this package's main entry as the Host half
+# (a plain Cordis plugin exporting `apply`, `inject`, and `Config`).
+- insert:
+    - id: autocompact
+      name: "@indexyz/dsh-autocompact"
+      config:
+        modelLimits: {}
