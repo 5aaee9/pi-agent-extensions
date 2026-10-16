@@ -28,7 +28,9 @@ References are relative to /path/to/code-review.
 pi install npm:@indexyz/pi-skill
 ```
 
-For local development:
+Releases are published to npm as `@indexyz/pi-skill`; each release is tagged `@indexyz/pi-skill@<version>`.
+
+To try a repository checkout (after `npm install` at the repository root):
 
 ```bash
 pi -e ./pi-skill/index.ts
@@ -61,10 +63,6 @@ autocomplete popup listing every loaded skill with its description, just like
 npm install
 npm run check --workspace @indexyz/pi-skill
 ```
-
-## Release
-
-The repository's `v*` tag workflow checks all workspaces and publishes every local version that is not already on npm. Configure `@indexyz/pi-skill` as an npm trusted publisher for `5aaee9/pi-agent-extensions` and `.github/workflows/publish.yml`; the workflow uses short-lived OIDC credentials instead of a stored npm token.
 
 ## License
 

@@ -4,9 +4,21 @@ Set an earlier automatic compaction threshold for the current model, **in memory
 for the current session only**. Requires **Pi 0.87.1 or newer** (actionable session
 boundaries).
 
+## Install
+
 ```bash
 pi install npm:@indexyz/pi-autocompact
 ```
+
+Releases are published to npm as `@indexyz/pi-autocompact`; each release is tagged `@indexyz/pi-autocompact@<version>`.
+
+To try a repository checkout (after `npm install` at the repository root):
+
+```bash
+pi -e ./pi-autocompact/index.ts
+```
+
+## Usage
 
 ```text
 /autocompact 300k    # 300,000 tokens, current session/model only

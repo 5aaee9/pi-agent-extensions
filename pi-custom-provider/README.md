@@ -17,7 +17,9 @@
 pi install npm:@indexyz/pi-custom-provider
 ```
 
-本地试用：
+发布版本发布到 npm 上的 `@indexyz/pi-custom-provider`，每个版本的 tag 为 `@indexyz/pi-custom-provider@<version>`。
+
+在仓库根目录执行 `npm install` 后，可直接试用仓库中的代码：
 
 ```bash
 pi -e ./pi-custom-provider/index.ts
@@ -228,7 +230,6 @@ provider 名称无法自动匹配时，可以指定 models.dev provider：
 ```bash
 npm install
 npm run check
-npm run pack:custom-provider
 ```
 
 ## License

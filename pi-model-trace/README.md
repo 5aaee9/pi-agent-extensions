@@ -2,6 +2,20 @@
 
 Attribute the model actually serving pi via [ModelTrace](https://github.com/xqy2006/ModelTrace) numeric fingerprinting.
 
+## Install
+
+```bash
+pi install npm:@indexyz/pi-model-trace
+```
+
+Releases are published to npm as `@indexyz/pi-model-trace`; each release is tagged `@indexyz/pi-model-trace@<version>`.
+
+To try a repository checkout (after `npm install` at the repository root):
+
+```bash
+pi -e ./pi-model-trace/index.ts
+```
+
 ## Usage
 
 ```

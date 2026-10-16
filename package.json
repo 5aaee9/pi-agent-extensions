@@ -22,24 +22,30 @@
   ],
   "type": "module",
   "scripts": {
-    "check:versions": "node scripts/check-workspace-versions.mjs",
     "test": "npm test --workspaces --if-present",
-    "typecheck": "npm run typecheck --workspaces --if-present",
-    "lint": "oxlint --deny-warnings .",
-    "lint:fix": "oxlint --fix .",
+    "test:scripts": "node --test \"scripts/release/test/*.test.ts\"",
+    "typecheck": "tsc -p tsconfig.json && npm run typecheck --workspaces --if-present",
+    "lint": "oxlint --deny-warnings . && npm run lint:tooling",
+    "lint:tooling": "oxlint --disable-nested-config -c .oxlintrc.tooling.json scripts .changeset",
+    "lint:fix": "oxlint --fix . && oxlint --fix --disable-nested-config -c .oxlintrc.tooling.json scripts .changeset",
     "format": "oxfmt .",
     "format:check": "oxfmt --check .",
-    "check": "npm run check:versions && npm run format:check && npm run lint && npm run typecheck && npm test",
-    "pack:sub2api": "npm pack --workspace @indexyz/pi-provider-sub2api --dry-run",
-    "pack:custom-provider": "npm pack --workspace @indexyz/pi-custom-provider --dry-run",
-    "pack:continue": "npm pack --workspace @indexyz/pi-continue --dry-run",
-    "pack:skill": "npm pack --workspace @indexyz/pi-skill --dry-run",
-    "pack:model-trace": "npm pack --workspace @indexyz/pi-model-trace --dry-run",
-    "pack:autocompact": "npm pack --workspace @indexyz/pi-autocompact --dry-run"
+    "check": "npm run format:check && npm run lint && npm run typecheck && npm test && npm run test:scripts",
+    "change": "changeset add",
+    "change:status": "changeset status",
+    "release:version": "changeset version",
+    "release:gate": "node scripts/release/gate.ts"
   },
   "devDependencies": {
+    "@changesets/cli": "^3.0.3",
+    "@changesets/parse": "^1.0.0",
+    "@changesets/read": "^1.0.1",
+    "@changesets/types": "^7.0.0",
+    "@types/node": "^24.19.2",
     "oxfmt": "^0.62.0",
-    "oxlint": "^1.77.0"
+    "oxlint": "^1.77.0",
+    "oxlint-tsgolint": "^7.0.2004",
+    "typescript": "^7.0.2"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": ">=0.83.0",

@@ -14,7 +14,9 @@ A [pi](https://github.com/earendil-works/pi-mono) provider extension for Sub2API
 pi install npm:@indexyz/pi-provider-sub2api
 ```
 
-To try the extension from this repository without installing it:
+Releases are published to npm as `@indexyz/pi-provider-sub2api`; each release is tagged `@indexyz/pi-provider-sub2api@<version>`.
+
+To try the extension from this repository without installing it (after `npm install` at the repository root):
 
 ```bash
 pi -e ./pi-provider-sub2api/index.ts
@@ -338,31 +340,7 @@ npm install
 npm run format
 npm run lint
 npm run check
-npm run pack:sub2api
 ```
-
-## Release checklist
-
-Releases use npm trusted publishing through [`.github/workflows/publish.yml`](https://github.com/5aaee9/pi-agent-extensions/blob/main/.github/workflows/publish.yml); no long-lived npm token is stored in GitHub. A release run checks every workspace and publishes each local package version that does not already exist on npm, so `pi-provider-sub2api` and `pi-continue` can ship together or independently from the same workflow.
-
-### Trusted publisher setup
-
-Each npm package's GitHub Actions trusted publisher is configured with:
-
-- Organization or user: `5aaee9`
-- Repository: `pi-agent-extensions`
-- Workflow filename: `publish.yml`
-- Allowed action: `npm publish`
-
-For each release:
-
-1. Update the version and `CHANGELOG.md` for each package being released.
-2. Run `npm run check` and inspect the corresponding `npm run pack:*` commands.
-3. Commit and push the release commit to `main`.
-4. Create and push the next repository `v*` release tag.
-5. Confirm the **Publish Packages** workflow completed, then create the matching GitHub release.
-
-The workflow fails when every local workspace version is already published. Otherwise it skips existing versions and publishes only unpublished ones from a GitHub-hosted runner using npm's short-lived OIDC credentials.
 
 ## Acknowledgements
 

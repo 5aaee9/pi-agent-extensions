@@ -8,7 +8,9 @@ A pi extension that adds `/continue` for resuming the most recently interrupted 
 pi install npm:@indexyz/pi-continue
 ```
 
-For local development:
+Releases are published to npm as `@indexyz/pi-continue`; each release is tagged `@indexyz/pi-continue@<version>`.
+
+To try a repository checkout (after `npm install` at the repository root):
 
 ```bash
 pi -e ./pi-continue/index.ts
@@ -36,10 +38,6 @@ The command waits for the run to settle, verifies that the current branch ends i
 npm install
 npm run check --workspace @indexyz/pi-continue
 ```
-
-## Release
-
-The repository's `v*` tag workflow checks all workspaces and publishes every local version that is not already on npm. Configure `@indexyz/pi-continue` as an npm trusted publisher for `5aaee9/pi-agent-extensions` and `.github/workflows/publish.yml`; the workflow uses short-lived OIDC credentials instead of a stored npm token.
 
 ## License
 

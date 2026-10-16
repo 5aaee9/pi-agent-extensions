@@ -1,0 +1,34 @@
+schema: spec-driven
+
+# This root covers repository-wide work only: root tooling, CI workflows,
+# release tooling, docs/, AGENTS.md, and the conventions every package follows.
+# Each extension package keeps its own OpenSpec root at <name>/openspec/ and
+# every change for that package lives there.
+context: |
+  Scope: this OpenSpec root is for repository-wide changes only (root
+  package.json and lockfile, scripts/, .changeset/ configuration,
+  .github/workflows/, docs/, AGENTS.md, conventions). Changes to one extension
+  package belong in <name>/openspec/ (for example pi-skill/openspec/); run
+  OpenSpec commands with that package directory as the working directory so
+  the nearest root resolves to the package. Do not create package-scoped
+  changes or specs here.
+
+  Repository: npm workspaces (package-lock.json) with six Pi extension
+  packages in root-level pi-*/ directories, published independently as
+  @indexyz/<name>. Each package owns its tsconfig.json, vitest.config.ts, and
+  dev dependencies (including its pinned Pi host version). oxlint and oxfmt
+  run from the root. Default branch: main.
+
+  Constraints: follow AGENTS.md and docs/conventions.md. The root contains no
+  extension runtime code. All code is strict TypeScript (.ts); never add .js,
+  .mjs, or .cjs files. Releases follow docs/releases.md.
+
+rules:
+  proposal:
+    - State which packages, if any, are affected and why the change is
+      repository-wide rather than package-scoped.
+    - When published package files change, name the release decision each
+      affected package needs.
+  tasks:
+    - End with a verification task that runs `npm run check` and, when
+      packages are affected, the load smoke test from docs/workflow.md.
