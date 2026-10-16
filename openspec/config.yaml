@@ -20,7 +20,8 @@ context: |
   run from the root. Default branch: main.
 
   Constraints: follow AGENTS.md and docs/conventions.md. The root contains no
-  extension runtime code. Releases follow docs/releases.md.
+  extension runtime code. All code is strict TypeScript (.ts); never add .js,
+  .mjs, or .cjs files. Releases follow docs/releases.md.
 
 rules:
   proposal:

@@ -1,0 +1,49 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["typescript", "unicorn", "oxc", "import", "node", "promise"],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "error",
+    "pedantic": "error",
+    "perf": "error"
+  },
+  "rules": {
+    "typescript/no-explicit-any": "error",
+    "typescript/no-non-null-assertion": "error",
+    "typescript/explicit-module-boundary-types": "error",
+    "typescript/explicit-function-return-type": "error",
+    "typescript/no-unsafe-assignment": "error",
+    "typescript/no-unsafe-member-access": "error",
+    "typescript/no-unsafe-call": "error",
+    "typescript/no-unsafe-return": "error",
+    "typescript/no-unsafe-argument": "error",
+    "typescript/strict-boolean-expressions": "error",
+    "typescript/switch-exhaustiveness-check": "error",
+    "typescript/ban-ts-comment": "error",
+    "typescript/restrict-template-expressions": "error",
+    "typescript/no-unnecessary-condition": "error",
+    "typescript/prefer-nullish-coalescing": "error",
+    "typescript/no-unnecessary-type-assertion": "error",
+    "typescript/return-await": "error",
+    "typescript/promise-function-async": "error",
+    "typescript/require-await": "error",
+    "typescript/no-deprecated": "error",
+    "typescript/consistent-type-imports": "error",
+    "typescript/no-import-type-side-effects": "error",
+    "eslint/eqeqeq": "error",
+    "eslint/no-var": "error",
+    "eslint/prefer-const": "error",
+    "eslint/no-param-reassign": "error",
+    "eslint/default-case-last": "error",
+    "eslint/no-implicit-coercion": "error"
+  },
+  "env": {
+    "builtin": true,
+    "node": true
+  },
+  "options": {
+    "typeAware": true,
+    "denyWarnings": true,
+    "reportUnusedDisableDirectives": "error"
+  }
+}

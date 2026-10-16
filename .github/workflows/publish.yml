@@ -55,7 +55,7 @@ jobs:
 
       - name: Plan publication
         id: plan
-        run: node scripts/release/plan.mjs --out "$RUNNER_TEMP/release-batch"
+        run: node scripts/release/plan.ts --out "$RUNNER_TEMP/release-batch"
 
       - name: Upload release batch
         if: steps.plan.outputs.publish == 'true'
@@ -99,4 +99,4 @@ jobs:
           path: ${{ runner.temp }}/release-batch
 
       - name: Publish and record
-        run: node scripts/release/publish.mjs --dir "$RUNNER_TEMP/release-batch"
+        run: node scripts/release/publish.ts --dir "$RUNNER_TEMP/release-batch"

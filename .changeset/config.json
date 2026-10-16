@@ -8,5 +8,5 @@
     "tag": false
   },
   "format": false,
-  "changelog": "./changelog.mjs"
+  "changelog": "./changelog.ts"
 }

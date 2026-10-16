@@ -23,24 +23,29 @@
   "type": "module",
   "scripts": {
     "test": "npm test --workspaces --if-present",
-    "test:scripts": "node --test \"scripts/release/test/*.test.mjs\"",
-    "typecheck": "npm run typecheck --workspaces --if-present",
-    "lint": "oxlint --deny-warnings .",
-    "lint:fix": "oxlint --fix .",
+    "test:scripts": "node --test \"scripts/release/test/*.test.ts\"",
+    "typecheck": "tsc -p tsconfig.json && npm run typecheck --workspaces --if-present",
+    "lint": "oxlint --deny-warnings . && npm run lint:tooling",
+    "lint:tooling": "oxlint --disable-nested-config -c .oxlintrc.tooling.json scripts .changeset",
+    "lint:fix": "oxlint --fix . && oxlint --fix --disable-nested-config -c .oxlintrc.tooling.json scripts .changeset",
     "format": "oxfmt .",
     "format:check": "oxfmt --check .",
     "check": "npm run format:check && npm run lint && npm run typecheck && npm test && npm run test:scripts",
     "change": "changeset add",
     "change:status": "changeset status",
     "release:version": "changeset version",
-    "release:gate": "node scripts/release/gate.mjs"
+    "release:gate": "node scripts/release/gate.ts"
   },
   "devDependencies": {
     "@changesets/cli": "^3.0.3",
     "@changesets/parse": "^1.0.0",
     "@changesets/read": "^1.0.1",
+    "@changesets/types": "^7.0.0",
+    "@types/node": "^24.19.2",
     "oxfmt": "^0.62.0",
-    "oxlint": "^1.77.0"
+    "oxlint": "^1.77.0",
+    "oxlint-tsgolint": "^7.0.2004",
+    "typescript": "^7.0.2"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": ">=0.83.0",

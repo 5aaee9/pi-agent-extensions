@@ -4,9 +4,9 @@ Rules for code in the `pi-*/` package directories. Where this document and Pi's 
 
 ## Language and formatting
 
-- TypeScript, ES modules (`"type": "module"`), Node `>=22.19.0` (`engines.node`). Extension source files are `.ts`; the root release tooling in `scripts/release/` is plain `.mjs` run by Node.
+- TypeScript only, as ES modules (`"type": "module"`), Node `>=22.19.0` (`engines.node`). Every source, test, and tooling file is `.ts`; never add `.js`, `.mjs`, or `.cjs` files. Pi loads extension sources directly, and Node runs the root tooling (`node scripts/release/<name>.ts`) with its built-in type stripping, so tooling uses only erasable TypeScript syntax (no `enum`, `namespace`, or parameter properties; `erasableSyntaxOnly` enforces this).
 - oxfmt formats everything with its default style (`.oxfmtrc.json` only adds ignore patterns). Run `npm run format` before committing; never hand-format against it.
-- oxlint lints the whole repository with the `typescript`, `unicorn`, `oxc`, and `vitest` plugins and the `correctness` category as errors (`.oxlintrc.json`), and `npm run lint` passes `--deny-warnings`. Fix the finding; do not disable the rule.
+- oxlint lints the whole repository with the `typescript`, `unicorn`, `oxc`, and `vitest` plugins and the `correctness` category as errors (`.oxlintrc.json`), and `npm run lint` passes `--deny-warnings`. `npm run lint` then runs `npm run lint:tooling`, which checks `scripts/` and `.changeset/` with `.oxlintrc.tooling.json`: type-aware rules (through `oxlint-tsgolint` and the root `tsconfig.json`), the `correctness`, `suspicious`, `pedantic`, and `perf` categories, and strict rules such as `no-explicit-any`, `no-unsafe-*`, `strict-boolean-expressions`, `prefer-readonly-parameter-types`, `explicit-function-return-type`, and `switch-exhaustiveness-check`, all as errors. Fix the finding; do not disable the rule.
 - Relative imports carry the `.ts` extension (`./config.ts`). Node built-ins use the `node:` prefix.
 - Use `import type` / `export type` for type-only imports (`verbatimModuleSyntax` is on).
 - Files are kebab-case. Types and classes are PascalCase, everything else camelCase. Commands are kebab-case (what the user types, for example `/toggle-fast`).
@@ -23,6 +23,8 @@ Each package has its own `tsconfig.json`; they share these compiler options:
 | `module` / `moduleResolution` `NodeNext`, `target` / `lib` `ES2023` | Modern ESM; relative imports need explicit extensions.                          |
 | `allowImportingTsExtensions`, `noEmit`                              | Pi loads `.ts` sources directly; `tsc` only typechecks.                         |
 | `skipLibCheck`, `types: ["node"]`                                   | Declaration files of dependencies are not checked; Node types are available.    |
+
+The root `tsconfig.json` checks the repository tooling (`scripts/`, `.changeset/`) with every strictness option on top of `strict`: `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`, `noPropertyAccessFromIndexSignature`, `noImplicitOverride`, `noImplicitReturns`, `noFallthroughCasesInSwitch`, `noUnusedLocals`, `noUnusedParameters`, `noUncheckedSideEffectImports`, `allowUnreachableCode: false`, `allowUnusedLabels: false`, `erasableSyntaxOnly`, `isolatedModules`, and `skipLibCheck: false`. `npm run typecheck` runs it before the package typechecks.
 
 `include` differs by package: single-module packages list `index.ts`, `test/**/*.ts`, and `vitest.config.ts`; multi-module packages (`pi-provider-sub2api`, `pi-custom-provider`) include `*.ts` and `test/**/*.ts`. When you add a module to a package whose `include` lists files explicitly, add it there too.
 
@@ -50,7 +52,7 @@ These follow from Pi's extension contract; `docs/pi-reference.md` says where it 
 - Vitest, files under `<name>/test/*.test.ts`, configured by the package's `vitest.config.ts`. `npm test` runs every package's tests; `npm run test --workspace @indexyz/<name>` runs one.
 - Test implementation modules directly; keep `index.ts` thin so most logic is testable without a running Pi.
 - Every bug fix adds a test that failed before the fix.
-- The root release tooling is tested with Node's built-in runner (`npm run test:scripts`), not Vitest.
+- The root release tooling is tested with Node's built-in runner on its `.ts` test files (`npm run test:scripts`), not Vitest. Test helpers live next to the tests (`scripts/release/test/`).
 
 ## Documentation
 

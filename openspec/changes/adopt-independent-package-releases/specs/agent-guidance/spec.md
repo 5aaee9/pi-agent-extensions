@@ -8,17 +8,31 @@ Define the agent instruction surface of this repository so that any coding agent
 
 ### Requirement: One shared instruction surface
 
-`AGENTS.md` at the repository root SHALL hold the rules, command table, and documentation index for agents. `CLAUDE.md` SHALL contain exactly `@AGENTS.md`. `.agents/` SHALL hold shared skills, and `.claude/` SHALL be the only harness-specific directory, limited to OpenSpec-generated commands and skills. No other harness SHALL get its own instruction files.
+`AGENTS.md` at the repository root SHALL hold the rules, command table, and documentation index for agents. `CLAUDE.md` SHALL contain exactly `@AGENTS.md`. `.agents/` SHALL hold the shared skills, and `.claude` SHALL be a symlink to `.agents` rather than a directory of its own, so Claude Code reads the same skills. No harness SHALL get instruction files of its own.
 
 #### Scenario: Claude Code session
 
 - **WHEN** Claude Code loads the repository
-- **THEN** it reads `AGENTS.md` through `CLAUDE.md` and finds no conflicting instructions elsewhere
+- **THEN** it reads `AGENTS.md` through `CLAUDE.md`, finds the shared skills through the `.claude` symlink, and finds no conflicting instructions elsewhere
 
 #### Scenario: Codex session
 
 - **WHEN** an agent that reads `AGENTS.md` and `.agents/skills/` starts
 - **THEN** it finds the same rules and the `pi-extension-dev` and OpenSpec skills
+
+### Requirement: Repository code is strict TypeScript
+
+Every source, test, and tooling file in the repository SHALL be TypeScript (`.ts`); no `.js`, `.mjs`, or `.cjs` source files SHALL be added. Repository tooling SHALL run directly through Node's type stripping and SHALL be checked as strictly as the tools allow: a root `tsconfig.json` with every strictness option for `scripts/` and `.changeset/`, and a type-aware oxlint profile with the `correctness`, `suspicious`, `pedantic`, and `perf` categories plus strict typing rules, both part of `npm run check`. `AGENTS.md` and `docs/conventions.md` SHALL state the rule.
+
+#### Scenario: No JavaScript modules
+
+- **WHEN** the tracked files are listed with `git ls-files '*.js' '*.mjs' '*.cjs'`
+- **THEN** none are listed
+
+#### Scenario: Strict checks are part of the gate
+
+- **WHEN** `npm run check` runs
+- **THEN** it typechecks `scripts/` and `.changeset/` with the root `tsconfig.json` and lints them with the strict type-aware profile, and any finding fails it
 
 ### Requirement: Documentation describes this repository truthfully
 

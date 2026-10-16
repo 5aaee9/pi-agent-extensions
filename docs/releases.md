@@ -28,11 +28,11 @@ Versions are independent per package. There is no repository version, and no `v<
 
 ## Tooling
 
-- `.changeset/<id>.md`: release intents. `.changeset/config.json` configures [changesets](https://github.com/changesets/changesets), which owns intents, version bumps, and changelog sections (`npm run change`, `npm run change:status`, `npm run release:version`). `.changeset/changelog.mjs` renders each intent summary as a `- <summary>` bullet.
-- `scripts/release/gate.mjs`: the pull-request release-impact gate (`npm run release:gate`).
-- `scripts/release/plan.mjs`: the read-only publication plan, also run locally with `--dry-run`.
-- `scripts/release/publish.mjs`: uploads and records; only CI runs it.
-- `scripts/release/version-commit.mjs`: prints the commit that introduced each package's current version.
+- `.changeset/<id>.md`: release intents. `.changeset/config.json` configures [changesets](https://github.com/changesets/changesets), which owns intents, version bumps, and changelog sections (`npm run change`, `npm run change:status`, `npm run release:version`). `.changeset/changelog.ts` renders each intent summary as a `- <summary>` bullet.
+- `scripts/release/gate.ts`: the pull-request release-impact gate (`npm run release:gate`).
+- `scripts/release/plan.ts`: the read-only publication plan, also run locally with `--dry-run`.
+- `scripts/release/publish.ts`: uploads and records; only CI runs it.
+- `scripts/release/version-commit.ts`: prints the commit that introduced each package's current version.
 
 Changesets' own `publish`, `pack`, and `git-tag` commands are not used.
 
@@ -68,7 +68,7 @@ Published content that reached `main` without a decision (a direct push, or a pu
 
 ### The release-impact gate
 
-`lint.yml` runs `node scripts/release/gate.mjs --base <base sha> --head <head sha>` on every pull request. It compares the head with its merge base and first validates every intent file at the head: parseable front matter, exactly one package, a publishable workspace package name, and a non-empty summary.
+`lint.yml` runs `node scripts/release/gate.ts --base <base sha> --head <head sha>` on every pull request. It compares the head with its merge base and first validates every intent file at the head: parseable front matter, exactly one package, a publishable workspace package name, and a non-empty summary.
 
 | Pull request contains, for a package                                                                                                                                                               | Gate                                                                          |
 | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
@@ -118,7 +118,7 @@ Do this only on an explicit release request. Source changes and their intents mu
 8. Verify the snapshot exactly as CI will:
 
    ```bash
-   node scripts/release/plan.mjs --dry-run
+   node scripts/release/plan.ts --dry-run
    ```
 
    It plans from `HEAD`: for every prepared version it builds the tarball at that version's commit, inspects it, installs it in isolation, and loads it in Pi. It needs network access (npm registry, `git fetch` from `origin`, and `gh` when available) and writes nothing to the registry or GitHub; without GitHub access it reports Release state as unknown. Fix any failure by revising the preparation on the branch (below) before handing it over.
@@ -139,15 +139,15 @@ The one exception is an **abandoned** version. A version on `main` may be abando
 
 `.github/workflows/publish.yml` runs on every push to `main` and on manual dispatch from `main`. A dispatch from any other ref fails at its first step. Runs share the concurrency group `npm-release` and never cancel each other. Tags do not trigger it.
 
-The **version commit** of a package's current version is the newest commit on the first-parent history of `main` whose `<name>/package.json` carries that version while its first parent's does not (`node scripts/release/version-commit.mjs` prints it). For a squash or merge commit it is the integration commit; for a rebase merge or direct push, the commit that changed the version. Everything about a version comes from its version commit: the tarball, the changelog section, the tag target, and the Release notes. A later commit that changes the package without changing its version never changes what that version publishes.
+The **version commit** of a package's current version is the newest commit on the first-parent history of `main` whose `<name>/package.json` carries that version while its first parent's does not (`node scripts/release/version-commit.ts` prints it). For a squash or merge commit it is the integration commit; for a rebase merge or direct push, the commit that changed the version. Everything about a version comes from its version commit: the tarball, the changelog section, the tag target, and the Release notes. A later commit that changes the package without changing its version never changes what that version publishes.
 
-1. **Plan** (permissions `contents: read`, no publishing credentials): `npm ci`, `npm run check`, then `node scripts/release/plan.mjs --out <dir>`:
+1. **Plan** (permissions `contents: read`, no publishing credentials): `npm ci`, `npm run check`, then `node scripts/release/plan.ts --out <dir>`:
    - validates every intent file on disk;
    - for every package: its version commit, whether the version is on npm (`npm view`; a 404 means absent, any other failure fails the run), its tag `@indexyz/<name>@<version>` (an existing tag is accepted when its commit's manifest carries the version; otherwise the run fails), its GitHub Release, and the exact `## <version>` changelog section;
    - **uploads** are the versions absent from npm. Each needs exactly one non-empty `## <version>` section at its version commit. Each is built in a `git worktree` at its version commit: `npm ci`, `npm pack --workspace <name>` (whose `prepack` runs the package's typecheck and tests on that snapshot), inspection of the tarball (manifest name and version, `package.json`, `README.md`, `CHANGELOG.md`, `LICENSE`, every `files` and `pi` path, nothing under `test/` or `openspec/`), an install with `npm install --omit=peer` into an empty directory, and a load of the installed copy with that snapshot's `pi` (`-ne --mode rpc`, answering `get_commands`, `PI_OFFLINE=1`, empty `PI_CODING_AGENT_DIR`). The tarball's SHA-256 goes into `release-plan.json`;
    - **record work** is every published (or uploading) version whose tag is missing, or whose GitHub Release is missing while an exact section exists;
    - with at least one upload or record item, it uploads the `release-batch` artifact and lets the publish job run. Any failure blocks the whole batch.
-2. **Publish** (permissions `contents: write` and `id-token: write`; the only job with OIDC): `node scripts/release/publish.mjs --dir <dir>`:
+2. **Publish** (permissions `contents: write` and `id-token: write`; the only job with OIDC): `node scripts/release/publish.ts --dir <dir>`:
    - checks every tarball against its planned SHA-256, then uploads one at a time with `npm publish <tgz> --access public` through npm trusted publishing (no token is stored anywhere). A version that reached npm in the meantime ("cannot publish over the previously published versions") counts as published after a registry re-check; any other failure stops further uploads;
    - then, for every record item and every version uploaded in this run that npm confirms: creates the tag as a lightweight tag at the version commit when missing and pushes exactly that ref; creates the GitHub Release (title and tag `@indexyz/<name>@<version>`, body = the exact changelog section) when missing and the section exists. Existing tags and Releases are left as they are; a tag at a commit that does not carry the version is an error and is never moved. When an accepted tag points at an older commit carrying the version (after a revert), the Release is created from that commit;
    - prints a report table (also written to the run summary) and fails when any upload or record failed.
