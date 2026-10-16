@@ -1,0 +1,11 @@
+schema: spec-driven
+
+context: |
+  Scope: the pi-autocompact extension in this directory only (npm package
+  @indexyz/pi-autocompact). Repository-wide concerns belong to the repository root's
+  openspec/.
+  Constraints: follow ../AGENTS.md and ../docs/conventions.md. This
+  directory is excluded from the published package (it is not in "files").
+  Verification for every change: npm run check from the repository root, the
+  load smoke test in ../docs/workflow.md, and a release decision for
+  @indexyz/pi-autocompact per ../docs/releases.md when published files change.
