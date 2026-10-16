@@ -1,27 +1,89 @@
 name: Publish Packages
 
+# Publishes every package version that is absent from npm, built from the
+# commit that introduced it, then records each published version with a tag
+# and GitHub Release. The procedure is in docs/releases.md. The npm trusted
+# publishers are bound to this file name; do not rename it.
+
 on:
   push:
-    tags:
-      - "v*"
+    branches:
+      - main
+  workflow_dispatch:
 
-permissions:
-  contents: read
-  id-token: write
+permissions: {}
 
 concurrency:
-  group: npm-release-${{ github.ref }}
+  group: npm-release
   cancel-in-progress: false
 
 jobs:
-  publish:
+  plan:
+    name: Plan release
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+    outputs:
+      publish: ${{ steps.plan.outputs.publish }}
+    steps:
+      - name: Require main
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::Publish Packages runs only on refs/heads/main, not $GITHUB_REF"
+            exit 1
+          fi
+
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check repository
+        run: npm run check
+
+      - name: Plan publication
+        id: plan
+        run: node scripts/release/plan.mjs --out "$RUNNER_TEMP/release-batch"
+
+      - name: Upload release batch
+        if: steps.plan.outputs.publish == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-batch
+          path: ${{ runner.temp }}/release-batch
+          if-no-files-found: error
+
+  publish:
+    name: Publish and record
+    needs: plan
+    if: needs.plan.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
 
       - name: Set up Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
@@ -30,63 +92,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Check packages
-        run: npm run check
+      - name: Download release batch
+        uses: actions/download-artifact@v8
+        with:
+          name: release-batch
+          path: ${{ runner.temp }}/release-batch
 
-      - name: Publish unpublished package versions
-        env:
-          RELEASE_TAG: ${{ github.ref_name }}
-        run: |
-          set -euo pipefail
-
-          package_directories=(
-            "pi-provider-sub2api"
-            "pi-custom-provider"
-            "pi-continue"
-            "pi-skill"
-            "pi-model-trace"
-            "pi-autocompact"
-          )
-          release_version="${RELEASE_TAG#v}"
-
-          if [ -z "$release_version" ] || [ "$release_version" = "$RELEASE_TAG" ]; then
-            echo "Invalid release tag: $RELEASE_TAG" >&2
-            exit 1
-          fi
-
-          npm run check:versions -- "$release_version"
-
-          publish_directories=()
-
-          for directory in "${package_directories[@]}"; do
-            package_name="$(node -p "require('./$directory/package.json').name")"
-            package_version="$(node -p "require('./$directory/package.json').version")"
-            package_spec="$package_name@$package_version"
-            view_stdout="$(mktemp)"
-            view_stderr="$(mktemp)"
-
-            if npm view "$package_spec" version --json >"$view_stdout" 2>"$view_stderr"; then
-              echo "::notice::$package_spec is already published; skipping"
-              rm -f "$view_stdout" "$view_stderr"
-              continue
-            fi
-
-            if ! grep -qE "E404|404 Not Found" "$view_stderr"; then
-              cat "$view_stdout" "$view_stderr" >&2
-              rm -f "$view_stdout" "$view_stderr"
-              exit 1
-            fi
-
-            rm -f "$view_stdout" "$view_stderr"
-            publish_directories+=("$directory")
-          done
-
-          if [ "${#publish_directories[@]}" -eq 0 ]; then
-            echo "Tag $RELEASE_TAG has no unpublished package versions" >&2
-            exit 1
-          fi
-
-          for directory in "${publish_directories[@]}"; do
-            package_name="$(node -p "require('./$directory/package.json').name")"
-            npm publish --workspace "$package_name" --access public
-          done
+      - name: Publish and record
+        run: node scripts/release/publish.mjs --dir "$RUNNER_TEMP/release-batch"
