@@ -1,0 +1,9 @@
+# Bundle patch layer: the row loads this package's main entry as the Host half
+# (a plain Cordis plugin exporting `apply`, `inject`, and `Config`), and its
+# `providers` table is where a deployment declares the reasoning levels of a
+# hand-written provider route.
+- insert:
+    - id: custom-provider-reasoning-efforts
+      name: "@indexyz/dsh-custom-provider-reasoning-efforts"
+      config:
+        providers: {}

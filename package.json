@@ -19,7 +19,8 @@
     "pi-skill",
     "pi-model-trace",
     "pi-autocompact",
-    "dsh-autocompact"
+    "dsh-autocompact",
+    "dsh-custom-provider-reasoning-efforts"
   ],
   "type": "module",
   "scripts": {

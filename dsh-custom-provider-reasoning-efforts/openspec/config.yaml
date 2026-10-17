@@ -1,0 +1,13 @@
+schema: spec-driven
+
+context: |
+  Scope: the dsh-custom-provider-reasoning-efforts plugin in this directory only
+  (npm package @indexyz/dsh-custom-provider-reasoning-efforts). Repository-wide
+  concerns belong to the repository root's openspec/.
+  Constraints: follow ../AGENTS.md and ../docs/conventions.md. This
+  directory is excluded from the published package (it is not in "files").
+  Verification for every change: npm run check from the repository root (which builds
+  the host half before the tests), the release smoke check in test/smoke-release.ts
+  and the live profile install in ../docs/workflow.md, and a release decision for
+  @indexyz/dsh-custom-provider-reasoning-efforts per ../docs/releases.md when
+  published files change.

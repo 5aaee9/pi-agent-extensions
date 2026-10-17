@@ -1,0 +1,22 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "lib",
+    "rootDir": ".",
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "rewriteRelativeImportExtensions": true
+  },
+  "include": [
+    "index.ts",
+    "levels.ts",
+    "declarations.ts",
+    "reasoning.ts",
+    "discovery.ts",
+    "plan.ts",
+    "apply.ts",
+    "runtime.ts"
+  ]
+}
