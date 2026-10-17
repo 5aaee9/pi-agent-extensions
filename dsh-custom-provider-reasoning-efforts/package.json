@@ -1,6 +1,6 @@
 {
   "name": "@indexyz/dsh-custom-provider-reasoning-efforts",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Declare reasoningEfforts for hand-written dsh provider routes that the pi-ai catalog does not describe",
   "keywords": [
     "cordis",

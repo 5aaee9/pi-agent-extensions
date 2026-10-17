@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.1
+
+### Patch Changes
+
+- Read a Codex-shaped relay's reasoning levels from its /backend-api/codex/models manifest when its /v1/models inventory publishes none.
+
 ## 0.1.0 - 2026-10-17
 
 - Initial release.
