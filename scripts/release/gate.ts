@@ -76,6 +76,7 @@ for (const pkg of packages) {
     changedPaths: changed
       .filter((path) => path.startsWith(prefix))
       .map((path) => path.slice(prefix.length)),
+    dsh: pkg.manifest.dsh,
     files: pkg.manifest.files,
     baseVersion: manifestVersionAt(mergeBase, pkg.dir, cwd),
     headVersion: pkg.version,
@@ -92,7 +93,7 @@ for (const pkg of packages) {
     failed = true;
     const files = decision.published.map((path) => prefix + path).join(", ");
     console.error(`${pkg.name}: ${decision.reason}`);
-    console.error(`  changed published files: ${files}`);
+    console.error(`  changed published files or build inputs: ${files}`);
     console.error(decisionHelp(pkg.name));
   }
 }

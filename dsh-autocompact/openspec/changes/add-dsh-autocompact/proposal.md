@@ -1,5 +1,7 @@
 # Proposal
 
+> Build policy update: the repository-wide `ignore-dsh-build-artifacts` change supersedes this proposal, design, tasks, and spec delta wherever they require committed output. Generated `lib/` and `client.js` are Git-ignored, `prepack` builds the published artifacts, and local link installs require a prior build. Reconcile those clauses with the repository's `openspec/specs/dsh-packages/spec.md` before archiving this older change. Its unrelated outstanding tasks remain open.
+
 ## Why
 
 `@indexyz/dsh-autocompact` is the dsh (DeepSeek Harness) port of `@indexyz/pi-autocompact` that already works: it sets an earlier automatic-compaction threshold for the current session and model, edits the deployment's persisted defaults from a Settings page, and shows the session's threshold and measured pressure in the composer's ambient row. It lives in the sibling repository `dsh-agent-extensions`, which has its own workspace, lockfile, and scripts; keeping it there splits one person's plugin family across two repositories with two release processes, and leaves the ported package's sibling in a repository that has no release engine. This repository is its home, and its repository-wide change `support-dsh-packages` adds the class and the release verification it needs. This change adds the package.

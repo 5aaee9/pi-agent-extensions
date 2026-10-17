@@ -11,6 +11,8 @@ Two roots exist, and the CLI picks the nearest one above the working directory:
 | One package                                             | `<name>/` (for example `pi-skill/`) | `<name>/openspec/` |
 | Repository-wide (tooling, workflows, docs, conventions) | repository root                     | `openspec/`        |
 
+OpenSpec is pinned in the root development dependencies. After `npm install` or `npm ci`, invoke it as `npx openspec` from the directory in the table (for example `npx openspec list --json`). In this guide, `openspec` commands use that installed CLI.
+
 Always run `openspec` from the directory in the table; from the repository root, a package change would land in the wrong root. Check with `openspec context --json` when unsure: `root.path` must be the package directory for package work.
 
 The workflow is the standard OpenSpec one, available as skills in `.agents/skills/` (`openspec-propose`, `openspec-apply-change`, `openspec-archive-change`, ...), which Claude Code also reads through the `.claude` symlink:
@@ -27,7 +29,7 @@ A `dsh-<topic>/` package for the DeepSeek Harness follows the same steps with th
 
 1. The directory is `dsh-<topic>/` at the repository root, the npm `name` is `@indexyz/dsh-<topic>`, and the commit scope is `<topic>` (spelled out when a `pi-<topic>/` package would share it).
 2. Its `package.json` declares a `dsh` manifest (`dsh.bundle.patch`, `dsh.client`) and no `pi` manifest, its build scripts (`build`, `build:host` with `tsc -p tsconfig.build.json`, `build:client` with `tsdown`), and `"release": { "smoke": "test/smoke-release.ts" }`; its imported `@deepseek-ai/*` hosts are exact `devDependencies` pins with `"*"` peers.
-3. It commits its build output — `lib/` and `client.js` — and `files` ships it; the root oxfmt and oxlint configs ignore those paths, and no hand edit touches them.
+3. Its build output — `lib/` and, when present, `client.js` — is Git-ignored and never committed. `files` ships it, and `prepack` runs `check` to build and test it before packing. Run `npm run build --workspace @indexyz/dsh-<topic>` before installing a checkout into a profile: local `link:` installs do not build it. The root oxfmt and oxlint configs ignore those paths, and no hand edit touches them.
 4. It joins the root `workspaces` array, and never the root `pi.extensions`.
 5. Verify it with the dsh path in "Verify" below instead of the Pi load smoke test, and record its release decision like any package.
 

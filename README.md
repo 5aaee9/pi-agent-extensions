@@ -55,6 +55,10 @@ pi -e ./pi-provider-sub2api/index.ts
 
 `npm run check` runs the format check, lint, every package's typecheck, the build step of every package that declares one, every package's tests, and the release-script tests. Try a pi package from a checkout with `pi -e ./<name>/index.ts`.
 
+Dsh build output (`lib/` and optional `client.js`) is Git-ignored; `npm pack` builds and includes it automatically. Before installing a dsh checkout into a profile, run `npm run build --workspace @indexyz/<name>`, then `dsh plugin --profile web add ./<name>`.
+
+OpenSpec is installed with the repository tooling. Run `npx openspec <command>` from the repository root for shared changes, or from a package directory for changes to that package.
+
 Contributors and coding agents start with [`AGENTS.md`](./AGENTS.md), which links the rest of [`docs/`](./docs).
 
 ## License

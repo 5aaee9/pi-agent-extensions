@@ -18,6 +18,8 @@ npm run build --workspace @indexyz/dsh-thread-summary
 dsh plugin --profile web add ./dsh-thread-summary
 ```
 
+Build output (`lib/` and `client.js`) is Git-ignored. The build above is required before a local `link:` install; `npm pack` builds and includes the output automatically.
+
 Restart the Harness after installing or rebuilding the host half, and refresh the browser after rebuilding the client half. Settings edits themselves are live and need no restart. Releases use the tag `@indexyz/dsh-thread-summary@<version>`.
 
 ## Settings and behavior

@@ -14,8 +14,12 @@ installs. Node `22.19.0` or newer is required as well.
 To try a repository checkout instead (after `npm install` at the repository root):
 
 ```bash
+npm run build --workspace @indexyz/dsh-custom-provider-reasoning-efforts
 dsh plugin --profile web add ./dsh-custom-provider-reasoning-efforts
 ```
+
+The generated `lib/` directory is Git-ignored. Build before a local `link:`
+install; `npm pack` builds and includes the output automatically.
 
 ## Why a custom route loses its levels
 

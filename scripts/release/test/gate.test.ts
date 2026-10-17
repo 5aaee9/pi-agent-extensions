@@ -8,6 +8,7 @@ import { createRepo, type FixtureRepo, manifest } from "./helpers.ts";
 
 const files = ["index.ts", "data/bank.json", "README.md", "CHANGELOG.md", "LICENSE"];
 const base: GateInput = {
+  dsh: false,
   changedPaths: [],
   files,
   baseVersion: "0.1.0",
@@ -100,6 +101,73 @@ void test("a preparation whose section already existed on the base fails", () =>
   assert.equal(result.status, "fail");
 });
 
+const dsh: GateInput = { ...base, dsh: true, files: ["lib", "client.js", "cordis.patch.yml"] };
+
+void test("dsh runtime sources and build configurations need a release decision", () => {
+  for (const path of [
+    "index.ts",
+    "settings.ts",
+    "view.tsx",
+    "src/client/index.tsx",
+    "src/client/styles.css",
+    "tsconfig.json",
+    "tsconfig.build.json",
+    "tsdown.config.ts",
+  ]) {
+    const input = { ...dsh, changedPaths: [path] };
+    const result = decidePackage(input);
+    assert.equal(result.status, "fail", path);
+    assert.deepEqual(result.published, [path]);
+    assert.equal(decidePackage({ ...input, touchedIntent: true }).status, "pass", path);
+  }
+});
+
+void test("unpublished dsh development files do not need a decision", () => {
+  assert.equal(
+    decidePackage({
+      ...dsh,
+      changedPaths: [
+        "test/index.test.ts",
+        "test/smoke-release.ts",
+        "index.test.ts",
+        "view.spec.tsx",
+        "vitest.config.ts",
+        "openspec/config.yaml",
+        "openspec/changes/example/tasks.md",
+      ],
+    }).status,
+    "none",
+  );
+  assert.equal(
+    decidePackage({ ...dsh, files: ["vitest.config.ts"], changedPaths: ["vitest.config.ts"] })
+      .status,
+    "fail",
+  );
+});
+
+void test("Pi packages still classify only directly published paths", () => {
+  assert.equal(
+    decidePackage({
+      ...base,
+      changedPaths: ["helper.ts", "src/client/index.tsx", "tsconfig.json", "tsdown.config.ts"],
+    }).status,
+    "none",
+  );
+});
+
+void test("dsh release preparations also require decisions for unpublished build inputs", () => {
+  for (const path of ["index.ts", "tsconfig.build.json"]) {
+    const input = {
+      ...prepared,
+      dsh: true,
+      files: dsh.files,
+      changedPaths: [...prepared.changedPaths, path],
+    };
+    assert.equal(decidePackage(input).status, "fail", path);
+    assert.equal(decidePackage({ ...input, touchedIntent: true }).status, "pass", path);
+  }
+});
+
 // End-to-end runs of the CLI against fixture repositories.
 const gate = fileURLToPath(new URL("../gate.ts", import.meta.url));
 const repos: FixtureRepo[] = [];
@@ -149,6 +217,28 @@ void test("cli: an intent added by the branch passes; a stale one on the base do
   r.commit("record decision");
   const ok = runGate(r, mainTip);
   assert.equal(ok.code, 0, ok.output);
+});
+
+void test("cli: a dsh source-only change fails until the branch records a decision", () => {
+  const r = createRepo();
+  repos.push(r);
+  r.write("package.json", { name: "root", private: true, workspaces: ["dsh-a"] });
+  r.write("dsh-a/package.json", {
+    ...manifest("0.1.0", { name: "@indexyz/dsh-a", files: ["lib"] }),
+    dsh: { bundle: { patch: "./cordis.patch.yml" } },
+  });
+  r.write(".gitignore", "/dsh-a/lib/\n");
+  r.write("dsh-a/index.ts", "export const value = 1;\n");
+  const mainTip = r.commit("dsh sources without tracked output");
+  r.write("dsh-a/index.ts", "export const value = 2;\n");
+  r.commit("change only an unpublished source");
+  const missing = runGate(r, mainTip);
+  assert.equal(missing.code, 1, missing.output);
+  assert.match(missing.output, /dsh-a\/index\.ts/u);
+  r.write(".changeset/dsh.md", intent("@indexyz/dsh-a", "none", "No runtime release needed."));
+  r.commit("record explicit release decision");
+  const decided = runGate(r, mainTip);
+  assert.equal(decided.code, 0, decided.output);
 });
 
 void test("cli: an intent naming two packages fails validation", () => {

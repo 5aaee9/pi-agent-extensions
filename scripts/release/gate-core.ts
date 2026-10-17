@@ -15,7 +15,27 @@ export function isPublishedPath(relativePath: string, files: readonly string[] =
   });
 }
 
+/** Build inputs follow the dsh package layout documented in docs/releases.md. */
+function isDshBuildInput(relativePath: string): boolean {
+  if (relativePath.startsWith("src/")) {
+    return true;
+  }
+  if (relativePath.includes("/")) {
+    return false;
+  }
+  if (/^tsconfig[^/]*\.json$/u.test(relativePath)) {
+    return true;
+  }
+  return (
+    /\.tsx?$/u.test(relativePath) &&
+    relativePath !== "vitest.config.ts" &&
+    !/\.(?:test|spec)\.tsx?$/u.test(relativePath)
+  );
+}
+
 export interface GateInput {
+  /** Whether this package declares the dsh manifest and publishes built output. */
+  readonly dsh: boolean;
   /** Paths relative to the package directory changed between the merge base and head. */
   readonly changedPaths: readonly string[];
   /** The head manifest's `files` allowlist. */
@@ -42,7 +62,9 @@ export type GateDecision =
 
 /** Decides whether the pull request records a release decision for one package. */
 export function decidePackage(input: GateInput): GateDecision {
-  const published = input.changedPaths.filter((path) => isPublishedPath(path, input.files));
+  const published = input.changedPaths.filter(
+    (path) => isPublishedPath(path, input.files) || (input.dsh && isDshBuildInput(path)),
+  );
   if (published.length === 0) {
     return { status: "none", published };
   }

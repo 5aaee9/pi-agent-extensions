@@ -46,4 +46,4 @@ The release smoke script checks manifest targets and evaluates the packed browse
 
 ## Migration Plan
 
-Existing `enabled` and `provider/model` configuration remains valid. Rebuild committed host/browser artifacts; refresh the page for the browser half and restart the Harness for the host half. Record the package's release intent without preparing or publishing a version.
+Existing `enabled` and `provider/model` configuration remains valid. Rebuild Git-ignored host/browser artifacts before a local link install, following the repository-wide `ignore-dsh-build-artifacts` policy; refresh the page for the browser half and restart the Harness for the host half. Record the package's release intent without preparing or publishing a version.

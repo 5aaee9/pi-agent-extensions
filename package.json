@@ -45,6 +45,7 @@
     "@changesets/parse": "^1.0.0",
     "@changesets/read": "^1.0.1",
     "@changesets/types": "^7.0.0",
+    "@fission-ai/openspec": "1.14.3",
     "@types/node": "^24.19.2",
     "oxfmt": "^0.62.0",
     "oxlint": "^1.77.0",

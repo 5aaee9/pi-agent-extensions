@@ -43,7 +43,8 @@ beforeAll(async () => {
       },
     },
   });
-  await import("../client.js");
+  // Resolve the generated artifact at runtime so typecheck also works before the first build.
+  await import(new URL("../client.js", import.meta.url).href);
 });
 
 /** Load the browser half the way the page's module loader does. */

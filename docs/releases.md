@@ -40,7 +40,9 @@ Changesets' own `publish`, `pack`, and `git-tag` commands are not used.
 
 ## 1. Record a release decision in every change
 
-A package needs a decision when a change touches its published content: its `package.json`, `README.md`, `LICENSE`, `CHANGELOG.md`, or any path listed in its `files`. Tests, the package's `openspec/`, `tsconfig.json`, `vitest.config.ts`, root tooling, and repository docs need none.
+A package needs a decision when a change touches its published content: its `package.json`, `README.md`, `LICENSE`, `CHANGELOG.md`, or any path listed in its `files`. For a package declaring a `dsh` manifest, the gate also counts build inputs: root `.ts`/`.tsx` runtime modules (excluding `*.test.ts`, `*.test.tsx`, `*.spec.ts`, `*.spec.tsx`, and `vitest.config.ts`), everything under `src/`, root `tsconfig*.json`, and `tsdown.config.ts`. Those inputs can change the published runtime even though `lib/` and `client.js` are Git-ignored. Update this convention and the gate together if a package introduces other build-input locations.
+
+Unpublished tests, the package's `openspec/`, `vitest.config.ts`, root tooling, and repository docs need no decision. Pi packages retain the published-path rule, so their unpublished `tsconfig.json` changes need none.
 
 Record a release with changesets, one package per command:
 

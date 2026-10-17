@@ -83,7 +83,7 @@ dsh-<topic>/
 └── openspec/           the package's own OpenSpec root: specs/ and changes/
 ```
 
-- The Harness loads built files, not sources: `lib/` from `tsc`, and `client.js` from tsdown, which the web module loader fetches and evaluates as one CommonJS artifact (`window.__ModuleLoader__.load`). Both are build output and are committed, because installing the package from a local directory (`link:`) never runs the build; the root oxfmt and oxlint configs ignore them, and no hand edit ever touches them.
+- The Harness loads built files, not sources: `lib/` from `tsc`, and, for packages with a browser half, `client.js` from tsdown, which the web module loader fetches and evaluates as one CommonJS artifact (`window.__ModuleLoader__.load`). Both are Git-ignored build output and are never committed or edited by hand. `prepack` builds them and the package's `files` allowlist includes them in the npm tarball. Installing from a local directory (`link:`) never runs the build, so run the package's build before adding it to a profile. The root oxfmt and oxlint configs also ignore the generated output.
 - The host half declares the `dsh` manifest (its bundle patch) and a `client` half naming the platform and the client services it needs; it declares no `pi` manifest, and the root `pi` manifest never lists it.
 - Its scripts are its own (`build`, `build:host`, `build:client`, `typecheck`, `test`, `check`, `prepack`); the root `build` fan-out skips packages that declare none, so a pi package is unaffected.
 - `release.smoke` names a `.ts` script the release engine runs against the packed and installed tarball, because Pi cannot load a dsh package (`docs/releases.md`, "Packages Pi does not load").

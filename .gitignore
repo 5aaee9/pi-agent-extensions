@@ -2,6 +2,10 @@
 node_modules/
 *.tgz
 
+# dsh build output (generated locally and by prepack)
+/dsh-*/lib/
+/dsh-*/client.js
+
 # Agent artifacts
 .pi-subagents/
 

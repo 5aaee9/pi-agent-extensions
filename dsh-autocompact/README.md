@@ -8,6 +8,17 @@ agent. This is the dsh port of [`@indexyz/pi-autocompact`](https://github.com/5a
 dsh plugin --profile web add @indexyz/dsh-autocompact
 ```
 
+To install a repository checkout, run from the repository root:
+
+```bash
+npm install
+npm run build --workspace @indexyz/dsh-autocompact
+dsh plugin --profile web add ./dsh-autocompact
+```
+
+Build output is Git-ignored. Local `link:` installs read that output directly;
+`npm pack` builds it automatically before creating a published package.
+
 It is built and tested against dsh `0.2.0-rc.2` and declares that range as
 `engines.dsh` (`>=0.2.0-rc.2 <0.3.0-0`), which the plugin market reads before it
 installs: on a harness outside it the market refuses the install instead of
@@ -221,7 +232,7 @@ npm run build:client   # browser half only: src/client/index.tsx -> client.js
 
 The Host half compiles to `lib/` with `tsc`. The browser half is authored under
 `src/client/` and built by [tsdown](https://tsdown.dev) (oxc/rolldown) into the
-committed `client.js`: that is the artifact `exports["./client"]` publishes and
+Git-ignored `client.js`: that is the artifact `exports["./client"]` publishes and
 the Harness page loads, so it must be one
 `window.__ModuleLoader__.load({ id, factory })` registration. The build supplies
 that wrapper and leaves `react` / `react/jsx-runtime` external, because the
