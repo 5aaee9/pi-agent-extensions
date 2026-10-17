@@ -20,7 +20,8 @@
     "pi-model-trace",
     "pi-autocompact",
     "dsh-autocompact",
-    "dsh-custom-provider-reasoning-efforts"
+    "dsh-custom-provider-reasoning-efforts",
+    "dsh-thread-summary"
   ],
   "type": "module",
   "scripts": {

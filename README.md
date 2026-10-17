@@ -14,6 +14,7 @@ A collection of extensions for the [pi coding agent](https://github.com/earendil
 | [`@indexyz/pi-autocompact`](./pi-autocompact)                                               | Session-only per-model context compaction thresholds via `/autocompact 300k`, with optional global defaults.                 |
 | [`@indexyz/dsh-autocompact`](./dsh-autocompact)                                             | The same thresholds for dsh: a `/autocompact` command, a Settings section, and a composer status entry.                      |
 | [`@indexyz/dsh-custom-provider-reasoning-efforts`](./dsh-custom-provider-reasoning-efforts) | Declare `reasoningEfforts` for hand-written dsh provider routes the pi-ai catalog does not describe.                         |
+| [`@indexyz/dsh-thread-summary`](./dsh-thread-summary)                                       | Generate a concise session title from the first user prompt with a configurable summary model.                               |
 
 Install a package from npm:
 
@@ -30,6 +31,7 @@ A `dsh-<topic>/` package is installed into a dsh profile instead, and its comman
 
 ```bash
 dsh plugin --profile web add @indexyz/dsh-autocompact
+dsh plugin --profile web add @indexyz/dsh-thread-summary
 ```
 
 ## Releases

@@ -1,0 +1,11 @@
+# Disable Harness's built-in first-prompt provider so this plugin can own the
+# sole sessionTitle provider registration, then add the configurable replacement.
+- id: session-title-llm
+  name: "@deepseek-ai/dsh-session-title-first-prompt-llm"
+  disabled: true
+- insert:
+    - id: thread-summary
+      name: "@indexyz/dsh-thread-summary"
+      config:
+        enabled: true
+        model: ""
