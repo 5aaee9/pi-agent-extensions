@@ -38,6 +38,8 @@ dsh plugin --profile web add @indexyz/dsh-thread-summary
 
 Each package is versioned and released independently. A release of one package publishes only that package, and each published version is tagged `@indexyz/<name>@<version>` (for example `@indexyz/pi-skill@0.1.43`) with a GitHub Release carrying that version's changelog section. Every package's history is in its own `CHANGELOG.md`. The release procedure is [`docs/releases.md`](./docs/releases.md).
 
+Every new npm package starts with an independent empty `0.0.0` workspace: the owner publishes it with the `bootstrap` tag and configures npm Trusted Publisher before the formal version is pushed to GitHub for CI publication. Follow [First release of a new package](./docs/releases.md#first-release-of-a-new-package) for the workspace template, commands and publisher settings.
+
 ## Layout
 
 The repository root is a private npm workspace that holds shared tooling and documentation only. Each package lives in its own root-level directory with its own `package.json`, `tsconfig.json`, `vitest.config.ts`, tests, and changelog: `pi-<topic>/` for a pi extension, `dsh-<topic>/` for a dsh package, which builds its own artifacts from TypeScript because the Harness loads built files rather than sources. See [`docs/architecture.md`](./docs/architecture.md).

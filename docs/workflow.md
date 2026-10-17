@@ -59,7 +59,7 @@ A `dsh-<topic>/` package for the DeepSeek Harness follows the same steps with th
 10. Propose the first change from `pi-<topic>/`, then implement it following `docs/conventions.md`. Consult Pi's docs and the closest shipped example (`docs/pi-reference.md`) before using an API.
 11. Verify (next section).
 12. Write the package `README.md` and add a row to the table in the root `README.md`.
-13. Record the release decision (`docs/releases.md`): `npm run change -- --minor @indexyz/pi-<topic> -m "First release: <what it does>"` when it should ship (the template's `0.0.0` becomes `0.1.0` at the first preparation), or a `none` intent with the reason it should not ship yet. The first upload of a new package needs the owner (`docs/releases.md`, "First release of a new package").
+13. Record the release decision (`docs/releases.md`): `npm run change -- --minor @indexyz/pi-<topic> -m "First release: <what it does>"` when it should ship (the template's `0.0.0` becomes `0.1.0` at the first preparation), or a `none` intent with the reason it should not ship yet. The first upload of every new npm package follows [First release of a new package](./releases.md#first-release-of-a-new-package): prepare an independent empty `0.0.0` workspace outside the repository, let the owner publish it with the `bootstrap` tag and configure Trusted Publisher, then push the verified formal version (normally `0.1.0`) to GitHub for CI publication. Local commits and release preparation can proceed before the owner's confirmation; the new package's GitHub push waits for it.
 14. Archive the change, then commit: `feat(<topic>): <summary>`.
 
 ### `pi-<topic>/package.json`

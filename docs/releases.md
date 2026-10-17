@@ -87,7 +87,7 @@ The gate verifies that a decision exists; it does not judge the bump type. Exter
 
 ## 2. Prepare a release locally
 
-Do this only on an explicit release request. Source changes and their intents must already be on `main`; the preparation contains only release records and reviewed prose.
+Do this only on an explicit release request. Source changes and their intents must already be on local `main`; the preparation contains only release records and reviewed prose. For a new npm package, follow [First release of a new package](#first-release-of-a-new-package): prepare locally, but keep its commits off GitHub until the owner has published the empty bootstrap package and configured Trusted Publisher.
 
 1. Start from an up-to-date `main` with a clean working tree:
 
@@ -202,24 +202,85 @@ A dsh package's script is expected to check what its host will actually load —
 
 ## First release of a new package
 
-npm configures a trusted publisher in an existing package's settings, so a package that has never been published cannot be uploaded by CI. Its first version is published once by the owner:
+npm configures a Trusted Publisher in an existing package's settings. Every new npm package in this repository, including both `pi-*` and `dsh-*`, therefore follows this order: **prepare an independent empty workspace → the owner publishes its bootstrap package → the owner configures Trusted Publisher → push the verified formal release to GitHub → CI publishes and records the formal version**.
 
-1. Push the preparation that sets the package's first version as usual. The run plans and verifies it and uploads the `release-batch` artifact; its publish job then fails at that upload.
-2. Download the verified artifact (`gh run download <run-id> -n release-batch`) and compare the tarball with `release-plan.json` (`shasum -a 256 <tgz>`).
-3. The owner publishes exactly that tarball with their npm login: `npm publish <tgz> --access public`.
-4. Add the trusted publisher for the new package (below), then rerun the failed jobs; the run finds the version on npm, skips the upload, and creates the tag and Release.
+Local source commits, release preparation and dry-run verification may proceed while the owner completes the npm setup. Keep the new package's commits local until the owner confirms that both the bootstrap publication and Trusted Publisher configuration are complete. The first GitHub push containing the new package must carry its prepared formal version, normally `0.1.0`, with its complete artifacts and release notes.
 
-Agents never perform this bootstrap.
+### 1. Prepare the empty workspace
+
+The agent creates a separate directory **outside the Git checkout and its npm workspaces**, using the same npm package name as the formal package. Its version is `0.0.0`, and its publish tag is `bootstrap`; reserve `0.1.0` for the functional package. Include only `package.json`, a short README explaining the placeholder, and the project's license. Do not include runtime code, dependencies, lifecycle scripts, or a `pi`/`dsh` manifest, and do not copy the bootstrap tag into the formal package's publish configuration.
+
+Replace `<name>` with the full directory name, including its `pi-` or `dsh-` prefix:
+
+```json
+{
+  "name": "@indexyz/<name>",
+  "version": "0.0.0",
+  "description": "Bootstrap placeholder for configuring npm trusted publishing",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/5aaee9/pi-agent-extensions.git",
+    "directory": "<name>"
+  },
+  "publishConfig": {
+    "access": "public",
+    "tag": "bootstrap"
+  },
+  "files": ["README.md", "LICENSE"]
+}
+```
+
+Check the package's npm registry state first. A 404 means the package is absent; other registry errors do not. For a package that already exists, inspect its published versions and publisher setup instead of trying to publish `0.0.0` again. Run `npm pack --dry-run` in the empty workspace and verify that only the three intended files would ship. Hand the owner the directory or packed tarball, the commands below, and the publisher fields.
+
+### 2. The owner publishes the bootstrap package
+
+The owner runs these commands in the empty workspace, using their own npm login:
+
+```bash
+npm login
+npm publish --access public --tag bootstrap
+```
+
+Confirm that the registry serves the placeholder:
+
+```bash
+npm view '@indexyz/<name>@0.0.0' version --prefer-online
+```
+
+The empty workspace stays outside the repository. Its `0.0.0` publication establishes the npm package for configuration; it is not the formal plugin release and must not consume the formal version number.
+
+### 3. The owner configures Trusted Publisher
+
+In the new npm package's settings, add a GitHub Actions Trusted Publisher:
+
+| Field                    | Value                 |
+| ------------------------ | --------------------- |
+| Organization or user     | `5aaee9`              |
+| Repository               | `pi-agent-extensions` |
+| Workflow filename        | `publish.yml`         |
+| Environment              | Leave empty           |
+| Allowed action, if shown | `npm publish`         |
+
+The publish job already declares `id-token: write` and has no GitHub environment. No npm token is added to the repository. The owner confirms that both the bootstrap upload and this configuration are complete; package existence alone does not prove that trusted publishing is configured.
+
+### 4. Push and verify the formal release
+
+After that confirmation, finish the normal local checks and `node scripts/release/plan.ts --dry-run` against the formal version's commit. Carry out an already-authorized push or merge to GitHub `main`; if publication has not been authorized, hand over the verified preparation instead. Do not request the same authorization again when it was already given conditional on the owner's setup.
+
+CI publishes the functional version through Trusted Publisher, then creates its `@indexyz/<name>@<version>` tag and GitHub Release. Follow the workflow to completion and verify all three results. Report the bootstrap upload and formal release separately. If the workflow fails, use the normal retry procedure without changing the formal version merely to retry.
+
+Agents prepare and verify the empty workspace and the formal release. The owner performs the bootstrap `npm publish` and configures npm Trusted Publisher. This sequence replaces the previous procedure that deliberately let CI's first upload fail and then had the owner publish the formal tarball by hand.
 
 ## Activation
 
 Each item is checked by the owner; missing items are reported, never guessed.
 
-| Item                                                                                                                                                                                                                      | Check                                                                                                                                                                                                 |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Trusted publisher for every published package, including a new one after its first manual publish: owner `5aaee9`, repository `pi-agent-extensions`, workflow `publish.yml`, no environment, allowed action `npm publish` | each package's settings on npmjs.com; unchanged by this setup                                                                                                                                         |
-| The publish job has no GitHub `environment` and is the only job with `id-token: write`                                                                                                                                    | `.github/workflows/publish.yml`                                                                                                                                                                       |
-| The publish job can push tags and create Releases                                                                                                                                                                         | `contents: write` on that job; `GH_TOKEN` is the run's `github.token`                                                                                                                                 |
-| The first run tags `0.1.43`                                                                                                                                                                                               | those six tags exist at `b997bd2`, pushed once with a `workflow`-scoped token because CI cannot create a ref at a commit that predates a workflow change (`git ls-remote --tags origin '@indexyz/*'`) |
+| Item                                                                                                                                                                                                                                                                      | Check                                                                                                                                                                                                 |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Trusted publisher for every published package; for a new package, configured after its `0.0.0` bootstrap upload and before the formal GitHub push: owner `5aaee9`, repository `pi-agent-extensions`, workflow `publish.yml`, no environment, allowed action `npm publish` | owner confirms the fields in each package's settings on npmjs.com before the first formal push                                                                                                        |
+| The publish job has no GitHub `environment` and is the only job with `id-token: write`                                                                                                                                                                                    | `.github/workflows/publish.yml`                                                                                                                                                                       |
+| The publish job can push tags and create Releases                                                                                                                                                                                                                         | `contents: write` on that job; `GH_TOKEN` is the run's `github.token`                                                                                                                                 |
+| The first run tags `0.1.43`                                                                                                                                                                                                                                               | those six tags exist at `b997bd2`, pushed once with a `workflow`-scoped token because CI cannot create a ref at a commit that predates a workflow change (`git ls-remote --tags origin '@indexyz/*'`) |
 
 `main` has no branch protection today, so pushing to it publishes. Whether to require pull requests for `main` is the owner's decision; this procedure works with both direct pushes and merges.
