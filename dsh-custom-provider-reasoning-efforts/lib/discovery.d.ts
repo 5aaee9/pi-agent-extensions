@@ -23,6 +23,23 @@ import { type ListedModel } from "./reasoning.ts";
  */
 export declare function listingUrl(baseURL: string, api: string): string;
 /**
+ * Join an endpoint base with its Codex-shaped capability manifest path.
+ *
+ * @param baseURL - the route's configured endpoint.
+ * @returns the manifest URL.
+ */
+export declare function manifestUrl(baseURL: string): string;
+/**
+ * Whether a protocol is served by a relay that may publish a Codex manifest.
+ *
+ * The manifest is a Codex backend's own model list, so only the Responses
+ * protocol — the shape a Codex relay proxies — is consulted for it.
+ *
+ * @param api - the route's wire protocol.
+ * @returns true when {@link probeManifest} should be attempted for the route.
+ */
+export declare function hasCodexManifest(api: string): boolean;
+/**
  * Whether this build can read a protocol's model listing.
  *
  * @param api - the route's wire protocol.
@@ -56,4 +73,20 @@ export interface RouteProbe {
  *   or fails the request, or the reply is not a model listing.
  */
 export declare function probeRoute(probe: RouteProbe): Promise<ListedModel[]>;
+/**
+ * Interrogate one route's Codex-shaped capability manifest.
+ *
+ * A relay that proxies a Codex backend publishes the backend's own model list at
+ * `/backend-api/codex/models`, with the efforts each model accepts. The endpoint
+ * is optional: a relay that does not have it answers `403`, `404`, an HTML error
+ * page, or some other JSON, all of which mean "no manifest" rather than a
+ * failure. A request that never completed or a status the endpoint owned is
+ * still an error, so a relay that is down is visible.
+ *
+ * @param probe - the endpoint, headers, and credential to use.
+ * @returns the manifest's models, or `undefined` when the relay has none.
+ * @throws Error when the endpoint could not be reached or answered with a status
+ *   other than "not found" and "forbidden".
+ */
+export declare function probeManifest(probe: RouteProbe): Promise<ListedModel[] | undefined>;
 //# sourceMappingURL=discovery.d.ts.map

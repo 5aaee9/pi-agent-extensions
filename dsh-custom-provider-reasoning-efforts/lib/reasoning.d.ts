@@ -29,6 +29,20 @@ export interface ListedModel {
  */
 export declare function effortsOf(entry: Record<string, unknown>): Efforts | undefined;
 /**
+ * Read one Codex-shaped capability manifest.
+ *
+ * A Sub2API-style relay answers `/backend-api/codex/models` with a `models`
+ * array whose entries carry the upstream backend's slug and the efforts that
+ * backend accepts under `supported_reasoning_levels` — the capability its
+ * `/v1/models` inventory does not publish. A body that is not such a manifest
+ * yields `undefined`, so a relay without the endpoint is not an error.
+ *
+ * @param body - the parsed JSON reply.
+ * @returns the advertised models in manifest order, or `undefined` when the
+ *   body is not a manifest.
+ */
+export declare function readManifestListing(body: unknown): ListedModel[] | undefined;
+/**
  * Read one model-listing reply.
  *
  * The standard `data` array takes precedence; otherwise the enriched `models`

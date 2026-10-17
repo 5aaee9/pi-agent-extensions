@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 
-import { isListableApi, listingUrl, probeRoute, type RouteProbe } from "../discovery.ts";
+import {
+  hasCodexManifest,
+  isListableApi,
+  listingUrl,
+  manifestUrl,
+  probeManifest,
+  probeRoute,
+  type RouteProbe,
+} from "../discovery.ts";
 
 interface Answer {
   readonly status?: number;
@@ -135,5 +143,86 @@ describe("probeRoute", () => {
   it("refuses an oversized reply", async () => {
     const { fetchImpl } = fetchAnswering({ body: "x".repeat(4 * 1024 * 1024 + 1) });
     await expect(probeRoute({ ...base, fetchImpl })).rejects.toThrow(/more than 4194304 bytes/);
+  });
+});
+
+describe("manifestUrl", () => {
+  it("joins the route's root with the Codex manifest path", () => {
+    expect(manifestUrl("https://aicoding.api.zeroclover.io/v1")).toBe(
+      "https://aicoding.api.zeroclover.io/backend-api/codex/models",
+    );
+    expect(manifestUrl("https://relay.example/openai/v1/")).toBe(
+      "https://relay.example/openai/backend-api/codex/models",
+    );
+    expect(manifestUrl("https://relay.example")).toBe(
+      "https://relay.example/backend-api/codex/models",
+    );
+  });
+});
+
+describe("hasCodexManifest", () => {
+  it("consults the manifest for the Responses protocol only", () => {
+    expect(hasCodexManifest("openai-responses")).toBe(true);
+    expect(hasCodexManifest("openai-completions")).toBe(false);
+    expect(hasCodexManifest("anthropic-messages")).toBe(false);
+  });
+});
+
+describe("probeManifest", () => {
+  const base: RouteProbe = {
+    route: "zero-aicoding-codex",
+    baseURL: "https://aicoding.api.zeroclover.io/v1",
+    api: "openai-responses",
+  };
+
+  it("reads the efforts each model accepts and ignores names pi-ai does not know", async () => {
+    const { calls, fetchImpl } = fetchAnswering({
+      body: JSON.stringify({
+        models: [
+          {
+            slug: "gpt-6.1-sol",
+            supported_reasoning_levels: [{ effort: "low" }, { effort: "ultra" }],
+          },
+          { slug: "gpt-6-luna", supported_reasoning_levels: ["medium"] },
+        ],
+      }),
+    });
+    const models = await probeManifest({ ...base, apiKey: "secret", fetchImpl });
+    expect(models).toEqual([
+      { id: "gpt-6.1-sol", efforts: { low: "low" } },
+      { id: "gpt-6-luna", efforts: { medium: "medium" } },
+    ]);
+    expect(calls[0]?.url).toBe("https://aicoding.api.zeroclover.io/backend-api/codex/models");
+    expect(calls[0]?.headers.get("authorization")).toBe("Bearer secret");
+  });
+
+  it("treats a relay without the endpoint as having no manifest", async () => {
+    for (const status of [403, 404]) {
+      const { fetchImpl } = fetchAnswering({ body: "<html>no</html>", status });
+      await expect(probeManifest({ ...base, fetchImpl })).resolves.toBeUndefined();
+    }
+    const html = fetchAnswering({ body: "<html>not json</html>" });
+    await expect(probeManifest({ ...base, fetchImpl: html.fetchImpl })).resolves.toBeUndefined();
+    const other = fetchAnswering({ body: JSON.stringify({ object: "list" }) });
+    await expect(probeManifest({ ...base, fetchImpl: other.fetchImpl })).resolves.toBeUndefined();
+  });
+
+  it("reports a status the endpoint owned", async () => {
+    const { fetchImpl } = fetchAnswering({ body: "{}", status: 500 });
+    await expect(probeManifest({ ...base, fetchImpl })).rejects.toThrow(
+      /backend-api\/codex\/models answered 500/,
+    );
+  });
+
+  it("reports an unreachable endpoint", async () => {
+    const fetchImpl = (async (): Promise<Response> => {
+      throw new Error("dial tcp: connection refused");
+    }) as unknown as typeof fetch;
+    await expect(probeManifest({ ...base, fetchImpl })).rejects.toThrow(/could not reach/);
+  });
+
+  it("refuses an oversized manifest", async () => {
+    const { fetchImpl } = fetchAnswering({ body: "x".repeat(4 * 1024 * 1024 + 1) });
+    await expect(probeManifest({ ...base, fetchImpl })).rejects.toThrow(/more than 4194304 bytes/);
   });
 });

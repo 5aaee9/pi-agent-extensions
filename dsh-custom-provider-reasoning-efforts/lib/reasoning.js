@@ -79,6 +79,37 @@ export function effortsOf(entry) {
     return thinking === 0 ? undefined : efforts;
 }
 /**
+ * Read one Codex-shaped capability manifest.
+ *
+ * A Sub2API-style relay answers `/backend-api/codex/models` with a `models`
+ * array whose entries carry the upstream backend's slug and the efforts that
+ * backend accepts under `supported_reasoning_levels` — the capability its
+ * `/v1/models` inventory does not publish. A body that is not such a manifest
+ * yields `undefined`, so a relay without the endpoint is not an error.
+ *
+ * @param body - the parsed JSON reply.
+ * @returns the advertised models in manifest order, or `undefined` when the
+ *   body is not a manifest.
+ */
+export function readManifestListing(body) {
+    if (!isRecord(body))
+        return undefined;
+    const listed = body["models"];
+    if (!Array.isArray(listed))
+        return undefined;
+    const models = [];
+    for (const raw of listed) {
+        if (!isRecord(raw))
+            continue;
+        const id = label(raw["slug"], raw["id"]);
+        if (id === undefined)
+            continue;
+        const efforts = effortsOf(raw);
+        models.push(efforts === undefined ? { id } : { id, efforts });
+    }
+    return models;
+}
+/**
  * Read one model-listing reply.
  *
  * The standard `data` array takes precedence; otherwise the enriched `models`

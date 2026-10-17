@@ -49,6 +49,30 @@ The probe SHALL build the listing URL the shipped discovery uses: `{baseURL}/mod
 - **WHEN** a candidate route's `api` is a protocol whose model listing this build does not read
 - **THEN** the route is reported as unsupported and nothing is written for it
 
+### Requirement: A Codex-shaped relay's capability manifest is a second source
+
+A relay that proxies a Codex backend may publish an inventory with no reasoning capability at all. The plugin SHALL therefore also consult `GET {root}/backend-api/codex/models` — the route's `baseURL` with a trailing `/v1` removed — for an `openai-responses` route whose own listing described no thinking level for at least one model that route declares. It SHALL read the manifest's `models` array, key each entry by `slug`, take its `supported_reasoning_levels` (string entries or `{effort}` objects), and merge those levels into the route's listing with the listing's own wire spellings taking precedence. A manifest that is absent — `403`, `404`, or a body that is not a manifest — SHALL mean "no manifest" rather than a failure, so a relay without the endpoint stays silent; a manifest that could not be reached, or that answered with any other status, SHALL be reported. The plugin SHALL NOT request a manifest for another protocol, and SHALL NOT request one when the listing already described every declared model.
+
+#### Scenario: A relay whose inventory says nothing
+
+- **WHEN** an `openai-responses` route's `/v1/models` lists its models by id only, and `/backend-api/codex/models` publishes `supported_reasoning_levels` for those slugs
+- **THEN** the declared models are written with the manifest's levels, in pi-ai's vocabulary
+
+#### Scenario: A relay without the endpoint
+
+- **WHEN** the manifest request answers `403`, `404`, or a body that is not a manifest
+- **THEN** the route is treated as having nothing more to say, and no failure is reported
+
+#### Scenario: A manifest the endpoint failed to serve
+
+- **WHEN** the manifest request cannot be made, or answers with a status other than `403` and `404`
+- **THEN** the failure is reported with the URL and the status
+
+#### Scenario: A listing that already describes every declared model
+
+- **WHEN** every declared model already has a level from the route's own listing
+- **THEN** no manifest is requested for that route, and another protocol is never asked for one
+
 ### Requirement: The advertised levels become a declaration
 
 The probe SHALL read the standard `data` array, or the `models` object some compatible gateways expose, and SHALL read reasoning from `supported_reasoning_levels`, `reasoning_levels`, `supported_reasoning_efforts`, or a `reasoning` object's `efforts` / `supported_efforts`. A level entry MAY be a string or an object carrying `effort`, `level`, `id`, or `name`. A name that is a pi-ai thinking level SHALL map to itself as its wire spelling, with `off` mapped to `null`; a name that is not a thinking level SHALL be ignored. A model that advertises no thinking level, or that declares `reasoning: false`, SHALL produce no declaration and SHALL be left as it is. An explicit row declaration SHALL win over a discovered one for the same route and model.

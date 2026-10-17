@@ -12,7 +12,7 @@
  */
 import { applyIntents } from "./apply.js";
 import { describeEfforts } from "./declarations.js";
-import { probeRoute } from "./discovery.js";
+import { hasCodexManifest, probeManifest, probeRoute } from "./discovery.js";
 /** How many lines of changes or skips one answer lists before summarizing. */
 const MAX_LISTED = 5;
 function isRecord(value) {
@@ -120,6 +120,46 @@ async function resolveApiKey(deps, ref) {
     const value = (deps.env ?? process.env)[ref];
     return value !== undefined && value.length > 0 ? value : undefined;
 }
+/**
+ * Whether a route's own listing left something for its Codex manifest to answer.
+ *
+ * The manifest costs a second request, so it is consulted only when the listing
+ * described no thinking level for at least one model the route declares — the
+ * state a Codex relay that publishes no capability in `/v1/models` is in.
+ */
+function needsManifest(api, listed, declared) {
+    if (!hasCodexManifest(api) || declared.size === 0)
+        return false;
+    const levelled = new Set(listed.filter((model) => model.efforts !== undefined).map((model) => model.id));
+    for (const id of declared)
+        if (!levelled.has(id))
+            return true;
+    return false;
+}
+/**
+ * Merge a manifest's models into a listing's.
+ *
+ * A model the listing already describes keeps its own wire spellings and gains
+ * the manifest's additional levels; a model only the manifest describes is
+ * added, so an inventory that omits a model does not hide the manifest's answer
+ * for it.
+ */
+function mergeListings(listed, manifest) {
+    const merged = new Map();
+    for (const model of listed)
+        merged.set(model.id, model);
+    for (const model of manifest) {
+        const existing = merged.get(model.id);
+        if (existing === undefined) {
+            merged.set(model.id, model);
+            continue;
+        }
+        if (model.efforts === undefined)
+            continue;
+        merged.set(model.id, { id: model.id, efforts: { ...model.efforts, ...existing.efforts } });
+    }
+    return [...merged.values()];
+}
 /** Interrogate every candidate route and turn the advertised levels into intents. */
 async function discoverIntents(deps, options, descriptor, signal) {
     const user = providersOf(descriptor.user);
@@ -163,6 +203,16 @@ async function discoverIntents(deps, options, descriptor, signal) {
         catch (error) {
             failures.push(`${route}: ${message(error)}`);
             continue;
+        }
+        if (needsManifest(api, listed, declared)) {
+            try {
+                const manifest = await probeManifest(probe);
+                if (manifest !== undefined)
+                    listed = mergeListings(listed, manifest);
+            }
+            catch (error) {
+                failures.push(`${route}: ${message(error)}`);
+            }
         }
         for (const model of listed) {
             if (model.efforts === undefined)

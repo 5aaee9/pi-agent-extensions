@@ -14,7 +14,14 @@ import {
   type RuntimeOptions,
 } from "../runtime.ts";
 
-import { fakeSettings, magpieListing, magpieProfile } from "./fixture.ts";
+import {
+  codexInventory,
+  codexManifest,
+  codexProfile,
+  fakeSettings,
+  magpieListing,
+  magpieProfile,
+} from "./fixture.ts";
 
 function fakeFetch(
   body: unknown,
@@ -393,5 +400,157 @@ describe("SettingsSeam typing", () => {
   it("keeps the fake usable as a seam", () => {
     const fake: SettingsSeam = fakeSettings(magpieProfile()).seam;
     expect(fake.describe()[0]?.ns).toBe("llm-pi-ai");
+  });
+});
+
+describe("Codex manifest discovery", () => {
+  /** A transport that answers per URL, so both requests of one route are visible. */
+  function routingFetch(
+    answers: Record<string, { readonly status?: number; readonly body: string }>,
+  ): { readonly fetchImpl: typeof fetch; readonly urls: string[] } {
+    const urls: string[] = [];
+    const fetchImpl = (async (input: unknown): Promise<Response> => {
+      const url = String(input);
+      urls.push(url);
+      const answer = answers[url];
+      if (answer === undefined) return new Response("not found", { status: 404 });
+      return new Response(answer.body, { status: answer.status ?? 200 });
+    }) as unknown as typeof fetch;
+    return { fetchImpl, urls };
+  }
+
+  const INVENTORY = "https://aicoding.api.zeroclover.io/v1/models";
+  const MANIFEST = "https://aicoding.api.zeroclover.io/backend-api/codex/models";
+
+  it("fills a route whose inventory publishes no levels from its manifest", async () => {
+    const fake = fakeSettings(codexProfile());
+    const { fetchImpl, urls } = routingFetch({
+      [INVENTORY]: { body: JSON.stringify(codexInventory()) },
+      [MANIFEST]: { body: JSON.stringify(codexManifest()) },
+    });
+    const runtime = createRuntime(
+      options({ declarations: {} }),
+      deps({ settings: () => fake.seam, fetchImpl, env: {} }),
+    );
+    const summary = await runtime.run("discover");
+    expect(urls).toEqual([INVENTORY, MANIFEST]);
+    expect(summary.failures).toEqual([]);
+    const providers = fake.state.user["providers"] as {
+      "zero-aicoding-codex": { models: Array<Record<string, unknown>> };
+    };
+    const models = providers["zero-aicoding-codex"].models;
+    expect(models[0]?.["reasoningEfforts"]).toEqual({
+      low: "low",
+      medium: "medium",
+      high: "high",
+      xhigh: "xhigh",
+      max: "max",
+    });
+    expect(models[1]?.["reasoningEfforts"]).toEqual({
+      low: "low",
+      medium: "medium",
+      high: "high",
+      xhigh: "xhigh",
+      max: "max",
+    });
+    expect(models[2]).not.toHaveProperty("reasoningEfforts");
+    expect(summary.result.changes).toHaveLength(2);
+  });
+
+  it("keeps the listing's own wire spellings and adds the manifest's extra levels", async () => {
+    const fake = fakeSettings(codexProfile());
+    const { fetchImpl } = routingFetch({
+      [INVENTORY]: {
+        body: JSON.stringify({
+          data: [
+            {
+              id: "gpt-6.1-sol",
+              reasoning: true,
+              supported_reasoning_levels: [{ effort: "low" }],
+            },
+            { id: "gpt-6-luna" },
+          ],
+        }),
+      },
+      [MANIFEST]: { body: JSON.stringify(codexManifest()) },
+    });
+    const runtime = createRuntime(
+      options({ declarations: {} }),
+      deps({ settings: () => fake.seam, fetchImpl, env: {} }),
+    );
+    await runtime.run("discover");
+    const providers = fake.state.user["providers"] as {
+      "zero-aicoding-codex": { models: Array<Record<string, unknown>> };
+    };
+    expect(providers["zero-aicoding-codex"].models[0]?.["reasoningEfforts"]).toEqual({
+      low: "low",
+      medium: "medium",
+      high: "high",
+      xhigh: "xhigh",
+      max: "max",
+    });
+  });
+
+  it("does not ask for a manifest when the listing described every declared model", async () => {
+    const fake = fakeSettings(magpieProfile());
+    const { fetchImpl, urls } = routingFetch({
+      "https://magpie.indexyz.me/v1/models": { body: JSON.stringify(magpieListing()) },
+    });
+    const runtime = createRuntime(
+      options({ declarations: {} }),
+      deps({ settings: () => fake.seam, fetchImpl, env: { MAGPIE_API_KEY: "k" } }),
+    );
+    const summary = await runtime.run("discover");
+    expect(urls).toHaveLength(1);
+    expect(summary.result.kind).toBe("applied");
+  });
+
+  it("treats a relay without the endpoint as having nothing more to say", async () => {
+    const fake = fakeSettings(codexProfile());
+    const { fetchImpl, urls } = routingFetch({
+      [INVENTORY]: { body: JSON.stringify(codexInventory()) },
+      [MANIFEST]: { status: 403, body: "<html>forbidden</html>" },
+    });
+    const runtime = createRuntime(
+      options({ declarations: {} }),
+      deps({ settings: () => fake.seam, fetchImpl, env: {} }),
+    );
+    const summary = await runtime.run("discover");
+    expect(urls).toEqual([INVENTORY, MANIFEST]);
+    expect(summary.failures).toEqual([]);
+    expect(summary.result.kind).toBe("unchanged");
+  });
+
+  it("reports a manifest the endpoint failed to serve", async () => {
+    const fake = fakeSettings(codexProfile());
+    const { fetchImpl } = routingFetch({
+      [INVENTORY]: { body: JSON.stringify(codexInventory()) },
+      [MANIFEST]: { status: 500, body: "{}" },
+    });
+    const runtime = createRuntime(
+      options({ declarations: {} }),
+      deps({ settings: () => fake.seam, fetchImpl, env: {} }),
+    );
+    const summary = await runtime.run("discover");
+    expect(summary.failures[0]).toMatch(/backend-api\/codex\/models answered 500/);
+  });
+
+  it("does not consult a manifest for another protocol", async () => {
+    const profile = codexProfile();
+    const route = (profile["providers"] as Record<string, Record<string, unknown>>)[
+      "zero-aicoding-codex"
+    ];
+    if (route !== undefined) route["api"] = "openai-completions";
+    const fake = fakeSettings(profile);
+    const { fetchImpl, urls } = routingFetch({
+      [INVENTORY]: { body: JSON.stringify(codexInventory()) },
+      [MANIFEST]: { body: JSON.stringify(codexManifest()) },
+    });
+    const runtime = createRuntime(
+      options({ declarations: {} }),
+      deps({ settings: () => fake.seam, fetchImpl, env: {} }),
+    );
+    await runtime.run("discover");
+    expect(urls).toEqual([INVENTORY]);
   });
 });

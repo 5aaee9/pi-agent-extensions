@@ -228,3 +228,63 @@ export async function flush(): Promise<void> {
     setTimeout(resolve, 0);
   });
 }
+
+/** A Codex-shaped relay route: an explicit model list whose inventory publishes no reasoning. */
+export function codexProfile(): Record<string, unknown> {
+  return {
+    providers: {
+      "zero-aicoding-codex": {
+        displayName: "Zero AI Coding Codex",
+        apiKeyEnv: "ZERO_AICODING_CODEX_API_KEY",
+        api: "openai-responses",
+        baseURL: "https://aicoding.api.zeroclover.io/v1",
+        models: [
+          { id: "gpt-6.1-sol", name: "GPT-6.1-Sol", contextWindow: 256000 },
+          { id: "gpt-6-luna", name: "GPT-6-Luna", contextWindow: 256000 },
+          { id: "codex-auto-review", name: "Codex Auto Review", contextWindow: 256000 },
+        ],
+      },
+    },
+  };
+}
+
+/** The inventory that route answers: ids only, no reasoning capability. */
+export function codexInventory(): unknown {
+  return {
+    data: [
+      { id: "gpt-6.1-sol", object: "model", owned_by: "openai", display_name: "GPT-6.1-Sol" },
+      { id: "gpt-6-luna", object: "model", owned_by: "openai", display_name: "GPT-6-Luna" },
+      { id: "codex-auto-review", object: "model", owned_by: "openai" },
+    ],
+  };
+}
+
+/** The Codex manifest that route answers, carrying the efforts the backend accepts. */
+export function codexManifest(): unknown {
+  return {
+    models: [
+      {
+        slug: "gpt-6.1-sol",
+        display_name: "GPT-6.1-Sol",
+        supported_reasoning_levels: [
+          { effort: "low", description: "Fast responses with lighter reasoning" },
+          { effort: "medium", description: "Balances speed and reasoning depth" },
+          { effort: "high", description: "Greater reasoning depth" },
+          { effort: "xhigh", description: "Extra high reasoning depth" },
+          { effort: "max", description: "Maximum reasoning depth" },
+          { effort: "ultra", description: "Maximum reasoning with delegation" },
+        ],
+      },
+      {
+        slug: "gpt-6-luna",
+        supported_reasoning_levels: [
+          { effort: "low" },
+          { effort: "medium" },
+          { effort: "high" },
+          { effort: "xhigh" },
+          { effort: "max" },
+        ],
+      },
+    ],
+  };
+}

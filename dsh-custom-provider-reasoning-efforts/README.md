@@ -111,6 +111,45 @@ models the route already declares are considered, so a gateway listing hundreds
 of models cannot add any. An explicit declaration always wins over a discovered
 one, and a model whose entry advertises no levels is left exactly as it is.
 
+### The Codex manifest, for a relay whose inventory says nothing
+
+A relay that proxies a Codex backend sometimes publishes an inventory with no
+capability at all — only `id`, `display_name`, and `owned_by`, the shape
+[`pi-provider-sub2api`](../pi-provider-sub2api) also works around. The same relay
+usually answers the backend's own model list at
+`GET {root}/backend-api/codex/models` (`root` is the route's `baseURL` with a
+trailing `/v1` removed), where each entry carries `slug` and the efforts the
+backend accepts:
+
+```json
+{
+  "models": [
+    {
+      "slug": "gpt-6.1-sol",
+      "supported_reasoning_levels": [
+        { "effort": "low" },
+        { "effort": "medium" },
+        { "effort": "high" },
+        { "effort": "xhigh" },
+        { "effort": "max" },
+        { "effort": "ultra" }
+      ]
+    }
+  ]
+}
+```
+
+That manifest is a second discovery source. It is consulted only for an
+`openai-responses` route whose own listing described no level for at least one
+model the route declares, so a relay that already answers costs no extra request;
+its levels are merged with the listing's (the listing's own spellings win) and
+only the route's declared models are considered. A relay without the endpoint
+answers `403`, `404`, or something that is not a manifest, which means "nothing
+more to say" rather than a failure; an endpoint that is unreachable, or that
+answers with its own error status, is reported. `ultra` is not a pi-ai thinking
+level, so it is dropped from a discovered declaration — declare `max: ultra` in
+the route's own `providers` entry to wire the `max` level to it.
+
 Discovery is on by default and runs once after startup (see `applyOnLoad` and
 `discover` below); `/reasoning-efforts discover` runs it on demand. Every
 interrogation failure is contained to a warning and one line in the command's

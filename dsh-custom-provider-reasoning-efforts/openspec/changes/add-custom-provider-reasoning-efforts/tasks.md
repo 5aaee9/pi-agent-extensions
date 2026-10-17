@@ -22,6 +22,8 @@
 
 ## 4. Planning and the settings write
 
+- [x] 3.4 Implement the Codex capability manifest source in `reasoning.ts` and `discovery.ts`: `readManifestListing` over `models[].supported_reasoning_levels` keyed by `slug`, `manifestUrl` at the route root, `probeManifest` treating an absent endpoint as no manifest, and `hasCodexManifest` limiting it to the Responses protocol
+- [x] 3.5 Test the manifest source in `test/discovery.test.ts` and `test/runtime.test.ts`: the URL, the level mapping, an absent endpoint, a failing endpoint, the unlevelled-model trigger, the merge precedence, and the protocol gate
 - [x] 4.1 Implement `plan.ts`: `planProviders(user, intents)` cloning the profile's own `providers`, resolving each intent against the route's explicit `models` list by id, recording a change only when the value differs, and recording a skip with its reason for an absent route, a route without an explicit list, and an absent model
 - [x] 4.2 Implement `apply.ts`: the `SettingsSeam`/`ProviderDescriptor` shapes, `applyIntents` with `dryRun`, the unavailable/read-only results, and the single conflict retry against a fresh descriptor
 - [x] 4.3 Test both in `test/plan.test.ts` and `test/apply.test.ts`: the add/unchanged/remove/skip cases and the write/unchanged/dry-run/unavailable/conflict paths
