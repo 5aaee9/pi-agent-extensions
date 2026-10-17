@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.1
+
+### Patch Changes
+
+- Release the complete session-title plugin with configurable summary models, native DSH settings controls, bounded generation, deterministic fallback and manual-rename protection. Verify the installed package and browser module for the GitHub Actions release.
+
 ## 0.1.0
 
 - Generate concise session titles from the first user message with a separately configurable summary model.
