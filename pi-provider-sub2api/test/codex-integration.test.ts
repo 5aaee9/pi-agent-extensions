@@ -81,7 +81,7 @@ describe("real Codex adapter integration", () => {
       const requests: Record<string, unknown>[] = [];
       vi.stubGlobal("fetch", async (input: URL | RequestInfo, init?: RequestInit) => {
         if (String(input).endsWith("/backend-api/codex/models")) {
-          return Response.json({ models: [{ slug: "gpt-5.5" }] });
+          return Response.json({ models: [{ slug: "gpt-5-synthetic" }] });
         }
         if (String(input).endsWith("/v1/responses")) {
           requests.push(JSON.parse(String(init?.body)));
@@ -107,6 +107,7 @@ describe("real Codex adapter integration", () => {
       const handlers = new Map<string, Handler>();
       let toggleFast: Handler;
       let toggleUltrafast: Handler;
+      let toggleDaybreak: Handler;
       let providerConfig: ProviderConfig;
       await extension({
         registerProvider(_name: string, config: ProviderConfig) {
@@ -115,6 +116,7 @@ describe("real Codex adapter integration", () => {
         registerCommand(name: string, options: { handler: Handler }) {
           if (name === "toggle-fast") toggleFast = options.handler;
           if (name === "toggle-ultrafast") toggleUltrafast = options.handler;
+          if (name === "toggle-daybreak") toggleDaybreak = options.handler;
         },
         on(name: string, handler: Handler) {
           handlers.set(name, handler);
@@ -141,9 +143,12 @@ describe("real Codex adapter integration", () => {
         ui: { notify: vi.fn<(message: string, level: string) => void>() },
         sessionManager: { getBranch: () => [user] },
       };
-      for (const sessionTier of [undefined, "priority", "ultrafast", undefined]) {
-        if (sessionTier === "priority") await toggleFast!("", ctx);
-        else if (requests.length) await toggleUltrafast!("", ctx);
+      // Toggling Ultrafast off selects an explicit default tier.
+      for (const sessionTier of [undefined, "priority", "ultrafast", "default"]) {
+        if (sessionTier === "priority") {
+          await toggleFast!("", ctx);
+          await toggleDaybreak!("", ctx);
+        } else if (requests.length) await toggleUltrafast!("", ctx);
         const result = await handlers.get("session_before_compact")!(
           {
             branchEntries: [user],
@@ -158,6 +163,7 @@ describe("real Codex adapter integration", () => {
         const tier = expected ?? sessionTier;
         expect(requests.at(-1)?.service_tier).toBe(tier);
         expect(Object.hasOwn(requests.at(-1)!, "service_tier")).toBe(tier !== undefined);
+        expect(requests.at(-1)).not.toHaveProperty("access_programs");
         // The compaction override must never leak into ordinary conversation requests.
         const ordinary = handlers.get("before_provider_request")!(
           { payload: { model: ctx.model.id } },
@@ -167,6 +173,98 @@ describe("real Codex adapter integration", () => {
       }
       expect(requests).toHaveLength(4);
       expect(ctx.ui.notify).not.toHaveBeenCalledWith(expect.anything(), "warning");
+    },
+  );
+
+  it.each([
+    { providerTier: "fast", conversation: { serviceTier: "default" }, expected: "default" },
+    { providerTier: "fast", conversation: {}, expected: "priority" },
+    { providerTier: undefined, conversation: undefined, expected: undefined },
+  ])(
+    "resolves the compaction fallback tier from the conversation model ($expected)",
+    async ({ providerTier, conversation, expected }) => {
+      writeFileSync(
+        join(stateDir, "sub2api.json"),
+        JSON.stringify({
+          codex: {
+            baseURL: "https://codex-integration.example",
+            token: "integration-relay-token",
+            api: "openai-codex-responses",
+            compress_model: "gpt-5-synthetic-compress",
+            requestModes: { ...(providerTier && { serviceTier: providerTier }), daybreak: "blue" },
+            modelRequestModes: {
+              ...(conversation && { "gpt-5-synthetic": conversation }),
+              "gpt-5-synthetic-compress": { serviceTier: "ultrafast" },
+            },
+          },
+        }),
+      );
+      const requests: Record<string, unknown>[] = [];
+      vi.stubGlobal("fetch", async (input: URL | RequestInfo, init?: RequestInit) => {
+        if (String(input).endsWith("/backend-api/codex/models")) {
+          return Response.json({ models: [{ slug: "gpt-5-synthetic" }] });
+        }
+        if (String(input).endsWith("/v1/responses")) {
+          requests.push(JSON.parse(String(init?.body)));
+          const response = {
+            id: "cmp-config-tier",
+            status: "completed",
+            output: [{ type: "compaction", encrypted_content: "opaque-config-tier" }],
+          };
+          const events = [
+            { type: "response.output_item.done", item: response.output[0] },
+            { type: "response.completed", response },
+          ];
+          return new Response(
+            events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(""),
+            { headers: { "Content-Type": "text/event-stream" } },
+          );
+        }
+        return new Response(null, { status: 404 });
+      });
+      type Handler = (event: any, ctx: any) => any;
+      const handlers = new Map<string, Handler>();
+      let providerConfig: ProviderConfig;
+      await extension({
+        registerProvider(_name: string, config: ProviderConfig) {
+          providerConfig = config;
+        },
+        registerCommand() {},
+        on(name: string, handler: Handler) {
+          handlers.set(name, handler);
+        },
+        getAllTools: () => [],
+        getActiveTools: () => [],
+      } as unknown as ExtensionAPI);
+      const user = {
+        type: "message",
+        id: "user-1",
+        parentId: null,
+        timestamp: new Date().toISOString(),
+        message: { role: "user", content: [{ type: "text", text: "hi" }], timestamp: Date.now() },
+      };
+      const ctx = {
+        model: { ...providerConfig!.models![0], provider: "codex" },
+        modelRegistry: { find: () => undefined },
+        hasUI: true,
+        getSystemPrompt: () => "You are Codex.",
+        ui: { notify: vi.fn<(message: string, level: string) => void>() },
+        sessionManager: { getBranch: () => [user] },
+      };
+      const result = await handlers.get("session_before_compact")!(
+        {
+          branchEntries: [user],
+          preparation: { firstKeptEntryId: user.id, tokensBefore: 100 },
+          signal: new AbortController().signal,
+        },
+        ctx,
+      );
+      expect(result?.compaction).toBeDefined();
+      expect(requests).toHaveLength(1);
+      expect(requests[0]!.model).toBe("gpt-5-synthetic-compress");
+      expect(requests[0]!.service_tier).toBe(expected);
+      expect(Object.hasOwn(requests[0]!, "service_tier")).toBe(expected !== undefined);
+      expect(requests[0]).not.toHaveProperty("access_programs");
     },
   );
 
@@ -189,7 +287,7 @@ describe("real Codex adapter integration", () => {
         return Response.json({
           models: [
             {
-              slug: "gpt-5.6-sol",
+              slug: "gpt-5-synthetic-sol",
               supported_reasoning_levels: ["low", "medium", "high", "xhigh", "max", "ultra"],
             },
           ],
@@ -293,7 +391,7 @@ describe("real Codex adapter integration", () => {
     expect(transportCalls[0]!.headers.get("chatgpt-account-id")).toBeNull();
     expect(transportCalls[0]!.redirect).toBe("error");
     expect(transportCalls[0]!.body).toMatchObject({
-      model: "gpt-5.6-sol",
+      model: "gpt-5-synthetic-sol",
       reasoning: { effort: "max" },
     });
     expect(transportCalls[0]!.body).toMatchObject({
@@ -304,7 +402,7 @@ describe("real Codex adapter integration", () => {
 
     expect(toggleUltra).toBeTypeOf("function");
     expect(toggleFast).toBeTypeOf("function");
-    const commandContext = { ui: { notify() {} }, model: { reasoning: true } };
+    const commandContext = { ui: { notify() {} }, model };
     await toggleUltra!("", commandContext);
     await toggleFast!("", commandContext);
     expect(setThinkingLevel).toHaveBeenCalledWith("max");
@@ -327,7 +425,7 @@ describe("real Codex adapter integration", () => {
 
     expect(transportCalls).toHaveLength(2);
     expect(transportCalls[1]!.body).toMatchObject({
-      model: "gpt-5.6-sol",
+      model: "gpt-5-synthetic-sol",
       reasoning: { effort: "ultra" },
       service_tier: "priority",
     });
@@ -356,8 +454,9 @@ describe("real Codex adapter integration", () => {
         reasoning: { effort: "ultra" },
         tools: expect.arrayContaining([{ type: "web_search" }]),
       });
+      // Toggling Ultrafast off explicitly selects the default tier.
       expect((body as Record<string, unknown>).service_tier).toBe(
-        enabled ? "ultrafast" : undefined,
+        enabled ? "ultrafast" : "default",
       );
     }
   });

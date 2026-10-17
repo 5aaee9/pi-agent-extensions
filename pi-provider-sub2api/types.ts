@@ -34,6 +34,16 @@ export const FAST_MODE_APIS = new Set<SupportedApi>([
   "openai-completions",
 ]);
 
+export const SERVICE_TIER_MODES = ["default", "fast", "ultrafast"] as const;
+export type ServiceTierMode = (typeof SERVICE_TIER_MODES)[number];
+export const DAYBREAK_MODES = ["standard", "blue"] as const;
+export type DaybreakMode = (typeof DAYBREAK_MODES)[number];
+
+export interface RequestModes {
+  serviceTier?: ServiceTierMode;
+  daybreak?: DaybreakMode;
+}
+
 export type ServerToolDefinition = Record<string, unknown>;
 
 export interface RelayServerTools {
@@ -58,6 +68,8 @@ export interface RelayConfig {
   compressServiceTier?: "fast" | "ultrafast" | null;
   compressModel?: string | null;
   serverTools?: RelayServerTools;
+  requestModes: RequestModes;
+  modelRequestModes: Map<string, RequestModes>;
   responsesUrl: string;
   codexResponsesUrl: string;
   codexAuthToken: string;

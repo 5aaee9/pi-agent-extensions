@@ -99,6 +99,53 @@ The configuration directory follows `PI_CODING_AGENT_DIR` when that environment 
 
 Restart pi after creating the file, or run `/reload` in an interactive session. Then use `/model` to select a discovered model under the configured provider.
 
+### Request modes
+
+Fast, Ultrafast, and Daybreak are request modes. Each provider can store defaults in `requestModes` and per-model preferences in `modelRequestModes`, keyed by the exact model ID as discovered under that provider:
+
+```json
+{
+  "my-relay": {
+    "baseURL": "https://relay.example.com/v1",
+    "token": "${SUB2API_TOKEN}",
+    "api": "openai-responses",
+    "requestModes": { "serviceTier": "fast", "daybreak": "blue" },
+    "modelRequestModes": {
+      "your-openai-model-id": { "serviceTier": "default" }
+    }
+  }
+}
+```
+
+Both objects accept two optional fields:
+
+| Field         | Values                               | Request field                                               |
+| ------------- | ------------------------------------ | ----------------------------------------------------------- |
+| `serviceTier` | `"default"`, `"fast"`, `"ultrafast"` | `service_tier`: `"default"`, `"priority"`, or `"ultrafast"` |
+| `daybreak`    | `"standard"`, `"blue"`               | `access_programs.cyber`: `"standard"` or `"daybreak_blue"`  |
+
+Each field resolves independently, first match wins: the current model's unsaved toggle, its `modelRequestModes` entry, the provider's `requestModes`, and otherwise no change to the request. In the example, `your-openai-model-id` sends `service_tier: "default"` with Daybreak Blue, while other eligible models of `my-relay` inherit Fast and Blue. The same model ID under another provider uses only that provider's settings. `default` and `standard` are explicit choices that override an inherited Fast/Ultrafast or Blue; they are not the same as leaving the field out. To return a field to inheritance, delete it (or the model entry) from the file and run `/reload`.
+
+Model keys follow the `compress_model` rules (1–256 characters, no surrounding whitespace or control characters). A `null`, non-object, or unknown value fails configuration loading with an error naming the provider and field. These settings only choose what the extension sends; they do not establish that a model or account is eligible for a tier or program, and the upstream reports any rejection.
+
+Mode commands change only the selected provider/model, in memory:
+
+- `/toggle-fast` and `/toggle-ultrafast` select a tier. They are mutually exclusive; toggling the active tier off selects `default`.
+- `/toggle-daybreak` switches between Blue and `standard`; from an unset state it selects Blue. It is independent of the tier, so either tier can be combined with Daybreak.
+
+Unsaved changes stay with their model when you switch models and disappear on `/reload` or restart. A command that does not apply to the selected model (see [Routing behavior](#routing-behavior)) is rejected without changing anything.
+
+Save explicitly with `/sub2api-save`:
+
+```text
+/sub2api-save
+/sub2api-save provider
+```
+
+Without an argument it writes the selected model's current effective modes to `modelRequestModes["<model>"]`. With `provider` it writes them to that provider's `requestModes`. Either form replaces only the target object with every field that currently resolves to a value, including inherited ones, so the saved scope pins them; with nothing set it saves `{}`. Saving the provider defaults does not remove model entries, so existing model-specific preferences, including the current model's, still take precedence. Other models' unsaved toggles, `/toggle-ultra`, and compaction settings are never saved, and nothing is saved automatically.
+
+A save rereads `sub2api.json`, changes only the target object, and atomically replaces the file (the target of a symlink) while keeping its permissions; credential expressions such as `${VAR}` and `!command` are written back literally and never executed by a save. The file is rewritten as JSON with two-space indentation, so custom formatting is not preserved. Saves within one Pi process run one at a time; two Pi processes saving at the same moment are last-writer-wins. A missing or invalid file or provider fails the save without writing and leaves unsaved toggles in effect.
+
 ### Codex compaction model
 
 Set `compress_model` on a provider in `sub2api.json` to use a different model for native Codex compaction:
@@ -131,21 +178,21 @@ When discovery finds models routed through `openai-codex-responses` and the host
 /openai-compress default
 ```
 
-Both arguments are optional. A single `default`, `fast`, or `ultrafast` argument is treated as the tier, not a model name. Explicit arguments override `compress_model` / `compress_service_tier` for this compaction only; omitted arguments keep the configured defaults and then fall back to the current conversation model/session tier. `default` explicitly sends `service_tier: "default"`, `fast` sends `"priority"`, and `ultrafast` sends `"ultrafast"`.
+Both arguments are optional. A single `default`, `fast`, or `ultrafast` argument is treated as the tier, not a model name. Explicit arguments override `compress_model` / `compress_service_tier` for this compaction only; omitted arguments keep the configured defaults and then fall back to the current conversation model and its resolved tier. `default` explicitly sends `service_tier: "default"`, `fast` sends `"priority"`, and `ultrafast` sends `"ultrafast"`.
 
-This does not change the selected conversation model, session toggles, configuration, or later automatic compactions. Failed command-triggered native compaction is cancelled rather than silently falling back to a different textual compaction path. The command remains registered when switching models, but rejects unsupported models at execution time.
+This does not change the selected conversation model, request modes, configuration, or later automatic compactions. Failed command-triggered native compaction is cancelled rather than silently falling back to a different textual compaction path. The command remains registered when switching models, but rejects unsupported models at execution time.
 
 ### Codex compaction service tier
 
 Set `compress_service_tier` on a provider in `sub2api.json` to override the service tier for native Codex compaction only:
 
-| Value             | Compaction request                                                                                                        |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `"fast"`          | Sends `service_tier: "priority"`                                                                                          |
-| `"ultrafast"`     | Sends `service_tier: "ultrafast"`                                                                                         |
-| `null` or omitted | Inherits the current session's tier (`/toggle-fast` or `/toggle-ultrafast`); omits `service_tier` when neither is enabled |
+| Value             | Compaction request                                                                                                              |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `"fast"`          | Sends `service_tier: "priority"`                                                                                                |
+| `"ultrafast"`     | Sends `service_tier: "ultrafast"`                                                                                               |
+| `null` or omitted | Uses the conversation model's resolved `serviceTier` ([Request modes](#request-modes)); omits `service_tier` when none resolves |
 
-A non-null configuration takes precedence over the session setting. It does not change ordinary conversation requests or Pi's fallback textual compaction. The relay must support the selected tier.
+A non-null configuration takes precedence over the conversation model's tier. The fallback follows the conversation model even when `compress_model` names another model, sends an explicit `default` as `service_tier: "default"`, and never adds Daybreak to the compaction request. It does not change ordinary conversation requests or Pi's fallback textual compaction. The relay must support the selected tier.
 
 ### Provider-hosted tools
 
@@ -268,13 +315,9 @@ If the first native compact request fails, pi's normal textual compaction remain
 
 When a relayed Codex stream reports or throws an upstream error, including `Upstream request failed` and `stream_read_error`, the error is surfaced to pi unchanged so pi's own retry handling can retry the turn. Context-window overflow errors reach pi the same way, allowing its normal compaction recovery to run.
 
-Run `/toggle-fast` to enable OpenAI Fast mode for the current session. While enabled, requests for OpenAI model IDs routed through Codex Responses, OpenAI Responses, or Chat Completions override the top-level `service_tier` with `"priority"`, and the usage footer adds `[FAST]`. Run the command again to disable it. The relay remains responsible for model/account eligibility and Fast-mode policy; current Sub2API versions derive the upstream `x-codex-routing-hint` from the final model and service tier, so the extension does not forge that gateway-owned header.
+[Request modes](#request-modes) apply to OpenAI model IDs only. Fast (`service_tier: "priority"`) and an explicit `default` tier apply to Codex Responses, OpenAI Responses, and Chat Completions requests. Ultrafast (`service_tier: "ultrafast"`) and Daybreak (`access_programs.cyber`, preserving other `access_programs` fields) apply only to Codex Responses and OpenAI Responses; a saved Ultrafast or Daybreak preference stays stored but is neither sent nor shown for a Chat Completions model. The usage footer shows `[FAST]`, `[ULTRAFAST]`, and `[DAYBREAK]` for the selected model's active modes. Without a resolved Daybreak setting the field stays untouched, which can let the upstream select Daybreak automatically; `standard` opts out explicitly. Daybreak selects Blue, not Red, and grants no access by itself. Ultrafast does not change reasoning effort and may carry higher upstream charges.
 
-Run `/toggle-ultrafast` to send `service_tier: "ultrafast"` on OpenAI Codex Responses and OpenAI Responses requests and show `[ULTRAFAST]`. Fast and Ultrafast are mutually exclusive: enabling either disables the other; toggling the active tier off restores the original request tier rather than restoring the previous mode. Ultrafast does not change reasoning effort, is not injected into Chat Completions, and may carry higher upstream charges.
-
-Run `/toggle-daybreak` to select `access_programs.cyber: "daybreak_blue"` on OpenAI Codex Responses and OpenAI Responses requests and show `[DAYBREAK]`. Toggle it again to explicitly request `"standard"`; omitting the field can let the upstream automatically select Daybreak. Before the first toggle, the extension leaves the field untouched. Other `access_programs` fields are preserved. This command selects Blue, not Red, and does not change the model or grant access: the model, relay, and upstream account must support the selection. Daybreak is independent of Fast, Ultrafast, and ultra reasoning.
-
-Both new modes are in-memory toggles, reset on extension reload, and affect only this extension's OpenAI generation requests (not the separate native compaction request). The protocol was checked against [Codex commit `550eb505`](https://github.com/openai/codex/tree/550eb50545a78468a09ce86b82426338640ef22d), including `cyber_access_program.rs` and service-tier tests, plus the official [Daybreak](https://developers.openai.com/api/docs/guides/daybreak) and [Ultrafast](https://developers.openai.com/api/docs/guides/ultrafast-mode) guides. Eligibility and errors are left to the upstream, as with Fast mode.
+The relay remains responsible for model/account eligibility and tier policy; current Sub2API versions derive the upstream `x-codex-routing-hint` from the final model and service tier, so the extension does not forge that gateway-owned header. The protocol was checked against [Codex commit `550eb505`](https://github.com/openai/codex/tree/550eb50545a78468a09ce86b82426338640ef22d), including `cyber_access_program.rs` and service-tier tests, plus the official [Daybreak](https://developers.openai.com/api/docs/guides/daybreak) and [Ultrafast](https://developers.openai.com/api/docs/guides/ultrafast-mode) guides.
 
 Reasoning models use the upstream Codex manifest's `supported_reasoning_levels` when available, so pi exposes only the efforts declared for each model. Pi has one highest UI level, `max`; by default it sends the upstream `max` effort when advertised. Run `/toggle-ultra` to switch the current session into ultra mode: the command selects Pi's `max` level, remaps it to the upstream `ultra` effort for models that advertise it, and adds `[ULTRA ENABLED]` to the usage footer. Run it again to restore the normal `max` wire value. This lets models such as `gpt-5.6` use their highest `gpt-5.6-sol` effort without adding a Pi-only level name. `minimal` still clamps to `low` because relayed Codex backends reject the `minimal` and `none` efforts. The Codex adapter omits the `reasoning` field when thinking is off; for plain OpenAI Responses models, `off` is not selectable, which makes that adapter omit the field as well. If the manifest is unavailable or omits the capability field, the previous `low` through `xhigh` compatibility mapping remains the fallback.
 
@@ -286,7 +329,7 @@ At startup and during quota refreshes, the extension queries Sub2API's API-key b
 
 For the active provider, the extension also probes a root `/usage` compatibility route and then Sub2API's official `GET /v1/usage` endpoint. A recognized response may contain key quotas, `rate_limits`, subscription daily/weekly/monthly usage, `daily_usage`, and `usage.today`/`usage.total` data; camelCase aliases are accepted for compatible relays.
 
-Usage refreshes run in the background on `session_start`, `model_select`, and `turn_end`. The extension registers `/toggle-ultra`, `/toggle-fast`, `/toggle-ultrafast`, and `/toggle-daybreak`, and installs a custom footer that keeps the project path first, followed by pi's token/model statistics and other extension statuses, then adds usage as its own final row. Keeping usage outside the shared status row prevents it from being joined with MCP and similar extension statuses:
+Usage refreshes run in the background on `session_start`, `model_select`, and `turn_end`. The extension registers `/toggle-ultra`, `/toggle-fast`, `/toggle-ultrafast`, `/toggle-daybreak`, and `/sub2api-save`, and installs a custom footer that keeps the project path first, followed by pi's token/model statistics and other extension statuses, then adds usage as its own final row. Keeping usage outside the shared status row prevents it from being joined with MCP and similar extension statuses:
 
 ```text
 my-relay · loading…
@@ -325,7 +368,8 @@ Use HTTPS for remote relays. Plain HTTP is accepted for trusted local developmen
 - **Provider does not appear:** inspect stderr for `[sub2api] failed to load ...`; verify that the JSON is valid and every entry has non-empty `baseURL` and `token` strings. A `token` referencing an unset environment variable fails with an error naming that variable.
 - **No models appear:** for explicit `openai-codex-responses` providers, verify that the relay's `/backend-api/codex/models` endpoint returns a `models` array with `Authorization: Bearer <token>`; failures are logged as `[sub2api:<provider>] failed to fetch Codex model manifest`, without falling back to `/v1/models`. Other providers require `<baseURL>/v1/models`; their discovery failures are logged as `[sub2api:<provider>] failed to fetch models`.
 - **Requests fail:** confirm the configured API is supported by the relay: Anthropic Messages uses `/v1/messages`, Codex generation and Remote Compaction V2 both use `/v1/responses`, OpenAI Responses uses `/v1/responses`, and Chat Completions uses `/v1/chat/completions`.
-- **Fast mode is rejected:** verify that the selected OpenAI model/account supports `service_tier: "priority"` and that the Sub2API OpenAI Fast policy allows it. `/toggle-fast` deliberately leaves relay eligibility and policy enforcement to Sub2API.
+- **Fast mode is rejected:** verify that the selected OpenAI model/account supports `service_tier: "priority"` and that the Sub2API OpenAI Fast policy allows it. Request modes deliberately leave relay eligibility and policy enforcement to Sub2API.
+- **Request mode save fails:** the error names the cause; fix the file (valid JSON object, provider present) and run `/sub2api-save` again. Unsaved toggles remain in effect until reload.
 - **Native compaction falls back:** verify that the relay supports Remote Compaction V2 on streamed `POST /v1/responses`: the request must end with a `compaction_trigger`, and the SSE response must contain exactly one encrypted `compaction` item in `response.output_item.done` followed by `response.completed`. The extension also accepts the `compaction_summary` type emitted by compatible Codex relays.
 - **Usage unavailable:** verify that the relay's `/v1/usage` endpoint returns JSON with subscription, quota, rate-limit, or usage data for the configured bearer token. The root `/usage` route is probed only for compatibility with other relays.
 - **Price multiplier missing:** verify that `<baseURL>/v1/sub2api/billing` returns the v1 token-billing contract: `object: "sub2api.key_billing"`, `schema_version: 1`, `billing_scope: "token"`, non-negative `group_rate_multiplier`, `resolved_rate_multiplier`, and `effective_rate_multiplier` values, plus a boolean `peak_rate_enabled`. Sub2API simple mode returns 404 and therefore uses pi's standard built-in prices.

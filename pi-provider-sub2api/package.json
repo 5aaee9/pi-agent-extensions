@@ -30,6 +30,8 @@
     "model-metadata.ts",
     "quota.ts",
     "relay-stream.ts",
+    "request-mode-store.ts",
+    "request-modes.ts",
     "server-tools.ts",
     "types.ts",
     "util.ts",
