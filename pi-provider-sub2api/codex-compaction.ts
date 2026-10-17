@@ -737,7 +737,8 @@ function parseCompressArguments(args: string): CommandCompactionOptions | undefi
 export function registerCodexCompaction(
   pi: ExtensionAPI,
   getRelay: (provider: string) => CodexCompactionRelay | undefined,
-  getSessionServiceTier: () => string | undefined = () => undefined,
+  // Resolves the conversation model's tier, never the compress_model override.
+  getConversationServiceTier: (model: Model<any>) => string | undefined = () => undefined,
   enableCommand = false,
 ) {
   const rt = privateRuntime;
@@ -861,7 +862,7 @@ export function registerCodexCompaction(
           command?.serviceTier ??
           (relay.compressServiceTier === "fast"
             ? "priority"
-            : (relay.compressServiceTier ?? getSessionServiceTier())),
+            : (relay.compressServiceTier ?? getConversationServiceTier(model))),
         signal: event.signal,
       });
       return {

@@ -23,8 +23,9 @@ const relay: CodexCompactionRelay = {
 };
 
 const model = {
-  id: "gpt-5.5",
-  name: "GPT-5.5",
+  // Synthetic: tier assertions here are protocol-only, not eligibility claims.
+  id: "gpt-synthetic-codex",
+  name: "GPT Synthetic Codex",
   api: "openai-codex-responses",
   provider: relay.provider,
   baseUrl: "https://relay.example/v1",
@@ -110,6 +111,7 @@ function createHarness(initialBranch: SessionEntry[], compactionRelay = relay) {
   const handlers = new Map<string, Handler>();
   const commands = new Map<string, Handler>();
   const notifications: Array<{ message: string; level: string }> = [];
+  const tierModels: string[] = [];
   let branch = initialBranch;
   const pi = {
     on(name: string, handler: Handler) {
@@ -124,7 +126,10 @@ function createHarness(initialBranch: SessionEntry[], compactionRelay = relay) {
   registerCodexCompaction(
     pi,
     (provider) => (provider === compactionRelay.provider ? compactionRelay : undefined),
-    () => "priority",
+    (conversationModel) => {
+      tierModels.push(conversationModel.id);
+      return "priority";
+    },
     true,
   );
 
@@ -150,6 +155,7 @@ function createHarness(initialBranch: SessionEntry[], compactionRelay = relay) {
     commands,
     context,
     notifications,
+    tierModels,
     setBranch(next: SessionEntry[]) {
       branch = next;
     },
@@ -533,6 +539,8 @@ describe("Codex remote compaction v2", () => {
         compressModel.id,
       );
       expect(result.compaction.usage.input).toBe(70);
+      // The fallback tier follows the conversation model, not compress_model.
+      expect(harness.tierModels).toEqual([model.id]);
       expect(result.compaction.usage.cost.input).toBeCloseTo(known ? 0.0007 : 0, 10);
       expect(result.compaction.usage.cost.output).toBeCloseTo(known ? 0.0006 : 0, 10);
       expect(harness.context.model.id).toBe(model.id);

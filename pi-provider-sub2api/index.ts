@@ -20,12 +20,16 @@ import {
   scaleModelCost,
 } from "./model-metadata.ts";
 import { refreshBilling, refreshQuota } from "./quota.ts";
+import { addDaybreakProgram, addServerTools, addServiceTier, streamCodex } from "./relay-stream.ts";
+import { createRequestModeStore } from "./request-mode-store.ts";
 import {
-  addDaybreakProgram,
-  addFastServiceTier,
-  addServerTools,
-  streamCodex,
-} from "./relay-stream.ts";
+  createRequestModeState,
+  describeRequestModes,
+  SERVICE_TIER_WIRE,
+  supportsDaybreak,
+  supportsRequestModes,
+  supportsServiceTier,
+} from "./request-modes.ts";
 import {
   billingByProvider,
   billingRefreshes,
@@ -37,7 +41,13 @@ import {
   REASONING,
   relaysByProvider,
 } from "./types.ts";
-import type { DiscoveredModel, RelayConfig, SupportedApi } from "./types.ts";
+import type {
+  DiscoveredModel,
+  RelayConfig,
+  RequestModes,
+  ServiceTierMode,
+  SupportedApi,
+} from "./types.ts";
 import { firstMaxTokensWithinContext, sanitizeDisplayString } from "./util.ts";
 
 export default async function (pi: ExtensionAPI) {
@@ -59,8 +69,8 @@ export default async function (pi: ExtensionAPI) {
   let usageFooterLine: UsageFooterLine | undefined;
   let requestFooterRender: (() => void) | undefined;
   let ultraEnabled = false;
-  let serviceTier: "priority" | "ultrafast" | undefined;
-  let cyberProgram: "standard" | "daybreak_blue" | undefined;
+  const requestModes = createRequestModeState();
+  const saveRequestModes = createRequestModeStore(configPath);
   const setUsageLine = (
     ctx: ExtensionContext,
     provider: string,
@@ -95,18 +105,20 @@ export default async function (pi: ExtensionAPI) {
           if (requestFooterRender === requestRender) requestFooterRender = undefined;
         },
         invalidate() {},
-        render: (width: number) =>
-          renderUsageFooter(
+        render: (width: number) => {
+          const modes = requestModes.active(ctx.model);
+          return renderUsageFooter(
             ctx,
             footerData,
             theme,
             usageFooterLine,
             ultraEnabled,
-            serviceTier === "priority",
+            modes.serviceTier === "fast",
             width,
-            serviceTier === "ultrafast",
-            cyberProgram === "daybreak_blue",
-          ),
+            modes.serviceTier === "ultrafast",
+            modes.daybreak === "blue",
+          );
+        },
       };
     });
   };
@@ -143,7 +155,10 @@ export default async function (pi: ExtensionAPI) {
   registerCodexCompaction(
     pi,
     (provider) => relaysByProvider.get(provider),
-    () => serviceTier,
+    (model) => {
+      const tier = requestModes.active(model).serviceTier;
+      return tier && SERVICE_TIER_WIRE[tier];
+    },
     providers.some(({ relay, models }) =>
       models.some(
         (model) =>
@@ -232,31 +247,94 @@ export default async function (pi: ExtensionAPI) {
     },
   });
 
+  const toggleServiceTier = (ctx: ExtensionContext, tier: ServiceTierMode, label: string) => {
+    const model = ctx.model;
+    if (!supportsServiceTier(model, tier)) {
+      ctx.ui.notify(`${label} mode is not supported for the selected model.`, "warning");
+      return;
+    }
+    const enabled = requestModes.resolve(model).serviceTier !== tier;
+    requestModes.set(model, { serviceTier: enabled ? tier : "default" });
+    requestFooterRender?.();
+    ctx.ui.notify(`${label} mode ${enabled ? "enabled" : "disabled"} for ${model.id}`, "info");
+  };
+
   pi.registerCommand("toggle-fast", {
-    description: "Toggle OpenAI priority service tier for faster responses",
-    handler: async (_args, ctx) => {
-      serviceTier = serviceTier === "priority" ? undefined : "priority";
-      requestFooterRender?.();
-      ctx.ui.notify(serviceTier ? "Fast mode enabled" : "Fast mode disabled", "info");
-    },
+    description: "Toggle OpenAI priority service tier for the selected model (not saved)",
+    handler: async (_args, ctx) => toggleServiceTier(ctx, "fast", "Fast"),
   });
 
   pi.registerCommand("toggle-ultrafast", {
-    description: "Toggle OpenAI ultrafast service tier (replaces Fast mode)",
-    handler: async (_args, ctx) => {
-      serviceTier = serviceTier === "ultrafast" ? undefined : "ultrafast";
-      requestFooterRender?.();
-      ctx.ui.notify(serviceTier ? "Ultrafast mode enabled" : "Ultrafast mode disabled", "info");
-    },
+    description: "Toggle OpenAI ultrafast service tier for the selected model (not saved)",
+    handler: async (_args, ctx) => toggleServiceTier(ctx, "ultrafast", "Ultrafast"),
   });
 
   pi.registerCommand("toggle-daybreak", {
-    description: "Toggle Daybreak Blue access program for OpenAI Responses requests",
+    description: "Toggle Daybreak Blue access program for the selected model (not saved)",
     handler: async (_args, ctx) => {
-      cyberProgram = cyberProgram === "daybreak_blue" ? "standard" : "daybreak_blue";
+      const model = ctx.model;
+      if (!supportsDaybreak(model)) {
+        ctx.ui.notify("Daybreak is not supported for the selected model.", "warning");
+        return;
+      }
+      const enabled = requestModes.resolve(model).daybreak !== "blue";
+      requestModes.set(model, { daybreak: enabled ? "blue" : "standard" });
       requestFooterRender?.();
       ctx.ui.notify(
-        cyberProgram === "daybreak_blue" ? "Daybreak Blue enabled" : "Daybreak disabled (standard)",
+        enabled
+          ? `Daybreak Blue enabled for ${model.id}`
+          : `Daybreak disabled (standard) for ${model.id}`,
+        "info",
+      );
+    },
+  });
+
+  pi.registerCommand("sub2api-save", {
+    description: "Save the selected model's request modes: [provider] saves provider defaults",
+    // Offer nothing once the argument is complete so Enter submits the command.
+    getArgumentCompletions: (prefix) =>
+      prefix.trim() !== "provider" && "provider".startsWith(prefix.trim())
+        ? [{ value: "provider", label: "provider" }]
+        : null,
+    handler: async (args, ctx) => {
+      const scope = args.trim();
+      if (scope !== "" && scope !== "provider") {
+        ctx.ui.notify("Usage: /sub2api-save [provider]", "warning");
+        return;
+      }
+      const model = ctx.model;
+      const relay = model && relaysByProvider.get(model.provider);
+      if (!relay || !supportsRequestModes(model)) {
+        ctx.ui.notify(
+          "/sub2api-save requires a selected Sub2API OpenAI model with request-mode support.",
+          "warning",
+        );
+        return;
+      }
+      const modes = requestModes.resolve(model);
+      const target = scope === "provider" ? `${relay.provider} defaults` : `${model.id}`;
+      try {
+        await saveRequestModes(
+          scope === "provider"
+            ? { provider: relay.provider }
+            : { provider: relay.provider, modelId: model.id },
+          modes,
+        );
+      } catch (error) {
+        ctx.ui.notify(
+          `Failed to save request modes for ${target}: ${error instanceof Error ? error.message : String(error)}`,
+          "error",
+        );
+        return;
+      }
+      const saved: RequestModes = { ...modes };
+      if (scope === "provider") relay.requestModes = saved;
+      else relay.modelRequestModes.set(model.id, saved);
+      requestFooterRender?.();
+      ctx.ui.notify(
+        scope === "provider"
+          ? `Saved ${describeRequestModes(saved)} as ${target}; model-specific overrides still take precedence.`
+          : `Saved ${describeRequestModes(saved)} for ${relay.provider}/${model.id}.`,
         "info",
       );
     },
@@ -267,9 +345,10 @@ export default async function (pi: ExtensionAPI) {
   });
 
   pi.on("before_provider_request", (event, ctx) => {
+    const { serviceTier, daybreak } = requestModes.active(ctx.model);
     let payload = event.payload;
-    if (serviceTier) payload = addFastServiceTier(payload, ctx.model, serviceTier) ?? payload;
-    if (cyberProgram) payload = addDaybreakProgram(payload, ctx.model, cyberProgram) ?? payload;
+    if (serviceTier) payload = addServiceTier(payload, ctx.model, serviceTier) ?? payload;
+    if (daybreak) payload = addDaybreakProgram(payload, ctx.model, daybreak) ?? payload;
     return payload === event.payload ? undefined : payload;
   });
 
@@ -303,6 +382,7 @@ export default async function (pi: ExtensionAPI) {
   });
 
   pi.on("model_select", (event, ctx) => {
+    requestFooterRender?.();
     refreshActiveQuota(
       ctx,
       event.model.provider,

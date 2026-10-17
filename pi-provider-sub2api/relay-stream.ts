@@ -8,8 +8,14 @@ import type {
 } from "@earendil-works/pi-ai";
 
 import { CODEX_API } from "./codex-api.ts";
-import { FAST_MODE_APIS, OPENAI, RESPONSES_SERVER_TOOL_API, relaysByProvider } from "./types.ts";
-import type { RelayConfig, SupportedApi } from "./types.ts";
+import {
+  DAYBREAK_WIRE,
+  SERVICE_TIER_WIRE,
+  supportsDaybreak,
+  supportsServiceTier,
+} from "./request-modes.ts";
+import { RESPONSES_SERVER_TOOL_API, relaysByProvider } from "./types.ts";
+import type { DaybreakMode, RelayConfig, ServiceTierMode, SupportedApi } from "./types.ts";
 import { asRecord } from "./util.ts";
 
 export function createRelayFetch(
@@ -83,41 +89,26 @@ export function addServerTools(payload: unknown, model: Model<any> | undefined) 
   return changed ? { ...request, tools } : undefined;
 }
 
-export function addFastServiceTier(
+export function addServiceTier(
   payload: unknown,
   model: Model<any> | undefined,
-  tier: "priority" | "ultrafast" = "priority",
+  tier: ServiceTierMode,
 ) {
-  if (
-    !model ||
-    !relaysByProvider.has(model.provider) ||
-    !OPENAI.test(model.id) ||
-    !FAST_MODE_APIS.has(model.api as SupportedApi)
-  ) {
-    return undefined;
-  }
+  if (!supportsServiceTier(model, tier)) return undefined;
   const request = asRecord(payload);
   if (!request || request.model !== model.id) return undefined;
-  // Ultrafast is a Responses tier; retain legacy Fast support for Chat Completions.
-  if (tier === "ultrafast" && model.api === "openai-completions") return undefined;
-  return { ...request, service_tier: tier };
+  return { ...request, service_tier: SERVICE_TIER_WIRE[tier] };
 }
 
 export function addDaybreakProgram(
   payload: unknown,
   model: Model<any> | undefined,
-  program: "standard" | "daybreak_blue",
+  daybreak: DaybreakMode,
 ) {
-  if (
-    !model ||
-    !relaysByProvider.has(model.provider) ||
-    !OPENAI.test(model.id) ||
-    (model.api !== "openai-codex-responses" && model.api !== "openai-responses")
-  )
-    return undefined;
+  if (!supportsDaybreak(model)) return undefined;
   const request = asRecord(payload);
   if (!request || request.model !== model.id) return undefined;
   const programs = asRecord(request.access_programs);
   if (request.access_programs !== undefined && !programs) return undefined;
-  return { ...request, access_programs: { ...programs, cyber: program } };
+  return { ...request, access_programs: { ...programs, cyber: DAYBREAK_WIRE[daybreak] } };
 }

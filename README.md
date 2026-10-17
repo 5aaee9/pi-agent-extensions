@@ -6,7 +6,7 @@ A collection of extensions for the [pi coding agent](https://github.com/earendil
 
 | Package                                                                                     | Description                                                                                                                  |
 | ------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| [`@indexyz/pi-provider-sub2api`](./pi-provider-sub2api)                                     | Dynamic provider support, model metadata discovery, and quota reporting for Sub2API-compatible relays.                       |
+| [`@indexyz/pi-provider-sub2api`](./pi-provider-sub2api)                                     | Dynamic provider support, model metadata discovery, quota reporting, and saved request modes for Sub2API-compatible relays.  |
 | [`@indexyz/pi-custom-provider`](./pi-custom-provider)                                       | Generic OpenAI Chat Compatible, Anthropic Messages, OpenAI Responses, and Ollama providers with model discovery and caching. |
 | [`@indexyz/pi-continue`](./pi-continue)                                                     | Resume an interrupted or failed turn with pi's currently selected model.                                                     |
 | [`@indexyz/pi-skill`](./pi-skill)                                                           | Codex-style `$skill-name` invocation anywhere in a prompt.                                                                   |

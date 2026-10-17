@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -1155,21 +1155,29 @@ describe("sub2api provider extension", () => {
       ([name]) => name === "toggle-daybreak",
     )?.[1].handler;
     const beforeProviderRequest = handlers.get("before_provider_request")!;
+    // Synthetic OpenAI-shaped IDs: protocol coverage only, no eligibility claim.
     const fastModel = {
       provider: "quota-relay",
-      id: "gpt-5.6",
+      id: "gpt-synthetic-tier",
       api: "openai-codex-responses",
     };
-    const fastContext = { ...context, model: fastModel };
+    const otherFastModel = { ...fastModel, id: "gpt-synthetic-other" };
     const requestPayload = { model: fastModel.id, stream: true, service_tier: "default" };
 
     expect(toggleUltra).toBeTypeOf("function");
     expect(toggleFast).toBeTypeOf("function");
-    expect(beforeProviderRequest({ payload: requestPayload }, fastContext)).toBeUndefined();
+    expect(beforeProviderRequest({ payload: requestPayload }, context)).toBeUndefined();
 
+    // The quota model is not an OpenAI model: mode toggles reject it unchanged.
+    await toggleFast!("", context);
+    await toggleDaybreak!("", context);
+    expect(footer.render().at(-1)).toBe("quota-relay · 5h 30% · d 10%");
+
+    context.model = fastModel;
+    expect(beforeProviderRequest({ payload: requestPayload }, context)).toBeUndefined();
     await toggleFast!("", context);
     expect(footer.render().at(-1)).toBe("quota-relay · 5h 30% · d 10% [FAST]");
-    expect(beforeProviderRequest({ payload: requestPayload }, fastContext)).toEqual({
+    expect(beforeProviderRequest({ payload: requestPayload }, context)).toEqual({
       ...requestPayload,
       service_tier: "priority",
     });
@@ -1178,7 +1186,7 @@ describe("sub2api provider extension", () => {
       beforeProviderRequest(
         { payload: { model: "claude-opus-4-6" } },
         {
-          ...fastContext,
+          ...context,
           model: {
             provider: "quota-relay",
             id: "claude-opus-4-6",
@@ -1190,7 +1198,7 @@ describe("sub2api provider extension", () => {
     expect(
       beforeProviderRequest(
         { payload: { model: fastModel.id } },
-        { ...fastContext, model: { ...fastModel, provider: "other" } },
+        { ...context, model: { ...fastModel, provider: "other" } },
       ),
     ).toBeUndefined();
 
@@ -1204,32 +1212,46 @@ describe("sub2api provider extension", () => {
 
     await toggleUltrafast!("", context);
     expect(footer.render().at(-1)).toBe("quota-relay · 5h 30% · d 10% [ULTRAFAST]");
-    expect(beforeProviderRequest({ payload: requestPayload }, fastContext)).toMatchObject({
+    expect(beforeProviderRequest({ payload: requestPayload }, context)).toMatchObject({
       service_tier: "ultrafast",
     });
     await toggleDaybreak!("", context);
     expect(footer.render().at(-1)).toBe("quota-relay · 5h 30% · d 10% [ULTRAFAST] [DAYBREAK]");
-    expect(beforeProviderRequest({ payload: requestPayload }, fastContext)).toMatchObject({
+    expect(beforeProviderRequest({ payload: requestPayload }, context)).toMatchObject({
       service_tier: "ultrafast",
       access_programs: { cyber: "daybreak_blue" },
     });
+
+    // Another model keeps its own modes; switching back restores the first model's.
+    context.model = otherFastModel;
+    expect(footer.render().at(-1)).toBe("quota-relay · 5h 30% · d 10%");
+    expect(
+      beforeProviderRequest({ payload: { model: otherFastModel.id } }, context),
+    ).toBeUndefined();
+    context.model = fastModel;
+    expect(footer.render().at(-1)).toBe("quota-relay · 5h 30% · d 10% [ULTRAFAST] [DAYBREAK]");
+
     await toggleFast!("", context);
     expect(footer.render().at(-1)).toBe("quota-relay · 5h 30% · d 10% [FAST] [DAYBREAK]");
-    expect(beforeProviderRequest({ payload: requestPayload }, fastContext)).toMatchObject({
+    expect(beforeProviderRequest({ payload: requestPayload }, context)).toMatchObject({
       service_tier: "priority",
     });
     await toggleUltrafast!("", context);
     await toggleUltrafast!("", context);
     expect(footer.render().at(-1)).toBe("quota-relay · 5h 30% · d 10% [DAYBREAK]");
-    expect(beforeProviderRequest({ payload: requestPayload }, fastContext)).toMatchObject({
+    expect(beforeProviderRequest({ payload: requestPayload }, context)).toMatchObject({
       service_tier: "default",
     });
     await toggleDaybreak!("", context);
     expect(footer.render().at(-1)).toBe("quota-relay · 5h 30% · d 10%");
-    expect(beforeProviderRequest({ payload: requestPayload }, fastContext)).toMatchObject({
+    expect(beforeProviderRequest({ payload: requestPayload }, context)).toMatchObject({
       access_programs: { cyber: "standard" },
     });
     expect(requestPayload).not.toHaveProperty("access_programs");
+    expect(JSON.parse(readFileSync(join(stateDir, "sub2api.json"), "utf8"))).not.toHaveProperty([
+      "quota-relay",
+      "requestModes",
+    ]);
 
     const usageCalls = fetchCalls.filter((call) => call.url.endsWith("/usage"));
     expect(usageCalls.map((call) => call.url)).toEqual([

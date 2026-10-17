@@ -5,9 +5,15 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
 import { parseServerTools, validateServerToolsForApi } from "./server-tools.ts";
-import { CONFIG_FILENAME, SUPPORTED_APIS } from "./types.ts";
-import type { RelayConfig, SupportedApi } from "./types.ts";
-import { base64Encode, hasControlCharacters, isSafeModelId } from "./util.ts";
+import { CONFIG_FILENAME, DAYBREAK_MODES, SERVICE_TIER_MODES, SUPPORTED_APIS } from "./types.ts";
+import type {
+  DaybreakMode,
+  RelayConfig,
+  RequestModes,
+  ServiceTierMode,
+  SupportedApi,
+} from "./types.ts";
+import { asRecord, base64Encode, hasControlCharacters, isSafeModelId } from "./util.ts";
 
 // Do not attach the child-process error: it can contain the command and secrets.
 export async function resolveCredentialCommand(value: string, signal?: AbortSignal) {
@@ -104,6 +110,43 @@ export function normalizeBaseUrls(value: string) {
   };
 }
 
+function parseRequestModes(provider: string, field: string, value: unknown): RequestModes {
+  const entry = asRecord(value);
+  if (!entry) throw new Error(`provider ${provider} ${field} must be an object`);
+  const { serviceTier, daybreak } = entry;
+  if (serviceTier !== undefined && !SERVICE_TIER_MODES.includes(serviceTier as ServiceTierMode)) {
+    throw new Error(
+      `provider ${provider} ${field}.serviceTier must be ${SERVICE_TIER_MODES.join(", ")}`,
+    );
+  }
+  if (daybreak !== undefined && !DAYBREAK_MODES.includes(daybreak as DaybreakMode)) {
+    throw new Error(`provider ${provider} ${field}.daybreak must be ${DAYBREAK_MODES.join(", ")}`);
+  }
+  return {
+    ...(serviceTier === undefined ? {} : { serviceTier: serviceTier as ServiceTierMode }),
+    ...(daybreak === undefined ? {} : { daybreak: daybreak as DaybreakMode }),
+  };
+}
+
+function parseModelRequestModes(provider: string, value: unknown) {
+  const modes = new Map<string, RequestModes>();
+  if (value === undefined) return modes;
+  const entries = asRecord(value);
+  if (!entries) throw new Error(`provider ${provider} modelRequestModes must be an object`);
+  for (const [modelId, modelModes] of Object.entries(entries)) {
+    if (!isSafeModelId(modelId)) {
+      throw new Error(
+        `provider ${provider} modelRequestModes has invalid model ID ${JSON.stringify(modelId)}`,
+      );
+    }
+    modes.set(
+      modelId,
+      parseRequestModes(provider, `modelRequestModes[${JSON.stringify(modelId)}]`, modelModes),
+    );
+  }
+  return modes;
+}
+
 const ENV_REFERENCE_PATTERN = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/;
 
 function resolveToken(provider: string, configured: string): string {
@@ -145,6 +188,8 @@ export function parseRelayConfig(provider: string, value: unknown): RelayConfig 
     compress_service_tier?: unknown;
     compress_model?: unknown;
     serverTools?: unknown;
+    requestModes?: unknown;
+    modelRequestModes?: unknown;
   };
   if (typeof entry.baseURL !== "string" || !entry.baseURL.trim()) {
     throw new Error(`provider ${provider} is missing baseURL`);
@@ -182,6 +227,11 @@ export function parseRelayConfig(provider: string, value: unknown): RelayConfig 
   const configuredApi = entry.api as SupportedApi | undefined;
   const serverTools = parseServerTools(provider, entry.serverTools);
   validateServerToolsForApi(provider, configuredApi, serverTools);
+  const requestModes =
+    entry.requestModes === undefined
+      ? {}
+      : parseRequestModes(provider, "requestModes", entry.requestModes);
+  const modelRequestModes = parseModelRequestModes(provider, entry.modelRequestModes);
 
   const apiKey = resolveToken(provider, entry.token);
   const { baseUrl, anthropicBaseUrl } = normalizeBaseUrls(entry.baseURL);
@@ -196,6 +246,8 @@ export function parseRelayConfig(provider: string, value: unknown): RelayConfig 
     compressServiceTier,
     compressModel,
     serverTools,
+    requestModes,
+    modelRequestModes,
     responsesUrl: `${baseUrl}/responses`,
     codexResponsesUrl: `${baseUrl}/codex/responses`,
     codexAuthToken: createCodexAuthToken(accountId),
