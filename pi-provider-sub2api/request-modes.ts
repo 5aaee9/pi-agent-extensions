@@ -2,6 +2,7 @@ import type { Model } from "@earendil-works/pi-ai";
 
 import { FAST_MODE_APIS, OPENAI, relaysByProvider } from "./types.ts";
 import type { DaybreakMode, RequestModes, ServiceTierMode, SupportedApi } from "./types.ts";
+import { isSafeModelId } from "./util.ts";
 
 type ModeModel = Pick<Model<any>, "provider" | "id" | "api">;
 
@@ -24,6 +25,8 @@ export function supportsRequestModes(model: ModeModel | undefined): model is Mod
   return (
     model !== undefined &&
     relaysByProvider.has(model.provider) &&
+    // A saved ID must pass the same check configuration loading applies.
+    isSafeModelId(model.id) &&
     OPENAI.test(model.id) &&
     FAST_MODE_APIS.has(model.api as SupportedApi)
   );

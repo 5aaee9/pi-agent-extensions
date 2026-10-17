@@ -255,6 +255,7 @@ describe("request mode resolution", () => {
       daybreak: "blue",
     });
     expect(state.active({ ...completions, id: "grok-test" })).toEqual({});
+    expect(state.active({ ...completions, id: "gpt-synthetic\u0007" })).toEqual({});
     expect(state.active({ ...completions, api: "anthropic-messages" })).toEqual({});
     expect(state.active(undefined)).toEqual({});
   });

@@ -126,7 +126,7 @@ Both objects accept two optional fields:
 
 Each field resolves independently, first match wins: the current model's unsaved toggle, its `modelRequestModes` entry, the provider's `requestModes`, and otherwise no change to the request. In the example, `your-openai-model-id` sends `service_tier: "default"` with Daybreak Blue, while other eligible models of `my-relay` inherit Fast and Blue. The same model ID under another provider uses only that provider's settings. `default` and `standard` are explicit choices that override an inherited Fast/Ultrafast or Blue; they are not the same as leaving the field out. To return a field to inheritance, delete it (or the model entry) from the file and run `/reload`.
 
-Model keys follow the `compress_model` rules (1–256 characters, no surrounding whitespace or control characters). A `null`, non-object, or unknown value fails configuration loading with an error naming the provider and field. These settings only choose what the extension sends; they do not establish that a model or account is eligible for a tier or program, and the upstream reports any rejection.
+Model keys follow the `compress_model` rules (1–256 characters, no surrounding whitespace or control characters). A `null`, non-object, or unknown value fails configuration loading with an error naming the provider and field; other keys inside a modes object are ignored, so a misspelled field such as `service_tier` has no effect. These settings only choose what the extension sends; they do not establish that a model or account is eligible for a tier or program, and the upstream reports any rejection.
 
 Mode commands change only the selected provider/model, in memory:
 
@@ -142,9 +142,9 @@ Save explicitly with `/sub2api-save`:
 /sub2api-save provider
 ```
 
-Without an argument it writes the selected model's current effective modes to `modelRequestModes["<model>"]`. With `provider` it writes them to that provider's `requestModes`. Either form replaces only the target object with every field that currently resolves to a value, including inherited ones, so the saved scope pins them; with nothing set it saves `{}`. Saving the provider defaults does not remove model entries, so existing model-specific preferences, including the current model's, still take precedence. Other models' unsaved toggles, `/toggle-ultra`, and compaction settings are never saved, and nothing is saved automatically.
+Without an argument it writes the selected model's current effective modes to `modelRequestModes["<model>"]`. With `provider` it writes them to that provider's `requestModes`. Either form replaces only the target object with every field that currently resolves to a value, including inherited ones, so the saved scope pins them; with `provider` this includes values from the current model's own `modelRequestModes` entry; with nothing set it saves `{}`. Saving the provider defaults does not remove model entries, so existing model-specific preferences, including the current model's, still take precedence. Other models' unsaved toggles, `/toggle-ultra`, and compaction settings are never saved, and nothing is saved automatically.
 
-A save rereads `sub2api.json`, changes only the target object, and atomically replaces the file (the target of a symlink) while keeping its permissions; credential expressions such as `${VAR}` and `!command` are written back literally and never executed by a save. The file is rewritten as JSON with two-space indentation, so custom formatting is not preserved. Saves within one Pi process run one at a time; two Pi processes saving at the same moment are last-writer-wins. A missing or invalid file or provider fails the save without writing and leaves unsaved toggles in effect.
+A save rereads `sub2api.json`, changes only the target object, and atomically replaces the file (the target of a symlink) while keeping its permissions; credential expressions such as `${VAR}` and `!command` are written back literally and never executed by a save. The file is rewritten as JSON with two-space indentation, so custom formatting is not preserved. Saves within one extension instance run one at a time; saves from two instances (for example across `/reload`) or two Pi processes at the same moment are last-writer-wins. A missing or invalid file or provider fails the save without writing and leaves unsaved toggles in effect.
 
 ### Codex compaction model
 
@@ -174,7 +174,7 @@ When discovery finds models routed through `openai-codex-responses` and the host
 /openai-compress
 /openai-compress gpt-5-mini
 /openai-compress fast
-/openai-compress gpt-5-mini ultrafast
+/openai-compress gpt-5-mini fast
 /openai-compress default
 ```
 

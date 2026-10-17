@@ -229,6 +229,23 @@ describe("request mode commands", () => {
     });
   });
 
+  it("includes the current model's saved override in provider defaults", async () => {
+    writeConfig(
+      baseConfig({
+        requestModes: { daybreak: "standard" },
+        modelRequestModes: { [A]: { serviceTier: "ultrafast" } },
+      }),
+    );
+    const pi = await load();
+    await pi.run("sub2api-save", pi.ctx("relay", A), "provider");
+    expect(readConfig().relay.requestModes).toEqual({
+      serviceTier: "ultrafast",
+      daybreak: "standard",
+    });
+    expect(readConfig().relay.modelRequestModes).toEqual({ [A]: { serviceTier: "ultrafast" } });
+    expect(pi.request(pi.ctx("relay", B))).toMatchObject({ service_tier: "ultrafast" });
+  });
+
   it("persists explicit off states and empty snapshots", async () => {
     writeConfig(baseConfig({ requestModes: { serviceTier: "fast", daybreak: "blue" } }));
     const pi = await load();
@@ -277,6 +294,8 @@ describe("request mode commands", () => {
     ["two arguments", "relay", A, "openai-responses", "provider extra"],
     ["a foreign provider", "foreign", A, "openai-responses", ""],
     ["a non-OpenAI model", "relay", "claude-synthetic", "anthropic-messages", ""],
+    ["a model ID with a control character", "relay", "gpt-synthetic\u0007", "openai-responses", ""],
+    ["an overlong model ID", "relay", `gpt-${"x".repeat(253)}`, "openai-responses", ""],
   ])("rejects %s without writing", async (_name, provider, id, api, args) => {
     writeConfig(baseConfig());
     const before = readFileSync(configPath, "utf8");

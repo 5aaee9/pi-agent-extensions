@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { chmod, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, open, readFile, realpath, rename, rm, stat } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 
 import type { RequestModes } from "./types.ts";
@@ -44,10 +44,14 @@ export async function writeRequestModes(
 
   const temporary = join(dirname(path), `.${basename(path)}.${randomUUID()}.tmp`);
   try {
-    await writeFile(temporary, `${JSON.stringify(root, null, 2)}\n`, {
-      flag: "wx",
-      mode: permissions,
-    });
+    const file = await open(temporary, "wx", permissions);
+    try {
+      await file.writeFile(`${JSON.stringify(root, null, 2)}\n`);
+      // Flush before the rename so a crash cannot leave an empty replacement.
+      await file.sync();
+    } finally {
+      await file.close();
+    }
     await chmod(temporary, permissions);
     await rename(temporary, path);
   } catch (error) {

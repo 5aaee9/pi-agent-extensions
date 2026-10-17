@@ -62,7 +62,7 @@ The extension SHALL register `/sub2api-save` and accept only no argument (curren
 #### Scenario: Save provider defaults
 
 - **WHEN** the user runs `/sub2api-save provider`
-- **THEN** the current effective defined fields replace that provider's default modes
+- **THEN** the current effective defined fields, including values from the current model's saved override, replace that provider's default modes
 - **AND** existing saved model overrides and other models' temporary overrides remain intact and retain precedence
 - **AND** models without overrides inherit the new provider defaults
 

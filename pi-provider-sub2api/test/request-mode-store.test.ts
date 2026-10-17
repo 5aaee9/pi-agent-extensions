@@ -76,6 +76,15 @@ describe("request mode store", () => {
     expect(existsSync(marker())).toBe(false);
   });
 
+  it("replaces an existing model entry instead of merging into it", async () => {
+    await writeRequestModes(
+      configPath,
+      { provider: "relay", modelId: "gpt-synthetic-b" },
+      { serviceTier: "fast" },
+    );
+    expect(read().relay.modelRequestModes).toEqual({ "gpt-synthetic-b": { serviceTier: "fast" } });
+  });
+
   it("replaces the provider defaults without touching model overrides", async () => {
     await writeRequestModes(configPath, { provider: "relay" }, {});
     const saved = read();
