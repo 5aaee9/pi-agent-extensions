@@ -16,11 +16,13 @@
 import type { NamespaceView } from "./contracts.ts";
 import { messageOf } from "./limits.ts";
 import { pickNamespace, settingsFace } from "./services.ts";
-import { toEntries } from "./state.ts";
+import { toDefaultLimit, toEntries } from "./state.ts";
 
 /** The bundle row's editable values. */
 export interface AutocompactConfig {
   readonly enabled: boolean;
+  /** Deployment-wide threshold for models without their own entry, or `undefined` when unset. */
+  readonly defaultLimit: number | undefined;
   /** Configured absolute token count per `provider/model` key. */
   readonly limits: Readonly<Record<string, number>>;
   readonly writable: boolean;
@@ -48,6 +50,7 @@ function configFrom(view: NamespaceView, writable: unknown): AutocompactConfig {
   for (const entry of toEntries(value.modelLimits)) limits[entry.key] = entry.value;
   return {
     enabled: value.enabled !== false,
+    defaultLimit: toDefaultLimit(value.defaultLimit),
     limits,
     writable: writable !== false,
     ns: view.ns,

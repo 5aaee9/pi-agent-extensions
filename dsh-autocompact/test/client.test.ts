@@ -365,6 +365,7 @@ describe("settings page", () => {
     const tree = await render(harness.sections[0]!.Component);
     expect(textOf(tree)).toContain("readOnly");
     expect(findByLabel(tree, "button", "enabled")?.props.disabled).toBe(true);
+    expect(findByLabel(tree, "input", "defaultLimit")?.props.disabled).toBe(true);
   });
 
   it("matches the row when the entry id is namespaced", async () => {
@@ -407,6 +408,88 @@ describe("settings page", () => {
     const tree = await render(harness.sections[0]!.Component);
     expect(harness.modelCatalog).not.toHaveBeenCalled();
     expect(findByLabel(tree, "input", "manual")).toBeDefined();
+  });
+
+  it("edits the deployment default threshold above the model list", async () => {
+    const plugin = await loadClientPlugin();
+    const harness = createHarness({
+      view: { ns: "autocompact", revision: 4, value: { enabled: true, modelLimits: {} } },
+    });
+    plugin.apply(harness.ctx);
+    const tree = await render(harness.sections[0]!.Component);
+    const input = findByLabel(tree, "input", "defaultLimit");
+    expect(input).toBeDefined();
+    await act(async () => {
+      input.props.onChange({ target: { value: "300k" } });
+    });
+    const save = tree.root.findAll(
+      (node) =>
+        node.type === "button" && node.props.className === "dsha-button dsha-button-primary",
+    )[0];
+    await act(async () => {
+      save!.props.onClick();
+    });
+    expect(harness.mutate).toHaveBeenCalledWith(
+      "autocompact",
+      [{ op: "set", path: ["defaultLimit"], value: 300000 }],
+      4,
+    );
+  });
+
+  it("clears a persisted deployment default as an unset operation", async () => {
+    const plugin = await loadClientPlugin();
+    const harness = createHarness({
+      view: {
+        ns: "autocompact",
+        revision: 5,
+        value: { enabled: true, modelLimits: {}, defaultLimit: 300000 },
+      },
+    });
+    plugin.apply(harness.ctx);
+    const tree = await render(harness.sections[0]!.Component);
+    const input = findByLabel(tree, "input", "defaultLimit");
+    expect(input!.props.value).toBe("300000");
+    await act(async () => {
+      input!.props.onChange({ target: { value: "" } });
+    });
+    const save = tree.root.findAll(
+      (node) =>
+        node.type === "button" && node.props.className === "dsha-button dsha-button-primary",
+    )[0];
+    await act(async () => {
+      save!.props.onClick();
+    });
+    expect(harness.mutate).toHaveBeenCalledWith(
+      "autocompact",
+      [{ op: "unset", path: ["defaultLimit"] }],
+      5,
+    );
+  });
+
+  it("rejects an unparsable deployment default instead of writing it", async () => {
+    const plugin = await loadClientPlugin();
+    const harness = createHarness({
+      view: {
+        ns: "autocompact",
+        revision: 6,
+        value: { enabled: true, modelLimits: {}, defaultLimit: 300000 },
+      },
+    });
+    plugin.apply(harness.ctx);
+    const tree = await render(harness.sections[0]!.Component);
+    const input = findByLabel(tree, "input", "defaultLimit");
+    await act(async () => {
+      input!.props.onChange({ target: { value: "banana" } });
+    });
+    const save = tree.root.findAll(
+      (node) =>
+        node.type === "button" && node.props.className === "dsha-button dsha-button-primary",
+    )[0];
+    await act(async () => {
+      save!.props.onClick();
+    });
+    expect(harness.mutate).not.toHaveBeenCalled();
+    expect(textOf(tree)).toContain("invalid");
   });
 });
 
@@ -477,6 +560,61 @@ describe("composer status line", () => {
     expect(dockElement(tree)!.props["data-state"]).toBe("on");
     expect(textOf(tree)).toContain("300K");
     expect(dockElement(tree)!.props["title"]).toContain("dockTitleLimit");
+  });
+
+  it("shows the deployment default for a model without its own threshold", async () => {
+    const plugin = await loadClientPlugin();
+    const harness = createHarness({
+      view: {
+        ns: "autocompact",
+        revision: 1,
+        value: { enabled: true, modelLimits: {}, defaultLimit: 300000 },
+      },
+    });
+    plugin.apply(harness.ctx);
+    const tree = await renderDock(harness, {
+      modelSelection: { lastUsed: null, next: { provider: "provider", model: "model" } },
+      contextPressure: { pressureTokens: 120000, projectedTokens: 128000 },
+    });
+    expect(dockElement(tree)!.props["data-state"]).toBe("on");
+    expect(textOf(tree)).toContain("128K / 300K");
+  });
+
+  it("shows a per-model threshold instead of the deployment default", async () => {
+    const plugin = await loadClientPlugin();
+    const harness = createHarness({
+      view: {
+        ns: "autocompact",
+        revision: 2,
+        value: {
+          enabled: true,
+          modelLimits: { "provider/model": 400000 },
+          defaultLimit: 300000,
+        },
+      },
+    });
+    plugin.apply(harness.ctx);
+    const tree = await renderDock(harness, {
+      modelSelection: { lastUsed: null, next: { provider: "provider", model: "model" } },
+    });
+    expect(textOf(tree)).toContain("400K");
+    expect(textOf(tree)).not.toContain("300K");
+  });
+
+  it("reports the off switch even when a deployment default is configured", async () => {
+    const plugin = await loadClientPlugin();
+    const harness = createHarness({
+      view: {
+        ns: "autocompact",
+        revision: 3,
+        value: { enabled: false, modelLimits: {}, defaultLimit: 300000 },
+      },
+    });
+    plugin.apply(harness.ctx);
+    const tree = await renderDock(harness, {
+      modelSelection: { lastUsed: null, next: { provider: "provider", model: "model" } },
+    });
+    expect(dockElement(tree)!.props["data-state"]).toBe("off");
   });
 
   it("writes counts in the k and m units the grammar takes", async () => {

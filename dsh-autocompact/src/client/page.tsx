@@ -1,9 +1,10 @@
 /**
  * The Settings → Autocompact page.
  *
- * The page owns the edit state (the view read from the Host, the staged draft,
- * the add-model selection) and talks to the Host through the two Remote
- * namespaces in `services.ts`; the two editable views it renders live beside it.
+ * The page owns the edit state (the view read from the Host, the staged draft
+ * for the deployment default and for each model, the add-model selection) and
+ * talks to the Host through the two Remote namespaces in `services.ts`; the two
+ * editable views it renders live beside it.
  *
  * @module @indexyz/dsh-autocompact/client/page
  */
@@ -17,12 +18,14 @@ import { messageOf, parseLimit } from "./limits.ts";
 import { pickNamespace, settingsFace, sessionFace } from "./services.ts";
 import {
   addKeyOf,
+  defaultChanged,
   hasChanges,
   hasRow,
   manualRouteOf,
   type Notice,
   type Pick,
   type Status,
+  toDefaultLimit,
   toEntries,
   type ViewState,
   visibleRows,
@@ -36,6 +39,8 @@ export function AutocompactPage(props: { readonly t: Translate }): React.ReactEl
   const [status, setStatus] = React.useState<Status>({ kind: "loading" });
   const [state, setState] = React.useState<ViewState | null>(null);
   const [draft, setDraft] = React.useState<Record<string, string>>({});
+  /** Staged text for the deployment-wide threshold; blank means unset. */
+  const [defaultDraft, setDefaultDraft] = React.useState("");
   const [added, setAdded] = React.useState<string[]>([]);
   const [removed, setRemoved] = React.useState<string[]>([]);
   const [pick, setPick] = React.useState<Pick>({
@@ -50,6 +55,7 @@ export function AutocompactPage(props: { readonly t: Translate }): React.ReactEl
 
   const applyView = React.useCallback((view: NamespaceView | undefined, writable?: unknown) => {
     const value = view?.value ?? {};
+    const defaultLimit = toDefaultLimit(value.defaultLimit);
     // Every view this page reads or writes is also the freshest one the composer
     // status line can have, so share it instead of making it re-read the row.
     publishView(view, writable);
@@ -60,9 +66,11 @@ export function AutocompactPage(props: { readonly t: Translate }): React.ReactEl
       ns: view?.ns ?? NS,
       revision: view?.revision,
       enabled: value.enabled !== false,
+      defaultLimit,
       limits: toEntries(value.modelLimits),
     });
     setDraft({});
+    setDefaultDraft(defaultLimit === undefined ? "" : String(defaultLimit));
     setAdded([]);
     setRemoved([]);
   }, []);
@@ -127,12 +135,26 @@ export function AutocompactPage(props: { readonly t: Translate }): React.ReactEl
     [state, added, draft, removed],
   );
 
-  const dirty = hasChanges(state, added, removed, draft);
+  const dirty = hasChanges(state, added, removed, draft) || defaultChanged(state, defaultDraft);
 
   const save = React.useCallback(async () => {
     const settings = settingsFace();
     if (settings === undefined || state === null) return;
     const ops: SettingsOp[] = [];
+    const trimmedDefault = defaultDraft.trim();
+    if (trimmedDefault === "") {
+      // Blank means "no deployment default"; only a stored value needs the unset.
+      if (state.defaultLimit !== undefined) ops.push({ op: "unset", path: ["defaultLimit"] });
+    } else {
+      const parsed = parseLimit(trimmedDefault);
+      if (parsed === undefined) {
+        setNotice({ kind: "error", text: t("invalid") });
+        return;
+      }
+      if (parsed !== state.defaultLimit) {
+        ops.push({ op: "set", path: ["defaultLimit"], value: parsed });
+      }
+    }
     for (const key of removed) ops.push({ op: "unset", path: ["modelLimits", key] });
     for (const [key, raw] of Object.entries(draft)) {
       const parsed = parseLimit(raw);
@@ -166,7 +188,7 @@ export function AutocompactPage(props: { readonly t: Translate }): React.ReactEl
     } finally {
       setBusy(false);
     }
-  }, [state, removed, draft, applyView, load, t]);
+  }, [state, removed, draft, defaultDraft, applyView, load, t]);
 
   const setEnabled = React.useCallback(
     async (next: boolean) => {
@@ -266,6 +288,30 @@ export function AutocompactPage(props: { readonly t: Translate }): React.ReactEl
             className="dsha-switch"
             disabled={busy || readOnly}
             onClick={() => void setEnabled(!state.enabled)}
+          />
+        </div>
+      </div>,
+    );
+
+    body.push(
+      <div key="default" className="dsha-card">
+        <div className="dsha-row">
+          <div className="dsha-row-text">
+            <span className="dsha-row-label">{t("defaultLimit")}</span>
+            <span className="dsha-hint">{t("defaultLimitHint")}</span>
+          </div>
+          <input
+            className="dsha-input dsha-value"
+            value={defaultDraft}
+            placeholder={t("thresholdPlaceholder")}
+            disabled={busy || readOnly}
+            aria-invalid={
+              defaultDraft.trim() !== "" && parseLimit(defaultDraft) === undefined
+                ? "true"
+                : "false"
+            }
+            aria-label={t("defaultLimit")}
+            onChange={(event) => setDefaultDraft(event.target.value)}
           />
         </div>
       </div>,

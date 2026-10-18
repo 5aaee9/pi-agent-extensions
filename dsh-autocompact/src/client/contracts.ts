@@ -133,6 +133,8 @@ export interface NamespaceView {
   readonly value?: {
     readonly enabled?: unknown;
     readonly modelLimits?: unknown;
+    /** Deployment-wide threshold applied to models without their own entry. */
+    readonly defaultLimit?: unknown;
   };
 }
 

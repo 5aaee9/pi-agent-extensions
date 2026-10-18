@@ -1,7 +1,7 @@
 # @indexyz/dsh-autocompact
 
-Set an earlier automatic compaction threshold per model, on the
-[dsh (DeepSeek Harness)](https://github.com/deepseek-ai/deepseek-harness) coding
+Set an earlier automatic compaction threshold per model, or for every model at once, on
+the [dsh (DeepSeek Harness)](https://github.com/deepseek-ai/deepseek-harness) coding
 agent. This is the dsh port of [`@indexyz/pi-autocompact`](https://github.com/5aaee9/pi-agent-extensions/tree/main/pi-autocompact).
 
 ```bash
@@ -39,12 +39,19 @@ keyed by exact `provider/model`. Switching models preserves each model's session
 override; new, resumed, and forked sessions start clean. `off` does not disable
 the backend's own automatic compaction or overflow recovery.
 
+The effective threshold for a route is resolved in this order: the session's
+`/autocompact` override (an explicit `off` suppresses everything below it), the
+route's own entry in `modelLimits`, then the deployment-wide `defaultLimit`. A
+route with none of these keeps the backend's own automatic compaction.
+
 ## Settings page
 
 **Settings → Autocompact** manages the persisted deployment defaults that every
 session inherits, so a threshold can be set without editing YAML:
 
 - a master switch for all configured thresholds;
+- a **Default threshold** applied to every model that has no threshold of its own,
+  left blank to keep those models on the backend's compaction;
 - one row per exact `provider/model` route with its threshold in tokens, editable
   in place and removable;
 - an add-model control fed by the live model catalog, with a manual
@@ -54,11 +61,11 @@ The composer's status pill opens this section (see below); the same editor is al
 registered as a central panel, which is the pill's fallback destination when the
 settings shell's store cannot be reached.
 
-The page writes the bundle row's `modelLimits` through the Host `settings`
-service, guarded by the row's revision and validated by its Config schema, so
-values land in the profile patch layer and survive upgrades. `writable: false`
-profiles render the page read-only. `modelLimits` and `enabled` are declared
-`.volatile()`: the settings service lists only entries whose Config has a
+The page writes the bundle row's `modelLimits` and `defaultLimit` through the Host
+`settings` service, guarded by the row's revision and validated by its Config schema,
+so values land in the profile patch layer and survive upgrades. `writable: false`
+profiles render the page read-only. `modelLimits`, `defaultLimit`, and `enabled` are
+declared `.volatile()`: the settings service lists only entries whose Config has a
 volatile field and accepts writes only to volatile paths, and a volatile field is
 what makes a saved edit reach the running plugin without a restart. `retainTokens`
 stays ordinary configuration and is edited in YAML only.
@@ -91,12 +98,12 @@ A compact status entry sits in the composer's ambient row
 (`conversation.composer.dock`), right beside the session's turn, token, and
 context readings, so the state is visible without opening Settings:
 
-| It shows             | When                                                                                                                                                             |
-| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `(icon) 128K / 300K` | a threshold applies to this session's model: the first figure is the measured pressure from `contextPressure`, the second the threshold that triggers compaction |
-| `(icon) 300K`        | a threshold applies, but no request has reported usage yet                                                                                                       |
-| `(icon) Off`         | the master switch is off                                                                                                                                         |
-| nothing              | no threshold applies to this model, or the deployment exposes no configurable autocompact row                                                                    |
+| It shows             | When                                                                                                                                                                                                       |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `(icon) 128K / 300K` | a threshold applies to this session's model (its own entry or the deployment default): the first figure is the measured pressure from `contextPressure`, the second the threshold that triggers compaction |
+| `(icon) 300K`        | a threshold applies, but no request has reported usage yet                                                                                                                                                 |
+| `(icon) Off`         | the master switch is off                                                                                                                                                                                   |
+| nothing              | neither a model threshold nor a deployment default applies, or the deployment exposes no configurable autocompact row                                                                                      |
 
 The pill is dressed as one of the host's own ambient readings: the icon artwork (the host's data-outline icon),
 the pill padding, radius and tertiary label colour, the density-aware type size,
@@ -107,9 +114,9 @@ plugin's own name — the icon identifies the entry, and the tooltip (`title` an
 what a click does (`deepseek/x: 128K of 300K` / `Click to open settings`).
 
 It takes a seat in that row only when it has something to report: a model
-without a threshold under an on switch is a non-event, and the Settings page is
-where "not configured" is discovered and fixed — so an inert autocompact does
-not add noise to the session's own readings.
+without a threshold of its own and no deployment default under an on switch is a
+non-event, and the Settings page is where "not configured" is discovered and
+fixed — so an inert autocompact does not add noise to the session's own readings.
 
 Clicking the pill opens **Settings → Autocompact**. Settings owns the panel, its
 section navigation, and the store behind both, and the shell registers that store
@@ -132,9 +139,10 @@ neither, the click is inert and the reading still renders.
 It reads the session's route from the `modelSelection` projection and subscribes
 to the same configuration store the Settings page writes to, so a save there
 updates the line immediately. The configured number is the **deployment
-default**: `/autocompact` overrides live in Host memory for one session and are
-not published to the client, so the pill shows the persisted threshold and does
-not claim to be the effective value — a session override is not visible here.
+default** for the route, falling back to the deployment-wide default:
+`/autocompact` overrides live in Host memory for one session and are not
+published to the client, so the pill shows the persisted threshold and does not
+claim to be the effective value — a session override is not visible here.
 A crash inside the pill is caught by its own boundary, which logs and renders
 nothing, because the composer must survive a decorative widget.
 
@@ -142,8 +150,8 @@ nothing, because the composer must survive a decorative widget.
 
 `dsh-compaction-basic` already condenses history as token pressure builds, using
 `floor(min(W × thresholdRatio, W − reservedOutput − headroomTokens))`. This plugin
-adds only one thing: an **earlier, per-model absolute threshold** for the current
-session, expressed through the public compaction seam.
+adds only one thing: an **earlier absolute threshold**, per model or for every
+model, for the current session, expressed through the public compaction seam.
 
 - On every `agent/pre-step` boundary the plugin measures request pressure with
   `ctx.tokenMeter` and compares it with the effective threshold. Above it, the
@@ -185,19 +193,23 @@ the command:
     - id: autocompact
       name: "@indexyz/dsh-autocompact"
       config:
+        defaultLimit: 300000
         modelLimits:
-          provider/model-id: 300000
+          provider/model-id: 400000
 ```
 
-| Field          | Default | Meaning                                                                                        |
-| -------------- | ------- | ---------------------------------------------------------------------------------------------- |
-| `modelLimits`  | `{}`    | Global default thresholds keyed by exact `provider/model`; positive integer token counts.      |
-| `retainTokens` | `20000` | Recent-tail fallback budget, used only when the mounted backend publishes no retention policy. |
-| `enabled`      | `true`  | Master switch for the automatic pressure check.                                                |
+| Field          | Default | Meaning                                                                                                                 |
+| -------------- | ------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `modelLimits`  | `{}`    | Global default thresholds keyed by exact `provider/model`; positive integer token counts.                               |
+| `defaultLimit` | unset   | Threshold applied to every model without a `modelLimits` entry; unset means those models keep the backend's compaction. |
+| `retainTokens` | `20000` | Recent-tail fallback budget, used only when the mounted backend publishes no retention policy.                          |
+| `enabled`      | `true`  | Master switch for the automatic pressure check.                                                                         |
 
-Values are positive integer token counts. Session commands override these values
-without changing the row configuration. The Settings page above writes exactly
-this field, so YAML and UI stay interchangeable.
+Values are positive integer token counts. A `modelLimits` entry overrides
+`defaultLimit`, and a session command overrides both without changing the row
+configuration. The Settings page above writes `modelLimits`, `defaultLimit`, and
+`enabled`, so YAML and UI stay interchangeable; clearing the default in the page
+(or deleting the key in YAML) turns autocompact off for uncovered models again.
 
 ## Behavior and limitations
 
@@ -210,6 +222,10 @@ this field, so YAML and UI stay interchangeable.
 - Retention follows the backend's own policy for the exact route, so the
   threshold must exceed the retained tail and stay below the real model context
   window. Both are validated before a threshold is accepted.
+- A deployment-wide `defaultLimit` is validated once at load as a positive token
+  count, then checked against each route's real capacity when that route is used.
+  A default that does not fit one model's context window leaves that model
+  uncompacted and warns once per session; other routes keep using it.
 - Thresholds are not strict request-size caps: one turn or tool batch can
   overshoot. If an indivisible or too-small context cannot retain recent content
   and shrink, the plugin leaves it to the backend's overflow or manual

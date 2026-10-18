@@ -23,6 +23,8 @@ export interface ViewState {
   readonly ns: string;
   readonly revision?: number;
   readonly enabled: boolean;
+  /** Persisted deployment-wide threshold, or `undefined` when unset. */
+  readonly defaultLimit: number | undefined;
   readonly limits: readonly Row[];
 }
 
@@ -57,6 +59,16 @@ export function toEntries(modelLimits: unknown): Row[] {
     .map(([key, value]) => ({ key, value: value as number }));
 }
 
+/**
+ * The persisted deployment default, or `undefined` when the row carries none.
+ *
+ * Defensive like {@link toEntries}: anything that is not a positive integer is
+ * treated as unset, even though the Host validates the row before it is loaded.
+ */
+export function toDefaultLimit(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : undefined;
+}
+
 /** The rows the editor shows: stored limits plus staged additions, minus staged removals. */
 export function visibleRows(
   state: ViewState | null,
@@ -83,6 +95,20 @@ export function hasChanges(
     const current = (state?.limits ?? []).find((entry) => entry.key === key);
     return current === undefined || String(current.value) !== String(draft[key]).trim();
   });
+}
+
+/**
+ * Whether the staged deployment default differs from the stored one.
+ *
+ * A blank draft means "unset", so it is a change only when a value is stored.
+ * Anything that does not parse counts as a change too, so the Save control that
+ * reports the invalid value is reachable.
+ */
+export function defaultChanged(state: ViewState | null, raw: string): boolean {
+  const trimmed = raw.trim();
+  if (trimmed === "") return state?.defaultLimit !== undefined;
+  const parsed = parseLimit(trimmed);
+  return parsed === undefined || parsed !== state?.defaultLimit;
 }
 
 /** The `provider/model` key a manually typed route denotes, or `""` when incomplete. */

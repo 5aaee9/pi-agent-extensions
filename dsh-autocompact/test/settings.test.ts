@@ -9,6 +9,7 @@ import {
   parseLimit,
   resolveLimit,
   supportsRegions,
+  validateDefaultLimit,
   validateLimit,
 } from "../settings.ts";
 
@@ -59,6 +60,29 @@ describe("configuration resolution", () => {
     expect(resolveLimit(new Map([[key, 250000]]), defaults, key)).toBe(250000);
     expect(resolveLimit(new Map([[key, null]]), defaults, key)).toBeUndefined();
     expect(resolveLimit(new Map(), defaults, "other/model")).toBeUndefined();
+  });
+
+  it("validates the optional deployment default", () => {
+    expect(validateDefaultLimit(undefined)).toBeUndefined();
+    expect(validateDefaultLimit(300000)).toBe(300000);
+    expect(() => validateDefaultLimit(0)).toThrow(/defaultLimit/);
+    expect(() => validateDefaultLimit(-1)).toThrow(/defaultLimit/);
+    expect(() => validateDefaultLimit(1.5)).toThrow(/defaultLimit/);
+    expect(() => validateDefaultLimit("300k")).toThrow(/defaultLimit/);
+  });
+
+  it("falls back to the deployment default only without a per-model entry", () => {
+    const defaults = new Map([[key, 400000]]);
+    // No per-model entry: the deployment default covers the route.
+    expect(resolveLimit(new Map(), new Map(), key, 300000)).toBe(300000);
+    expect(resolveLimit(new Map(), new Map(), "other/model", 300000)).toBe(300000);
+    // A per-model entry or a session override wins over it.
+    expect(resolveLimit(new Map(), defaults, key, 300000)).toBe(400000);
+    expect(resolveLimit(new Map([[key, 250000]]), defaults, key, 300000)).toBe(250000);
+    // An explicit off suppresses the default too.
+    expect(resolveLimit(new Map([[key, null]]), defaults, key, 300000)).toBeUndefined();
+    // No default configured: the route stays uncovered.
+    expect(resolveLimit(new Map(), new Map(), key)).toBeUndefined();
   });
 
   it("builds exact route keys", () => {

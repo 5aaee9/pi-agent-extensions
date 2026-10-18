@@ -10,10 +10,11 @@
  * - the measured pressure from the `contextPressure` projection,
  * - the configured thresholds from {@link module:@indexyz/dsh-autocompact/client/config-store}.
  *
- * The configured value is the *deployment default* for that route. A session can
+ * The configured value is the deployment default for that route, or the
+ * deployment-wide default when the route has no entry of its own. A session can
  * override it with `/autocompact`, and that override lives in Host memory for
- * the session only, so this line cannot read it: the wording says `Default`
- * rather than claiming to be the effective value.
+ * the session only, so this line reports the persisted value rather than
+ * claiming to be the effective one.
  *
  * @module @indexyz/dsh-autocompact/client/status-dock
  */
@@ -188,7 +189,11 @@ export function AutocompactStatus(props: AutocompactStatusProps): React.ReactEle
 
   const enabled = snapshot.config.enabled;
   const route = routeOf(selection);
-  const limit = route === undefined ? undefined : snapshot.config.limits[route];
+  // The route's own entry wins; without one the deployment default covers it.
+  const limit =
+    route === undefined
+      ? undefined
+      : (snapshot.config.limits[route] ?? snapshot.config.defaultLimit);
   // An off switch was a deliberate choice and is what stops every threshold, so it
   // is reported whatever model the session uses.
   if (!enabled) {

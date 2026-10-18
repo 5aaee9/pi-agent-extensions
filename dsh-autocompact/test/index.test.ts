@@ -275,6 +275,80 @@ describe("session-only thresholds", () => {
     expect(h.ctx.logger.warn).toHaveBeenCalledTimes(1);
   });
 
+  it("applies the deployment default to a model without its own threshold", async () => {
+    const h = createHarness({ pluginConfig: { defaultLimit: 300000 } });
+    const agent = createAgent();
+    expect(await h.definitions[0]!.handler(invocation(agent, ""))).toMatchObject({
+      kind: "success",
+      text: expect.stringContaining("300,000 tokens (deployment default)"),
+    });
+    await step(h, agent);
+    expect(h.compactRegion).toHaveBeenCalledOnce();
+  });
+
+  it("lets a per-model default win over the deployment default", async () => {
+    const h = createHarness({
+      pluginConfig: {
+        defaultLimit: 300000,
+        modelLimits: { "provider/model": 400000 },
+      },
+    });
+    const agent = createAgent();
+    expect(await h.definitions[0]!.handler(invocation(agent, ""))).toMatchObject({
+      kind: "success",
+      text: expect.stringContaining("400,000 tokens (global default)"),
+    });
+    // 350,000 measured tokens stay below the 400,000 per-model threshold.
+    await step(h, agent);
+    expect(h.compactRegion).not.toHaveBeenCalled();
+  });
+
+  it("lets a session override and off win over the deployment default", async () => {
+    const h = createHarness({ pluginConfig: { defaultLimit: 300000 } });
+    const agent = createAgent();
+    await h.definitions[0]!.handler(invocation(agent, "400k"));
+    await step(h, agent);
+    expect(h.compactRegion).not.toHaveBeenCalled();
+
+    expect(await h.definitions[0]!.handler(invocation(agent, "off"))).toMatchObject({
+      kind: "success",
+      text: expect.stringContaining("backend default compaction"),
+    });
+    await step(h, agent);
+    expect(h.compactRegion).not.toHaveBeenCalled();
+  });
+
+  it("sees a live Settings write to the deployment default", async () => {
+    let defaultLimit: number | undefined;
+    const h = createHarness({ pluginConfig: { defaultLimit: { get: () => defaultLimit } } });
+    const agent = createAgent();
+    await step(h, agent);
+    expect(h.compactRegion).not.toHaveBeenCalled();
+
+    defaultLimit = 300000;
+    await step(h, agent);
+    expect(h.compactRegion).toHaveBeenCalledOnce();
+  });
+
+  it("does not compact a route whose window the deployment default exceeds", async () => {
+    const h = createHarness({
+      pluginConfig: { defaultLimit: 1_000_000 },
+      tokens: 1_500_000,
+    });
+    const agent = createAgent();
+    await step(h, agent);
+    expect(h.compactRegion).not.toHaveBeenCalled();
+    expect(h.ctx.logger.warn).toHaveBeenCalledWith(expect.stringContaining("context window"));
+
+    // The warning is once per session, like every other contained failure.
+    await step(h, agent);
+    expect(h.ctx.logger.warn).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails plugin load on an invalid deployment default", () => {
+    expect(() => apply({} as unknown as Context, { defaultLimit: 0 })).toThrow(/defaultLimit/);
+  });
+
   it("fails plugin load on an invalid global default", () => {
     expect(() => apply({} as unknown as Context, { modelLimits: { "no-route": 300000 } })).toThrow(
       /Invalid/,
@@ -286,6 +360,7 @@ describe("session-only thresholds", () => {
     // volatile field, and only accepts writes to volatile paths; without this the
     // Settings page reports the row as not configurable.
     expect(Config.dict?.modelLimits?.meta?.volatile).toBe(true);
+    expect(Config.dict?.defaultLimit?.meta?.volatile).toBe(true);
     expect(Config.dict?.enabled?.meta?.volatile).toBe(true);
     expect(Config.dict?.retainTokens?.meta?.volatile).toBeUndefined();
   });

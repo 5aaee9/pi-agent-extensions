@@ -36,6 +36,7 @@ import {
   parseLimit,
   resolveLimit,
   supportsRegions,
+  validateDefaultLimit,
   validateLimit,
 } from "./settings.ts";
 
@@ -60,6 +61,11 @@ export interface VolatileField<T> {
 export interface AutocompactConfig {
   /** Optional global default thresholds keyed by exact `provider/model`. Never written by the command. */
   modelLimits?: Record<string, number> | VolatileField<Record<string, number>>;
+  /**
+   * Optional deployment-wide threshold applied to every model without its own
+   * entry. Absent means those models keep the backend's automatic compaction.
+   */
+  defaultLimit?: number | VolatileField<number | undefined>;
   /** Recent-tail fallback budget used only when the backend publishes no retention policy. */
   retainTokens?: number;
   /** Master switch for the automatic pressure check. */
@@ -69,15 +75,16 @@ export interface AutocompactConfig {
 /**
  * Validated row configuration; misconfiguration fails plugin load.
  *
- * `modelLimits` and `enabled` are volatile because the Settings page edits them
- * through the Host settings service: that service only exposes an entry whose
- * schema declares a volatile field (`volatileForm`), and only accepts writes to
- * volatile paths. A volatile field is also what makes an edit visible to the
- * running plugin without a restart. `retainTokens` stays ordinary configuration,
- * editable from `cordis.patch.yml` only.
+ * `modelLimits`, `defaultLimit` and `enabled` are volatile because the Settings
+ * page edits them through the Host settings service: that service only exposes
+ * an entry whose schema declares a volatile field (`volatileForm`), and only
+ * accepts writes to volatile paths. A volatile field is also what makes an edit
+ * visible to the running plugin without a restart. `retainTokens` stays ordinary
+ * configuration, editable from `cordis.patch.yml` only.
  */
 export const Config = z.object({
   modelLimits: z.dict(z.natural()).default({}).volatile(),
+  defaultLimit: z.natural().volatile(),
   retainTokens: z.natural().default(20000),
   enabled: z.boolean().default(true).volatile(),
 });
@@ -167,10 +174,17 @@ export function apply(ctx: Context, config: AutocompactConfig = {}): void {
   /** Current global defaults, re-read so a Settings write applies to the running plugin. */
   const limitsNow = (): Map<string, number> =>
     defaultLimits({ modelLimits: liveValue(config.modelLimits, {}) });
+  /**
+   * Current deployment-wide threshold, re-read like the defaults above.
+   * `undefined` means no default: uncovered models keep the backend's behavior.
+   */
+  const defaultLimitNow = (): number | undefined =>
+    validateDefaultLimit(liveValue<number | undefined>(config.defaultLimit, undefined));
   const fallbackRetainTokens = liveValue(config.retainTokens, 20000);
   // Validate the configured defaults at load, where a bad row fails loudly,
   // instead of at the first measured step.
   limitsNow();
+  defaultLimitNow();
   // Session-only state, keyed by the live Session object so a new, resumed, or
   // forked session starts clean and a detached session is collected.
   const sessions = new WeakMap<Session, SessionState>();
@@ -230,7 +244,12 @@ export function apply(ctx: Context, config: AutocompactConfig = {}): void {
     const target = targetOf(agent);
     if (target === undefined) return;
     const key = modelKey(target.provider, target.model);
-    const limit = resolveLimit(stateOf(agent.session).overrides, limitsNow(), key);
+    const limit = resolveLimit(
+      stateOf(agent.session).overrides,
+      limitsNow(),
+      key,
+      defaultLimitNow(),
+    );
     if (limit === undefined) return;
     const backend = backendFor(ctx, agent);
     if (backend === undefined || !nativeAutoEnabled(backend)) return;
@@ -314,8 +333,15 @@ export function apply(ctx: Context, config: AutocompactConfig = {}): void {
         }
         state.set(key, limit);
       }
-      const limit = resolveLimit(state, limitsNow(), key);
-      const source = state.has(key) ? "session" : "global default";
+      const defaults = limitsNow();
+      const limit = resolveLimit(state, defaults, key, defaultLimitNow());
+      // Name the layer the effective threshold came from: the session, an exact
+      // `provider/model` default, or the deployment-wide fallback.
+      const source = state.has(key)
+        ? "session"
+        : defaults.has(key)
+          ? "global default"
+          : "deployment default";
       const threshold =
         limit === undefined
           ? "backend default compaction (no plugin threshold)"

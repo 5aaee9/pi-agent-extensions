@@ -55,6 +55,21 @@ export function validateLimit(limit: number, contextWindow: number, retainTokens
 }
 
 /**
+ * Validate the optional deployment-wide threshold.
+ *
+ * `undefined` means "no default": a model without its own threshold keeps the
+ * backend's automatic compaction. A configured value must be a positive safe
+ * integer, the same rule every `modelLimits` entry follows.
+ */
+export function validateDefaultLimit(value: unknown): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
+    throw new Error("autocompact.defaultLimit must be a positive safe integer number of tokens");
+  }
+  return value;
+}
+
+/**
  * Optional global defaults from this plugin's own `config`; the command never
  * writes them and a session command overrides them without persisting anything.
  */
@@ -76,15 +91,21 @@ export function defaultLimits(config: { modelLimits?: unknown }): Map<string, nu
 }
 
 /**
- * Resolve the effective absolute threshold for one route: a session override
- * always wins, including an explicit `null` that suppresses a global default.
+ * Resolve the effective absolute threshold for one route.
+ *
+ * A session override always wins, including an explicit `null` that suppresses
+ * every persisted layer. Below it an exact `provider/model` entry wins over the
+ * deployment-wide default; with neither configured the route has no threshold
+ * and autocompact stays off for it.
  */
 export function resolveLimit(
   overrides: ReadonlyMap<string, number | null>,
   defaults: ReadonlyMap<string, number>,
   key: string,
+  defaultLimit?: number,
 ): number | undefined {
-  return overrides.has(key) ? (overrides.get(key) ?? undefined) : defaults.get(key);
+  if (overrides.has(key)) return overrides.get(key) ?? undefined;
+  return defaults.get(key) ?? defaultLimit;
 }
 
 /** Native compaction policy a backend happens to expose for read-only introspection. */
