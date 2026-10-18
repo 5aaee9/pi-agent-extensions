@@ -13,7 +13,13 @@
 
 import type { ProviderDescriptor, SettingsSeam, ApplyResult } from "./apply.ts";
 import { applyIntents } from "./apply.ts";
-import { describeEfforts, type Declarations, type ModelDeclaration } from "./declarations.ts";
+import {
+  describeEfforts,
+  describeInput,
+  isModelInput,
+  type Declarations,
+  type InputDeclarations,
+} from "./declarations.ts";
 import { hasCodexManifest, probeManifest, probeRoute, type RouteProbe } from "./discovery.ts";
 import type { Change, Intent, Skip } from "./plan.ts";
 import type { ListedModel } from "./reasoning.ts";
@@ -51,8 +57,10 @@ export interface RuntimeDeps {
 export interface RuntimeOptions {
   /** The configurable namespace whose `providers` field is written. */
   readonly namespace: string;
-  /** The validated declaration table. */
+  /** The validated effort declaration table. */
   readonly declarations: Declarations;
+  /** The validated vision declaration table. */
+  readonly inputs: InputDeclarations;
   /** Whether the load-time pass interrogates endpoints. */
   readonly discover: boolean;
   /** Routes to interrogate instead of the heuristic's own set. */
@@ -117,7 +125,7 @@ function stringRecord(value: unknown): Record<string, string> | undefined {
   return Object.keys(result).length === 0 ? undefined : result;
 }
 
-/** Every declared route/model pair, with its declaration. */
+/** Every declared route/model pair, with its reasoning declaration. */
 function declaredIntents(declarations: Declarations): Intent[] {
   const intents: Intent[] = [];
   for (const [route, models] of Object.entries(declarations)) {
@@ -126,7 +134,7 @@ function declaredIntents(declarations: Declarations): Intent[] {
   return intents;
 }
 
-/** Every declared route/model pair, as a removal. */
+/** Every declared route/model pair, as a reasoning removal. */
 function removalIntents(declarations: Declarations): Intent[] {
   const intents: Intent[] = [];
   for (const [route, models] of Object.entries(declarations)) {
@@ -137,12 +145,37 @@ function removalIntents(declarations: Declarations): Intent[] {
   return intents;
 }
 
-/** An explicit declaration wins over a discovered one for the same pair. */
+/** Every declared route/model pair, with its vision declaration. */
+function declaredInputIntents(inputs: InputDeclarations): Intent[] {
+  const intents: Intent[] = [];
+  for (const [route, models] of Object.entries(inputs)) {
+    for (const [model, value] of Object.entries(models)) {
+      intents.push({ field: "input", route, model, value });
+    }
+  }
+  return intents;
+}
+
+/** Every declared route/model pair, as a vision removal. */
+function removalInputIntents(inputs: InputDeclarations): Intent[] {
+  const intents: Intent[] = [];
+  for (const [route, models] of Object.entries(inputs)) {
+    for (const model of Object.keys(models)) {
+      intents.push({ field: "input", route, model, value: undefined });
+    }
+  }
+  return intents;
+}
+
+/** The identity one intent addresses: pair plus the field it writes. */
+function intentKey(intent: Intent): string {
+  return `${intent.route}\u0000${intent.model}\u0000${intent.field ?? "reasoningEfforts"}`;
+}
+
+/** An explicit declaration wins over a discovered one for the same pair and field. */
 function mergeIntents(explicit: readonly Intent[], discovered: readonly Intent[]): Intent[] {
   const merged = new Map<string, Intent>();
-  for (const intent of [...discovered, ...explicit]) {
-    merged.set(`${intent.route}\u0000${intent.model}`, intent);
-  }
+  for (const intent of [...discovered, ...explicit]) merged.set(intentKey(intent), intent);
   return [...merged.values()];
 }
 
@@ -234,10 +267,54 @@ function mergeListings(
       merged.set(model.id, model);
       continue;
     }
-    if (model.efforts === undefined) continue;
-    merged.set(model.id, { id: model.id, efforts: { ...model.efforts, ...existing.efforts } });
+    const efforts = model.efforts ?? existing.efforts;
+    const inputModalities = existing.inputModalities ?? model.inputModalities;
+    const name = existing.name ?? model.name;
+    const contextWindow = existing.contextWindow ?? model.contextWindow;
+    const maxTokens = existing.maxTokens ?? model.maxTokens;
+    merged.set(model.id, {
+      id: model.id,
+      ...(name === undefined ? {} : { name }),
+      ...(contextWindow === undefined ? {} : { contextWindow }),
+      ...(maxTokens === undefined ? {} : { maxTokens }),
+      ...(efforts === undefined ? {} : { efforts }),
+      ...(inputModalities === undefined ? {} : { inputModalities }),
+    });
   }
   return [...merged.values()];
+}
+
+/**
+ * The metadata intents one listing entry supplies.
+ *
+ * Discovery fills an authored entry's gaps only: each intent uses the `fill`
+ * mode, so a value the profile already carries — the deployment's own choice —
+ * is never overwritten. `name`, `contextWindow`, and `maxTokens` are the fields
+ * a bare inventory (a Codex manifest, a relay that omits limits) leaves unset
+ * and the Harness would otherwise fill from its defaults or the installed
+ * catalog.
+ *
+ * @param model - one merged listing entry.
+ * @returns the metadata intents to plan beside the capability ones.
+ */
+function discoveredMetadata(model: ListedModel): Array<{
+  readonly field: "name" | "contextWindow" | "maxTokens";
+  readonly mode: "fill";
+  readonly value: string | number;
+}> {
+  const intents: Array<{
+    readonly field: "name" | "contextWindow" | "maxTokens";
+    readonly mode: "fill";
+    readonly value: string | number;
+  }> = [];
+  if (model.name !== undefined) intents.push({ field: "name", mode: "fill", value: model.name });
+  if (model.contextWindow !== undefined) {
+    intents.push({ field: "contextWindow", mode: "fill", value: model.contextWindow });
+  }
+  if (model.maxTokens !== undefined) {
+    intents.push({ field: "maxTokens", mode: "fill", value: model.maxTokens });
+  }
+  return intents;
 }
 
 /** Interrogate every candidate route and turn the advertised levels into intents. */
@@ -298,9 +375,16 @@ async function discoverIntents(
       }
     }
     for (const model of listed) {
-      if (model.efforts === undefined) continue;
       if (!declared.has(model.id)) continue;
-      intents.push({ route, model: model.id, value: model.efforts });
+      if (model.efforts !== undefined) {
+        intents.push({ route, model: model.id, value: model.efforts });
+      }
+      const modalities = model.inputModalities;
+      if (modalities !== undefined && modalities.includes("image")) {
+        intents.push({ field: "input", route, model: model.id, value: modalities });
+      }
+      const metadata = discoveredMetadata(model);
+      intents.push(...metadata.map((intent) => ({ ...intent, route, model: model.id })));
     }
   }
   return { intents, probed, failures };
@@ -308,13 +392,21 @@ async function discoverIntents(
 
 /** One change rendered for an answer. */
 function describeChange(change: Change): string {
-  const after: ModelDeclaration | undefined = change.after;
-  return `${change.route}/${change.model} -> ${after === undefined ? "removed" : describeEfforts(after)}`;
+  const after = change.after;
+  const rendered =
+    after === undefined
+      ? "removed"
+      : typeof after === "string" || typeof after === "number"
+        ? String(after)
+        : change.field === "input"
+          ? describeInput(isModelInput(after) ? after : [])
+          : describeEfforts(isModelInput(after) ? false : after);
+  return `${change.route}/${change.model} ${change.field} -> ${rendered}`;
 }
 
 /** A skip rendered for an answer. */
 function describeSkip(skip: Skip): string {
-  return `skipped ${skip.route}/${skip.model}: ${skip.reason}`;
+  return `skipped ${skip.route}/${skip.model} ${skip.field}: ${skip.reason}`;
 }
 
 /**
@@ -447,8 +539,8 @@ export function createRuntime(options: RuntimeOptions, deps: RuntimeDeps): Runti
     }
     let intents =
       mode === "clear"
-        ? removalIntents(options.declarations)
-        : declaredIntents(options.declarations);
+        ? [...removalIntents(options.declarations), ...removalInputIntents(options.inputs)]
+        : [...declaredIntents(options.declarations), ...declaredInputIntents(options.inputs)];
     let probed: readonly string[] = [];
     let failures: readonly string[] = [];
     if (mode === "discover") {

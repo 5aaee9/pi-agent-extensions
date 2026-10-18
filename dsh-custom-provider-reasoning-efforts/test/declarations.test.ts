@@ -3,8 +3,11 @@ import { describe, expect, it } from "vitest";
 import {
   DeclarationError,
   describeEfforts,
+  describeInput,
   validateDeclarations,
+  validateInputs,
   validateModelDeclaration,
+  validateModelInput,
 } from "../declarations.ts";
 
 describe("validateModelDeclaration", () => {
@@ -94,6 +97,80 @@ describe("validateDeclarations", () => {
     expect(() => validateDeclarations({ magpie: { "": { low: "low" } } })).toThrow(
       /empty model id/,
     );
+  });
+});
+
+describe("validateModelInput", () => {
+  it("accepts a vision model's modalities in declaration order", () => {
+    expect(validateModelInput("magpie", "x", ["text", "image"])).toEqual(["text", "image"]);
+  });
+
+  it("accepts a text-only declaration", () => {
+    expect(validateModelInput("magpie", "x", ["text"])).toEqual(["text"]);
+  });
+
+  it("accepts image before text as written", () => {
+    expect(validateModelInput("magpie", "x", ["image", "text"])).toEqual(["image", "text"]);
+  });
+
+  it("rejects a non-array declaration", () => {
+    expect(() => validateModelInput("magpie", "x", "text")).toThrow(/must be a modality array/);
+  });
+
+  it("rejects an empty array", () => {
+    expect(() => validateModelInput("magpie", "x", [])).toThrow(/names no modality/);
+  });
+
+  it("rejects an array without text", () => {
+    expect(() => validateModelInput("magpie", "x", ["image"])).toThrow(/missing "text"/);
+  });
+
+  it("rejects a member the vocabulary does not know", () => {
+    expect(() => validateModelInput("magpie", "x", ["text", "video"])).toThrow(
+      /"video" is not a pi-ai model modality/,
+    );
+  });
+
+  it("names the route and the model in its rejection", () => {
+    expect(() => validateModelInput("magpie", "ollama-cloud/x", [])).toThrow(
+      /route "magpie" model "ollama-cloud\/x"/,
+    );
+  });
+});
+
+describe("validateInputs", () => {
+  it("accepts an empty table", () => {
+    expect(validateInputs(undefined)).toEqual({});
+  });
+
+  it("validates every route and model", () => {
+    expect(validateInputs({ magpie: { a: ["text", "image"], b: ["text"] } })).toEqual({
+      magpie: { a: ["text", "image"], b: ["text"] },
+    });
+  });
+
+  it("rejects a route with no models", () => {
+    expect(() => validateInputs({ magpie: {} })).toThrow(/declares no models in its vision table/);
+  });
+
+  it("rejects an empty route name", () => {
+    expect(() => validateInputs({ "": { a: ["text"] } })).toThrow(/empty provider route/);
+  });
+
+  it("rejects an empty model id", () => {
+    expect(() => validateInputs({ magpie: { "": ["text"] } })).toThrow(
+      /vision table names an empty model id/,
+    );
+  });
+});
+
+describe("describeInput", () => {
+  it("joins the modalities in declaration order", () => {
+    expect(describeInput(["text", "image"])).toBe("text/image");
+  });
+
+  it("joins a text-only declaration", () => {
+    expect(describeInput(["text"])).toBe("text");
   });
 });
 

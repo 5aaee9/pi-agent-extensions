@@ -26,7 +26,7 @@ import type { CommandInvocation, CommandResult } from "@deepseek-ai/dsh-commands
 import type { SettingsDescriptor } from "@deepseek-ai/dsh-settings";
 
 import type { ProviderDescriptor, SettingsSeam } from "./apply.ts";
-import { validateDeclarations, type Declarations } from "./declarations.ts";
+import { validateDeclarations, validateInputs, type Declarations } from "./declarations.ts";
 import {
   createRuntime,
   describeResult,
@@ -52,8 +52,10 @@ const USAGE = "Usage: /reasoning-efforts [status | apply | discover | clear]";
  * `providers` is the declaration table; the rest tune the passes.
  */
 export interface ReasoningEffortsConfig {
-  /** Declarations keyed by provider route and then by exact model id. */
+  /** Reasoning declarations keyed by provider route and then by exact model id. */
   providers?: Declarations;
+  /** Vision declarations keyed by provider route and then by exact model id. */
+  vision?: Record<string, Record<string, readonly string[]>>;
   /** Whether the load-time pass interrogates endpoints (default true). */
   discover?: boolean;
   /** Routes to interrogate instead of the heuristic's own set (default: none). */
@@ -67,15 +69,17 @@ export interface ReasoningEffortsConfig {
 /**
  * Validated row configuration; a malformed declaration fails plugin load.
  *
- * The declaration table keeps the same value grammar `llm-pi-ai` itself
- * accepts for `reasoningEfforts`: an effort dict, or `false` for a model that
- * cannot reason. Its levels are validated semantically by
- * {@link validateDeclarations}, because a dict's keys are not schema-constrained.
+ * The declaration tables keep the same value grammar `llm-pi-ai` itself
+ * accepts: an effort dict or `false` for `reasoningEfforts`, and a modality
+ * array for `input`. Their semantics are validated by
+ * {@link validateDeclarations} and {@link validateInputs}, because a dict's
+ * keys are not schema-constrained and an array can still be empty.
  */
 export const Config = z.object({
   providers: z
     .dict(z.dict(z.union([z.const(false), z.dict(z.union([z.string(), z.const(null)]))])))
     .default({}),
+  vision: z.dict(z.dict(z.array(z.string()))).default({}),
   discover: z.boolean().default(true),
   discoverRoutes: z.array(z.string()).default([]),
   namespace: z.string().default("llm-pi-ai"),
@@ -195,6 +199,7 @@ function logLoadOutcome(logger: LoggerSeam, summary: RunSummary): void {
  */
 export function apply(ctx: Context, config: ReasoningEffortsConfig = {}): void {
   const declarations = validateDeclarations(config.providers);
+  const inputs = validateInputs(config.vision);
   const namespace =
     typeof config.namespace === "string" && config.namespace.length > 0
       ? config.namespace
@@ -204,6 +209,7 @@ export function apply(ctx: Context, config: ReasoningEffortsConfig = {}): void {
     {
       namespace,
       declarations,
+      inputs,
       discover,
       discoverRoutes: config.discoverRoutes ?? [],
     },

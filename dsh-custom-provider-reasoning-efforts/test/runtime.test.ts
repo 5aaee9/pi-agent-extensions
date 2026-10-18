@@ -21,6 +21,7 @@ import {
   fakeSettings,
   magpieListing,
   magpieProfile,
+  visionListing,
 } from "./fixture.ts";
 
 function fakeFetch(
@@ -57,6 +58,7 @@ function options(overrides: Partial<RuntimeOptions> = {}): RuntimeOptions {
   return {
     namespace: "llm-pi-ai",
     declarations: structuredClone(declarations),
+    inputs: {},
     discover: true,
     discoverRoutes: [],
     ...overrides,
@@ -161,6 +163,81 @@ describe("createRuntime", () => {
       high: "high",
       max: "max",
     });
+  });
+
+  it("discovers the modalities a listing publishes for a declared vision model", async () => {
+    const fake = fakeSettings(magpieProfile());
+    const { fetchImpl } = fakeFetch(visionListing());
+    const runtime = createRuntime(
+      options({ declarations: {} }),
+      deps({ settings: () => fake.seam, fetchImpl, env: { MAGPIE_API_KEY: "secret" } }),
+    );
+    const summary = await runtime.run("discover");
+    expect(summary.result.kind).toBe("applied");
+    expect(summary.result.changes.map((change) => change.field)).toEqual(["input"]);
+    const providers = fake.state.user["providers"] as {
+      magpie: { models: Array<Record<string, unknown>> };
+    };
+    expect(providers.magpie.models[0]?.["input"]).toEqual(["text", "image"]);
+    expect(providers.magpie.models[1]?.["input"]).toBeUndefined();
+    expect(summary.result.skipped).toEqual([]);
+  });
+
+  it("writes nothing for a listing that publishes text only", async () => {
+    const fake = fakeSettings(magpieProfile());
+    const { fetchImpl } = fakeFetch({
+      data: [{ id: "ollama-cloud/kimi-k3", input_modalities: ["text"] }],
+    });
+    const runtime = createRuntime(
+      options({ declarations: {} }),
+      deps({ settings: () => fake.seam, fetchImpl, env: { MAGPIE_API_KEY: "secret" } }),
+    );
+    const summary = await runtime.run("discover");
+    expect(summary.result.kind).toBe("unchanged");
+    const providers = fake.state.user["providers"] as {
+      magpie: { models: Array<Record<string, unknown>> };
+    };
+    expect(providers.magpie.models[0]?.["input"]).toEqual(["text"]);
+  });
+
+  it("prefers an explicit vision declaration over a discovered one", async () => {
+    const fake = fakeSettings(magpieProfile());
+    const { fetchImpl } = fakeFetch(visionListing());
+    const runtime = createRuntime(
+      options({ declarations: {}, inputs: { magpie: { "ollama-cloud/kimi-k3": ["text"] } } }),
+      deps({ settings: () => fake.seam, fetchImpl, env: { MAGPIE_API_KEY: "secret" } }),
+    );
+    const summary = await runtime.run("discover");
+    expect(summary.result.kind).toBe("unchanged");
+    const providers = fake.state.user["providers"] as {
+      magpie: { models: Array<Record<string, unknown>> };
+    };
+    expect(providers.magpie.models[0]?.["input"]).toEqual(["text"]);
+  });
+
+  it("removes the vision table's input field in clear mode", async () => {
+    const fake = fakeSettings(magpieProfile());
+    const runtime = createRuntime(
+      options({
+        declarations: {},
+        inputs: { magpie: { "ollama-cloud/kimi-k3": ["text", "image"] } },
+      }),
+      deps({ settings: () => fake.seam }),
+    );
+    await runtime.run("apply");
+    const summary = await createRuntime(
+      options({
+        declarations: {},
+        inputs: { magpie: { "ollama-cloud/kimi-k3": ["text", "image"] } },
+      }),
+      deps({ settings: () => fake.seam }),
+    ).run("clear");
+    expect(summary.result.kind).toBe("applied");
+    expect(summary.result.changes.map((change) => change.field)).toEqual(["input"]);
+    const providers = fake.state.user["providers"] as {
+      magpie: { models: Array<Record<string, unknown>> };
+    };
+    expect(providers.magpie.models[0]).not.toHaveProperty("input");
   });
 
   it("contains a probe failure and still applies the declarations", async () => {
@@ -341,13 +418,16 @@ describe("describeResult", () => {
         namespace: "llm-pi-ai",
         changes: [
           {
+            field: "reasoningEfforts",
             route: "magpie",
             model: "ollama-cloud/kimi-k3",
             before: undefined,
             after: { low: "low", high: "high" },
           },
         ],
-        skipped: [{ route: "magpie", model: "missing", reason: "not declared" }],
+        skipped: [
+          { field: "reasoningEfforts", route: "magpie", model: "missing", reason: "not declared" },
+        ],
       },
       intents: 3,
       probed: [],
@@ -356,11 +436,96 @@ describe("describeResult", () => {
     };
   }
 
+  it("renders both fields' changes and skips in one answer", () => {
+    const text = describeResult({
+      mode: "status",
+      namespace: "llm-pi-ai",
+      result: {
+        kind: "pending",
+        namespace: "llm-pi-ai",
+        changes: [
+          {
+            field: "reasoningEfforts",
+            route: "magpie",
+            model: "ollama-cloud/kimi-k3",
+            before: undefined,
+            after: { low: "low" },
+          },
+          {
+            field: "input",
+            route: "magpie",
+            model: "ollama-cloud/kimi-k3",
+            before: ["text"],
+            after: ["text", "image"],
+          },
+        ],
+        skipped: [{ field: "input", route: "magpie", model: "missing", reason: "not declared" }],
+      },
+      intents: 3,
+      probed: [],
+      failures: [],
+    });
+    expect(text).toMatch(/magpie\/ollama-cloud\/kimi-k3 reasoningEfforts -> low/);
+    expect(text).toMatch(/magpie\/ollama-cloud\/kimi-k3 input -> text\/image/);
+    expect(text).toMatch(/skipped magpie\/missing input: not declared/);
+    expect(text).toMatch(/2 pending change\(s\).*\(0 already current\)/);
+  });
+
+  it("renders a discovered metadata change", () => {
+    const text = describeResult({
+      mode: "discover",
+      namespace: "llm-pi-ai",
+      result: {
+        kind: "applied",
+        namespace: "llm-pi-ai",
+        changes: [
+          {
+            field: "contextWindow",
+            route: "zero-aicoding-codex",
+            model: "gpt-6.1-sol",
+            before: undefined,
+            after: 500000,
+          },
+        ],
+        skipped: [],
+      },
+      intents: 1,
+      probed: ["zero-aicoding-codex"],
+      failures: [],
+    });
+    expect(text).toMatch(/zero-aicoding-codex\/gpt-6.1-sol contextWindow -> 500000/);
+  });
+
+  it("renders a vision removal", () => {
+    const text = describeResult({
+      mode: "clear",
+      namespace: "llm-pi-ai",
+      result: {
+        kind: "applied",
+        namespace: "llm-pi-ai",
+        changes: [
+          {
+            field: "input",
+            route: "magpie",
+            model: "ollama-cloud/kimi-k3",
+            before: ["text", "image"],
+            after: undefined,
+          },
+        ],
+        skipped: [],
+      },
+      intents: 1,
+      probed: [],
+      failures: [],
+    });
+    expect(text).toMatch(/magpie\/ollama-cloud\/kimi-k3 input -> removed/);
+  });
+
   it("renders a status answer with the pending pairs", () => {
     const text = describeResult(summary("status", "pending"));
     expect(text).toMatch(/1 pending change\(s\) for "llm-pi-ai" \(1 already current\)/);
-    expect(text).toMatch(/magpie\/ollama-cloud\/kimi-k3 -> low\/high/);
-    expect(text).toMatch(/skipped magpie\/missing: not declared/);
+    expect(text).toMatch(/magpie\/ollama-cloud\/kimi-k3 reasoningEfforts -> low\/high/);
+    expect(text).toMatch(/skipped magpie\/missing reasoningEfforts: not declared/);
   });
 
   it("renders an applied answer", () => {
@@ -455,6 +620,49 @@ describe("Codex manifest discovery", () => {
     });
     expect(models[2]).not.toHaveProperty("reasoningEfforts");
     expect(summary.result.changes).toHaveLength(2);
+  });
+
+  it("fills a declared model's context window from the manifest", async () => {
+    const profile = codexProfile();
+    const providers = profile["providers"] as Record<string, Record<string, unknown>>;
+    providers["zero-aicoding-codex"] = {
+      ...providers["zero-aicoding-codex"],
+      models: [{ id: "gpt-6.1-sol", name: "GPT-6.1-Sol" }],
+    };
+    const fake = fakeSettings(profile);
+    const { fetchImpl } = routingFetch({
+      [INVENTORY]: { body: JSON.stringify(codexInventory()) },
+      [MANIFEST]: { body: JSON.stringify(codexManifest()) },
+    });
+    const runtime = createRuntime(
+      options({ declarations: {} }),
+      deps({ settings: () => fake.seam, fetchImpl, env: {} }),
+    );
+    const summary = await runtime.run("discover");
+    expect(summary.failures).toEqual([]);
+    const next = fake.state.user["providers"] as {
+      "zero-aicoding-codex": { models: Array<Record<string, unknown>> };
+    };
+    expect(next["zero-aicoding-codex"].models[0]?.["contextWindow"]).toBe(500000);
+    expect(summary.result.changes.map((change) => change.field)).toContain("contextWindow");
+  });
+
+  it("does not overwrite the profile's own context window", async () => {
+    const fake = fakeSettings(codexProfile());
+    const { fetchImpl } = routingFetch({
+      [INVENTORY]: { body: JSON.stringify(codexInventory()) },
+      [MANIFEST]: { body: JSON.stringify(codexManifest()) },
+    });
+    const runtime = createRuntime(
+      options({ declarations: {} }),
+      deps({ settings: () => fake.seam, fetchImpl, env: {} }),
+    );
+    const summary = await runtime.run("discover");
+    expect(summary.result.changes.some((change) => change.field === "contextWindow")).toBe(false);
+    const next = fake.state.user["providers"] as {
+      "zero-aicoding-codex": { models: Array<Record<string, unknown>> };
+    };
+    expect(next["zero-aicoding-codex"].models[0]?.["contextWindow"]).toBe(256000);
   });
 
   it("keeps the listing's own wire spellings and adds the manifest's extra levels", async () => {

@@ -1,7 +1,8 @@
 # @indexyz/dsh-custom-provider-reasoning-efforts
 
 Give a hand-written [dsh (DeepSeek Harness)](https://github.com/deepseek-ai/deepseek-harness)
-provider route the reasoning levels its gateway actually offers.
+provider route the reasoning levels and the vision support its gateway actually
+offers.
 
 ```bash
 dsh plugin --profile web add @indexyz/dsh-custom-provider-reasoning-efforts
@@ -21,7 +22,7 @@ dsh plugin --profile web add ./dsh-custom-provider-reasoning-efforts
 The generated `lib/` directory is Git-ignored. Build before a local `link:`
 install; `npm pack` builds and includes the output automatically.
 
-## Why a custom route loses its levels
+## Why a custom route loses its levels and its vision
 
 `llm-pi-ai` resolves a model's reasoning capability from the profile entry's
 `reasoningEfforts` field and, only when that field is absent, from the installed
@@ -35,12 +36,22 @@ this plugin was written for — has no catalog entry at all, so:
 | `reasoningInfo(model)`                    | `if (!model.reasoning) return {}`                            |
 | model-selection menu                      | no levels to offer                                           |
 
+The same gap exists for vision. `llm-pi-ai` resolves a model's accepted request
+modalities from the entry's `input` field and, only when that field is absent,
+from the installed catalog entry, then the route's `defaultInput` (default
+`["text"]`). A route the catalog does not ship resolves every model to
+`["text"]`, so a request carrying an image is refused with
+`UNSUPPORTED_CONTENT` ("does not support image input") — even when the gateway
+serves vision models.
+
 The gateway may advertise exactly what is missing — `reasoning: true` and
-`supported_reasoning_levels: [{effort: "low"}, {effort: "high"}, {effort: "max"}]`
-— but the Harness endpoint probe parses only `id`, `name`, `contextWindow`, and
-`maxTokens`, and it does not persist what it reads, so discovery cannot fill the
-gap by itself. The one thing that fixes it is the field the profile already
-supports, on every model entry of that route. This plugin writes it.
+`supported_reasoning_levels: [{effort: "low"}, {effort: "high"}, {effort: "max"}]`,
+and for a vision model an OpenRouter-style
+`architecture: {input_modalities: ["text", "image"]}` — but the Harness endpoint
+probe parses only `id`, `name`, `contextWindow`, and `maxTokens`, and it does not
+persist what it reads, so discovery cannot fill the gap by itself. The one thing
+that fixes it is the field the profile already supports, on every model entry of
+that route. This plugin writes both fields.
 
 ## Declarations
 
@@ -62,9 +73,13 @@ Declarations live in this plugin's own row in the profile patch
               low: low
               high: high
               max: max
+        vision:
+          magpie:
+            ollama-cloud/kimi-k3: [text, image]
+            ollama-cloud/deepseek-v4.1-flash: [text]
 ```
 
-Each model's value is either the levels it offers — keyed by pi-ai thinking level
+Each model's reasoning value is either the levels it offers — keyed by pi-ai thinking level
 (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`) and mapped to the wire
 spelling that level dispatches — or `false` for a model the route serves but that
 cannot reason. `off: null` is the one level that may carry no wire value, because
@@ -72,6 +87,16 @@ not thinking is the parameter's absence. A declaration that is empty, offers no
 level beyond `off`, puts `null` or an empty string on a thinking level, or names a
 level pi-ai does not know fails the plugin's load with the route, the model, and
 the level named.
+
+A model's `vision` value is the array of request modalities it accepts, written
+exactly as `llm-pi-ai`'s own `input` field: `[text, image]` grants a
+hand-declared vision model and `[text]` strips a vision claim an inherited
+catalog or route default unfairly carries. `text` is required — a model that
+accepts images accepts text — and every member must be `text` or `image`. An
+empty array fails the load: `llm-pi-ai` reads an empty `input` list as "no
+answer" and falls through to the catalog, so an empty array cannot express a
+claim and the plugin refuses to write one. A rejection names the route and the
+model, and the offending member where one is at fault.
 
 The plugin writes only models the route already declares in the profile: it
 never invents a route, a `baseURL`, a protocol, a credential reference, or a
@@ -85,10 +110,12 @@ reported by the command and skipped.
 /reasoning-efforts status    # same
 /reasoning-efforts apply     # write the declarations above
 /reasoning-efforts discover  # interrogate each custom route, then write
-/reasoning-efforts clear     # remove the reasoningEfforts the declarations name
+/reasoning-efforts clear     # remove the reasoningEfforts and input fields
+                             # the declarations name
 ```
 
-Every mode reports the route/model pairs it changed, how many were already
+Every mode reports the route/model pairs it changed — naming the field,
+`reasoningEfforts` or `input`, each change belongs to — how many were already
 current, and every pair it skipped with the reason. `status`, `apply`, and
 `clear` perform no network request. Nothing is written when the plan finds no
 change, so a repeat run leaves the file untouched.
@@ -114,6 +141,29 @@ as its wire spelling and `off` maps to `null`; anything else is ignored. Only
 models the route already declares are considered, so a gateway listing hundreds
 of models cannot add any. An explicit declaration always wins over a discovered
 one, and a model whose entry advertises no levels is left exactly as it is.
+
+The same reply also carries the request modalities a model publishes, read from
+`input_modalities`, `supported_input_modalities`, the `architecture` object's
+`input_modalities` / `modality`, and the nested `modalities.input` (or a
+top-level `modalities` array) shape (`text+image->text`-style values are split
+into their tokens). A token naming `text` or `image` — case-insensitively,
+with the `input-text` / `input-image` spellings too — is kept; every other
+modality is dropped. Only a list that names `image` becomes a declaration, and
+only for a model the route declares: a text-only listing writes nothing, because
+stripping a vision claim is a decision an endpoint does not make. Declare
+`vision: [text]` to strip it.
+
+The same entries also publish the facts a bare inventory leaves out. Discovery
+reads a model's display name, context capacity, and output cap from the
+spellings the Harness's own model discovery reads — `name` / `display_name`,
+`context_window` / `context_length` / `max_input_tokens` / `limit.context`, and
+`max_output_tokens` / `max_tokens` / `limit.output` / `top_provider.max_completion_tokens`
+— on both the listing and the Codex manifest. These are written as **gaps only**:
+a field the profile already carries is never overwritten, so the deployment's own
+`contextWindow` or `maxTokens` survives a probe, and a probe that disagrees with
+it reports nothing. Metadata is discovery-only — there is no row configuration
+for it — and `clear` leaves it in place because a written value cannot be told
+apart from an authored one.
 
 ### The Codex manifest, for a relay whose inventory says nothing
 
@@ -162,13 +212,14 @@ not need the network.
 
 ## Configuration
 
-| Field            | Default     | Meaning                                                                                                    |
-| ---------------- | ----------- | ---------------------------------------------------------------------------------------------------------- |
-| `providers`      | `{}`        | Declarations keyed by provider route and then by exact model id; each value is an effort table or `false`. |
-| `discover`       | `true`      | Whether the load-time pass interrogates endpoints as well as applying declarations.                        |
-| `discoverRoutes` | `[]`        | Routes to interrogate instead of the heuristic's own set; empty means the heuristic.                       |
-| `namespace`      | `llm-pi-ai` | The configurable namespace whose `providers` field is written.                                             |
-| `applyOnLoad`    | `true`      | Whether the plugin writes at load. Off leaves `/reasoning-efforts` as the only writer.                     |
+| Field            | Default     | Meaning                                                                                                                         |
+| ---------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `providers`      | `{}`        | Reasoning declarations keyed by provider route and then by exact model id; each value is an effort table or `false`.            |
+| `vision`         | `{}`        | Vision declarations keyed by provider route and then by exact model id; each value is a modality array such as `[text, image]`. |
+| `discover`       | `true`      | Whether the load-time pass interrogates endpoints as well as applying declarations.                                             |
+| `discoverRoutes` | `[]`        | Routes to interrogate instead of the heuristic's own set; empty means the heuristic.                                            |
+| `namespace`      | `llm-pi-ai` | The configurable namespace whose `providers` field is written.                                                                  |
+| `applyOnLoad`    | `true`      | Whether the plugin writes at load. Off leaves `/reasoning-efforts` as the only writer.                                          |
 
 ## Behavior and limitations
 
@@ -189,6 +240,18 @@ not need the network.
 - A gateway that advertises `reasoning: true` with no level list gets no
   declaration: there is no level to offer, and inventing one would claim a
   capability the endpoint did not declare.
+- Discovery writes only a modality list that names `image`; a published
+  text-only list, a list of modalities pi-ai does not know, and a listing with
+  no modality field all leave the model untouched. A vision claim is never
+  guessed from a model id or name.
+- Metadata fill is one-way: a value the profile already carries is never
+  replaced, so a gateway that later changes its claim does not silently rewrite
+  a deployment's configuration. Delete the field to let the next pass fill it
+  again.
+- A model only the endpoint lists (Zero Codex's `gpt-reserve`, `gpt-5.6-sol`, …)
+  is still not registered: the plugin never invents a model entry. Add the id to
+  the route's `models` list and the next pass fills its capabilities and
+  metadata.
 - A level name is used as its own wire spelling. A gateway that accepts a
   different spelling for a level needs that spelling written explicitly in the
   declaration.
@@ -207,7 +270,7 @@ half.
 ```bash
 npm run check          # typecheck, build, then test
 npm run build          # lib/ (Host half)
-npm test               # 96 Vitest cases
+npm test               # 166 Vitest cases
 ```
 
 `test/smoke-release.ts` is the package's declared `release.smoke` check: the

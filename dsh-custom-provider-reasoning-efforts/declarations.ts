@@ -4,15 +4,56 @@
  * A route the installed pi-ai catalog does not ship has no catalog entry to
  * inherit reasoning capability from, so every one of its models resolves to
  * `reasoning: false` unless its `llm-pi-ai` profile entry carries
- * `reasoningEfforts`. This module is that field's authoring vocabulary: a
- * declaration names the pi-ai thinking levels a model offers and the wire
- * spelling each level dispatches, or says `false` for a model that cannot
- * reason at all.
+ * `reasoningEfforts`. The same entry carries the model's accepted request
+ * modalities in `input`: a hand-declared vision model needs that field to be
+ * usable, and a catalog model whose gateway cannot serve what the catalog
+ * records needs it to strip the claim. This module is both fields' authoring
+ * vocabulary: a reasoning declaration names the pi-ai thinking levels a model
+ * offers and the wire spelling each level dispatches, or says `false` for a
+ * model that cannot reason at all; a vision declaration names the request
+ * modalities the model accepts, with `text` always present and `image` the
+ * vision half.
  *
  * @module @indexyz/dsh-custom-provider-reasoning-efforts/declarations
  */
 
 import { THINKING_LEVELS, isThinkingLevel } from "./levels.ts";
+
+/** Every request modality a model entry may declare, in declaration order. */
+export const MODALITIES = ["text", "image"] as const;
+
+/** One request modality a model entry may declare. */
+export type Modality = (typeof MODALITIES)[number];
+
+const MODALITY_SET: ReadonlySet<string> = new Set(MODALITIES);
+
+/**
+ * Whether a name is a request modality a model entry may declare.
+ *
+ * @param value - candidate modality name.
+ * @returns true for one of {@link MODALITIES}.
+ */
+export function isModality(value: string): value is Modality {
+  return MODALITY_SET.has(value);
+}
+
+/** One model's declared accepted request modalities, headed by `text`. */
+export type ModelInput = readonly Modality[];
+
+/**
+ * Whether a value is a modality list rather than an effort declaration.
+ *
+ * A change's planned value is either a `ModelDeclaration` (a dict or `false`)
+ * or a `ModelInput` (an array), and the answer has to render both; this is the
+ * one test that distinguishes them without knowing which field the change
+ * names.
+ *
+ * @param value - a planned field value.
+ * @returns true when the value is a modality list.
+ */
+export function isModelInput(value: unknown): value is ModelInput {
+  return Array.isArray(value);
+}
 
 /** One level's wire spelling; `null` is legal for `off` only and means dispatch sends nothing. */
 export type EffortWire = string | null;
@@ -25,6 +66,9 @@ export type ModelDeclaration = false | Efforts;
 
 /** Declarations keyed by provider route and then by exact model id. */
 export type Declarations = Record<string, Record<string, ModelDeclaration>>;
+
+/** Vision declarations keyed by provider route and then by exact model id. */
+export type InputDeclarations = Record<string, Record<string, ModelInput>>;
 
 /** A rejected declaration, naming the route, model, and level at fault. */
 export class DeclarationError extends Error {
@@ -101,6 +145,93 @@ export function validateModelDeclaration(
     );
   }
   return efforts;
+}
+
+/**
+ * Validate one model's vision declaration.
+ *
+ * A declaration is the request-modality list the model's `input` field will
+ * carry: non-empty, every member in pi-ai's modality vocabulary, and always
+ * containing `text`, because a model that could not accept text could serve no
+ * ordinary request. An empty array is rejected rather than written anywhere —
+ * `llm-pi-ai` reads an empty `input` list as "no answer" and falls through to
+ * the catalog, so an explicit empty array cannot express a true claim. Every
+ * rejection names the route, the model, and — where one is at fault — the
+ * member.
+ *
+ * @param route - provider route the declaration belongs to, for diagnostics.
+ * @param model - exact model id the declaration belongs to, for diagnostics.
+ * @param raw - the array as the row configuration carried it.
+ * @returns the validated modality list, in declaration order.
+ * @throws DeclarationError when the declaration cannot be served.
+ */
+export function validateModelInput(route: string, model: string, raw: unknown): ModelInput {
+  const where = `route "${route}" model "${model}"`;
+  if (!Array.isArray(raw)) {
+    throw new DeclarationError(
+      `${where}: a vision declaration must be a modality array (${MODALITIES.join(", ")}), got ${JSON.stringify(raw)}`,
+    );
+  }
+  for (const member of raw) {
+    if (typeof member !== "string" || !isModality(member)) {
+      throw new DeclarationError(
+        `${where}: "${String(member)}" is not a pi-ai model modality (${MODALITIES.join(", ")})`,
+      );
+    }
+  }
+  if (raw.length === 0) {
+    throw new DeclarationError(
+      `${where}: the vision declaration names no modality; an empty list cannot express a claim — name "text", with "image" when the model serves it`,
+    );
+  }
+  if (!raw.includes("text")) {
+    throw new DeclarationError(
+      `${where}: the vision declaration is missing "text"; a model accepts text whenever it is served at all`,
+    );
+  }
+  return [...raw];
+}
+
+/**
+ * Validate every vision declaration the row configuration carries, so a
+ * malformed table fails the plugin's load instead of a later write.
+ *
+ * @param raw - the `vision` table as the row configuration carried it.
+ * @returns the validated table.
+ * @throws DeclarationError naming the first declaration that cannot be served.
+ */
+export function validateInputs(
+  raw: Record<string, Record<string, unknown>> | undefined,
+): InputDeclarations {
+  const declarations: InputDeclarations = {};
+  for (const [route, models] of Object.entries(raw ?? {})) {
+    if (route.length === 0)
+      throw new DeclarationError("a vision declaration names an empty provider route");
+    const validated: Record<string, ModelInput> = {};
+    for (const [model, value] of Object.entries(models)) {
+      if (model.length === 0) {
+        throw new DeclarationError(`route "${route}" vision table names an empty model id`);
+      }
+      validated[model] = validateModelInput(route, model, value);
+    }
+    if (Object.keys(validated).length === 0) {
+      throw new DeclarationError(
+        `route "${route}" declares no models in its vision table; remove the empty entry, or name its models`,
+      );
+    }
+    declarations[route] = validated;
+  }
+  return declarations;
+}
+
+/**
+ * Render a vision declaration for a human-readable answer.
+ *
+ * @param value - one validated declaration.
+ * @returns the modalities in declaration order, `/`-joined.
+ */
+export function describeInput(value: ModelInput): string {
+  return value.join("/") || "no modalities";
 }
 
 /**

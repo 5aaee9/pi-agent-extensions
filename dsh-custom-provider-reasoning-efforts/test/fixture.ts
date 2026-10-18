@@ -142,6 +142,17 @@ export function magpieListing(): unknown {
   };
 }
 
+/** A listing an OpenRouter-shaped gateway answers with, publishing request modalities. */
+export function visionListing(): unknown {
+  return {
+    data: [
+      { id: "ollama-cloud/kimi-k3", architecture: { input_modalities: ["text", "image"] } },
+      { id: "ollama-cloud/deepseek-v4.1-flash", architecture: { input_modalities: ["text"] } },
+      { id: "ollama-cloud/glm-5.3", architecture: { input_modalities: ["text", "image"] } },
+    ],
+  };
+}
+
 /** Options for {@link createHarness}. */
 export interface HarnessOptions {
   readonly settings?: SettingsSeam;
@@ -266,6 +277,7 @@ export function codexManifest(): unknown {
       {
         slug: "gpt-6.1-sol",
         display_name: "GPT-6.1-Sol",
+        context_window: 500000,
         supported_reasoning_levels: [
           { effort: "low", description: "Fast responses with lighter reasoning" },
           { effort: "medium", description: "Balances speed and reasoning depth" },
@@ -277,6 +289,8 @@ export function codexManifest(): unknown {
       },
       {
         slug: "gpt-6-luna",
+        display_name: "GPT-6-Luna",
+        context_window: 272000,
         supported_reasoning_levels: [
           { effort: "low" },
           { effort: "medium" },

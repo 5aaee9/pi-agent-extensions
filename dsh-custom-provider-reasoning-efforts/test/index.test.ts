@@ -22,6 +22,7 @@ describe("plugin identity", () => {
   it("keeps the row's defaults", () => {
     const parsed = Config({});
     expect(parsed.providers).toEqual({});
+    expect(parsed.vision).toEqual({});
     expect(parsed.discover).toBe(true);
     expect(parsed.discoverRoutes).toEqual([]);
     expect(parsed.namespace).toBe("llm-pi-ai");
@@ -46,6 +47,46 @@ describe("apply", () => {
       DeclarationError,
     );
     expect(harness.definitions).toEqual([]);
+  });
+
+  it("fails the load on a malformed vision declaration", () => {
+    const harness = createHarness();
+    expect(() => apply(harness.ctx, { vision: { magpie: { x: [] } } })).toThrow(DeclarationError);
+    expect(() => apply(harness.ctx, { vision: { magpie: { x: ["text", "video"] } } })).toThrow(
+      /route "magpie" model "x".*"video" is not a pi-ai model modality/,
+    );
+    expect(harness.definitions).toEqual([]);
+  });
+
+  it("applies a vision declaration through the settings service", async () => {
+    const fake = fakeSettings(magpieProfile());
+    const harness = createHarness({ settings: fake.seam });
+    apply(harness.ctx, {
+      vision: { magpie: { "ollama-cloud/kimi-k3": ["text", "image"] } },
+      applyOnLoad: false,
+    });
+    const result = await harness.definitions[0]?.handler(invocation("apply"));
+    expect(result?.text).toMatch(/applied 1 change\(s\)/);
+    const providers = fake.state.user["providers"] as {
+      magpie: { models: Array<Record<string, unknown>> };
+    };
+    expect(providers.magpie.models[0]?.["input"]).toEqual(["text", "image"]);
+  });
+
+  it("clears the vision table's input field", async () => {
+    const fake = fakeSettings(magpieProfile());
+    const harness = createHarness({ settings: fake.seam });
+    apply(harness.ctx, {
+      vision: { magpie: { "ollama-cloud/kimi-k3": ["text", "image"] } },
+      applyOnLoad: false,
+    });
+    await harness.definitions[0]?.handler(invocation("apply"));
+    const cleared = await harness.definitions[0]?.handler(invocation("clear"));
+    expect(cleared?.text).toMatch(/applied 1 change\(s\)/);
+    const providers = fake.state.user["providers"] as {
+      magpie: { models: Array<Record<string, unknown>> };
+    };
+    expect(providers.magpie.models[0]).not.toHaveProperty("input");
   });
 
   it("answers status without writing", async () => {
@@ -87,6 +128,24 @@ describe("apply", () => {
       magpie: { models: Array<Record<string, unknown>> };
     };
     expect(providers.magpie.models[0]).not.toHaveProperty("reasoningEfforts");
+  });
+
+  it("clears both tables' fields in one pass", async () => {
+    const fake = fakeSettings(magpieProfile());
+    const harness = createHarness({ settings: fake.seam });
+    apply(harness.ctx, {
+      providers: { magpie: { "ollama-cloud/kimi-k3": { low: "low" } } },
+      vision: { magpie: { "ollama-cloud/kimi-k3": ["text", "image"] } },
+      applyOnLoad: false,
+    });
+    await harness.definitions[0]?.handler(invocation("apply"));
+    const cleared = await harness.definitions[0]?.handler(invocation("clear"));
+    expect(cleared?.text).toMatch(/applied 2 change\(s\)/);
+    const providers = fake.state.user["providers"] as {
+      magpie: { models: Array<Record<string, unknown>> };
+    };
+    expect(providers.magpie.models[0]).not.toHaveProperty("reasoningEfforts");
+    expect(providers.magpie.models[0]).not.toHaveProperty("input");
   });
 
   it("answers an unknown argument with the usage line", async () => {

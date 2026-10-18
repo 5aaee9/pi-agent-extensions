@@ -100,4 +100,61 @@ describe("applyIntents", () => {
     expect(result.changes).toHaveLength(1);
     expect(result.skipped).toHaveLength(1);
   });
+
+  it("issues one write whose plan changed both fields of the same entry", async () => {
+    const fake = fakeSettings(magpieProfile());
+    const result = await applyIntents(fake.seam, {
+      namespace: "llm-pi-ai",
+      intents: [
+        ...intents,
+        {
+          field: "input",
+          route: "magpie",
+          model: "ollama-cloud/kimi-k3",
+          value: ["text", "image"],
+        },
+      ],
+    });
+    expect(result.kind).toBe("applied");
+    expect(result.changes.map((change) => change.field)).toEqual(["reasoningEfforts", "input"]);
+    expect(fake.calls).toHaveLength(1);
+    const providers = fake.state.user["providers"] as {
+      magpie: { models: Array<Record<string, unknown>> };
+    };
+    expect(providers.magpie.models[0]?.["reasoningEfforts"]).toEqual({
+      low: "low",
+      high: "high",
+      max: "max",
+    });
+    expect(providers.magpie.models[0]?.["input"]).toEqual(["text", "image"]);
+  });
+
+  it("retries a conflicting write that carries both fields", async () => {
+    const fake = fakeSettings(magpieProfile());
+    fake.state.conflicts = 1;
+    const result = await applyIntents(fake.seam, {
+      namespace: "llm-pi-ai",
+      intents: [
+        ...intents,
+        {
+          field: "input",
+          route: "magpie",
+          model: "ollama-cloud/kimi-k3",
+          value: ["text", "image"],
+        },
+      ],
+    });
+    expect(result.kind).toBe("applied");
+    expect(fake.calls).toHaveLength(2);
+    expect(fake.calls[1]?.revision).toBe(4);
+    const providers = fake.state.user["providers"] as {
+      magpie: { models: Array<Record<string, unknown>> };
+    };
+    expect(providers.magpie.models[0]?.["input"]).toEqual(["text", "image"]);
+    expect(providers.magpie.models[0]?.["reasoningEfforts"]).toEqual({
+      low: "low",
+      high: "high",
+      max: "max",
+    });
+  });
 });

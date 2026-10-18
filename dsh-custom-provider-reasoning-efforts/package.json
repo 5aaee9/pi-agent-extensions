@@ -1,7 +1,7 @@
 {
   "name": "@indexyz/dsh-custom-provider-reasoning-efforts",
   "version": "0.1.1",
-  "description": "Declare reasoningEfforts for hand-written dsh provider routes that the pi-ai catalog does not describe",
+  "description": "Declare reasoningEfforts and vision modalities for hand-written dsh provider routes the pi-ai catalog does not describe, and fill their discovered metadata",
   "keywords": [
     "cordis",
     "deepseek-harness",
@@ -10,7 +10,8 @@
     "llm",
     "pi-ai",
     "plugin",
-    "reasoning"
+    "reasoning",
+    "vision"
   ],
   "homepage": "https://github.com/5aaee9/pi-agent-extensions/tree/main/dsh-custom-provider-reasoning-efforts#readme",
   "bugs": {

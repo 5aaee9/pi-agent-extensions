@@ -13,7 +13,7 @@ A collection of extensions for the [pi coding agent](https://github.com/earendil
 | [`@indexyz/pi-model-trace`](./pi-model-trace)                                               | Attribute the model actually serving pi via ModelTrace numeric fingerprinting (`/model-trace`).                              |
 | [`@indexyz/pi-autocompact`](./pi-autocompact)                                               | Session-only per-model context compaction thresholds via `/autocompact 300k`, with optional global defaults.                 |
 | [`@indexyz/dsh-autocompact`](./dsh-autocompact)                                             | The same thresholds for dsh: a `/autocompact` command, a Settings section, and a composer status entry.                      |
-| [`@indexyz/dsh-custom-provider-reasoning-efforts`](./dsh-custom-provider-reasoning-efforts) | Declare `reasoningEfforts` for hand-written dsh provider routes the pi-ai catalog does not describe.                         |
+| [`@indexyz/dsh-custom-provider-reasoning-efforts`](./dsh-custom-provider-reasoning-efforts) | Declare `reasoningEfforts` and `input` modalities for hand-written dsh provider routes the pi-ai catalog does not describe.  |
 | [`@indexyz/dsh-thread-summary`](./dsh-thread-summary)                                       | Generate a concise session title from the first user prompt with a configurable summary model.                               |
 
 Install a package from npm:
