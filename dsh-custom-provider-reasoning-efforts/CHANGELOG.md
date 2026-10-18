@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.0
+
+### Minor Changes
+
+- Declare vision modalities for hand-written provider routes, and discover a bare
+  gateway inventory's model metadata (context window, output cap, display name)
+  without overwriting authored values.
+
 ## 0.1.1
 
 ### Patch Changes
