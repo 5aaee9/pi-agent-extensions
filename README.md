@@ -15,6 +15,7 @@ A collection of extensions for the [pi coding agent](https://github.com/earendil
 | [`@indexyz/dsh-autocompact`](./dsh-autocompact)                                             | The same thresholds for dsh: a `/autocompact` command, a Settings section, and a composer status entry.                      |
 | [`@indexyz/dsh-custom-provider-reasoning-efforts`](./dsh-custom-provider-reasoning-efforts) | Declare `reasoningEfforts` and `input` modalities for hand-written dsh provider routes the pi-ai catalog does not describe.  |
 | [`@indexyz/dsh-thread-summary`](./dsh-thread-summary)                                       | Generate a concise session title from the first user prompt with a configurable summary model.                               |
+| [`@indexyz/dsh-prompt-suggestions`](./dsh-prompt-suggestions)                               | Suggest the user's next message as dim ghost text in an empty composer after a successful reply.                             |
 
 Install a package from npm:
 
@@ -32,6 +33,7 @@ A `dsh-<topic>/` package is installed into a dsh profile instead, and its comman
 ```bash
 dsh plugin --profile web add @indexyz/dsh-autocompact
 dsh plugin --profile web add @indexyz/dsh-thread-summary
+dsh plugin --profile web add @indexyz/dsh-prompt-suggestions
 ```
 
 ## Releases

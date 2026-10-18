@@ -21,7 +21,8 @@
     "pi-autocompact",
     "dsh-autocompact",
     "dsh-custom-provider-reasoning-efforts",
-    "dsh-thread-summary"
+    "dsh-thread-summary",
+    "dsh-prompt-suggestions"
   ],
   "type": "module",
   "scripts": {

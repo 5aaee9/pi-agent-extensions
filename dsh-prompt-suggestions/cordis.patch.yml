@@ -1,0 +1,8 @@
+# Host half: observes completed turns, generates one suggestion, and serves it
+# to the browser half over the authenticated Connection API. The Settings row
+# edits the same config through the Host settings service.
+- insert:
+    - id: prompt-suggestions
+      name: "@indexyz/dsh-prompt-suggestions"
+      config:
+        enabled: true
