@@ -1,6 +1,6 @@
 {
   "name": "@indexyz/dsh-prompt-suggestions",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Suggest the user's next message as dim composer text after a successful reply",
   "keywords": [
     "composer",
