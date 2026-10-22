@@ -1,4 +1,4 @@
-import type { Model } from "@earendil-works/pi-ai";
+import { normalizeContext, type Model } from "@earendil-works/pi-ai";
 import { convertResponsesMessages } from "@earendil-works/pi-ai/api/openai-responses-shared";
 import {
   convertToLlm,
@@ -97,11 +97,11 @@ function compactionEntry(
 function serializeReplay(entries: SessionEntry[]) {
   return convertResponsesMessages(
     model,
-    {
+    normalizeContext({
       systemPrompt: "",
       messages: convertToLlm(entries.flatMap(sessionEntryToContextMessages)),
       tools: [],
-    },
+    }),
     new Set(["openai", "openai-codex", "opencode"]),
     { includeSystemPrompt: false },
   );

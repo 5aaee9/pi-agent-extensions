@@ -5,7 +5,13 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
 import { parseServerTools, validateServerToolsForApi } from "./server-tools.ts";
-import { CONFIG_FILENAME, DAYBREAK_MODES, SERVICE_TIER_MODES, SUPPORTED_APIS } from "./types.ts";
+import {
+  CONFIG_FILENAME,
+  CONFIGURED_APIS,
+  DAYBREAK_MODES,
+  SERVICE_TIER_MODES,
+  XAI_API_SELECTOR,
+} from "./types.ts";
 import type {
   DaybreakMode,
   RelayConfig,
@@ -74,25 +80,25 @@ export function createCodexAuthToken(accountId: string) {
 
 export function normalizeBaseUrls(value: string) {
   const configured = value.trim();
-  const description = JSON.stringify(value);
+  // Errors never echo the value: a malformed URL can still carry credentials or keys.
   if (hasControlCharacters(value)) {
-    throw new Error(`baseURL must not include control characters: ${description}`);
+    throw new Error("baseURL must not include control characters");
   }
   if (configured.includes("?") || configured.includes("#")) {
-    throw new Error(`baseURL must not include a query or fragment: ${description}`);
+    throw new Error("baseURL must not include a query or fragment");
   }
 
   let parsed: URL;
   try {
     parsed = new URL(configured);
   } catch {
-    throw new Error(`invalid baseURL: ${description}`);
+    throw new Error("baseURL is not a valid URL");
   }
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    throw new Error(`baseURL must use http or https: ${description}`);
+    throw new Error("baseURL must use http or https");
   }
   if (parsed.username || parsed.password) {
-    throw new Error(`baseURL must not include credentials: ${description}`);
+    throw new Error("baseURL must not include credentials");
   }
 
   const pathname = parsed.pathname.replace(/\/+$/, "");
@@ -168,6 +174,26 @@ function resolveToken(provider: string, configured: string): string {
   return resolved;
 }
 
+// xAI entries support neither native Codex compaction settings nor hosted tools.
+function validateXaiEntry(
+  provider: string,
+  entry: { compress_service_tier?: unknown; compress_model?: unknown; serverTools?: unknown },
+) {
+  for (const field of ["compress_service_tier", "compress_model"] as const) {
+    if (entry[field] !== undefined && entry[field] !== null) {
+      throw new Error(
+        `provider ${provider} ${field} is not supported with api xai; omit it or set it to null`,
+      );
+    }
+  }
+  const groups = asRecord(entry.serverTools);
+  if (groups && Object.values(groups).some((tools) => Array.isArray(tools) && tools.length > 0)) {
+    throw new Error(
+      `provider ${provider} serverTools are not supported with api xai; hosted tools are outside this entry's contract`,
+    );
+  }
+}
+
 export function parseRelayConfig(provider: string, value: unknown): RelayConfig {
   if (
     !provider.trim() ||
@@ -202,12 +228,15 @@ export function parseRelayConfig(provider: string, value: unknown): RelayConfig 
   }
   if (
     entry.api !== undefined &&
-    (typeof entry.api !== "string" || !SUPPORTED_APIS.includes(entry.api as SupportedApi))
+    (typeof entry.api !== "string" ||
+      !CONFIGURED_APIS.includes(entry.api as (typeof CONFIGURED_APIS)[number]))
   ) {
     throw new Error(
-      `provider ${provider} has unsupported api ${JSON.stringify(entry.api)}; expected one of ${SUPPORTED_APIS.join(", ")}`,
+      `provider ${provider} has unsupported api ${JSON.stringify(entry.api)}; expected one of ${CONFIGURED_APIS.join(", ")}`,
     );
   }
+  const xai = entry.api === XAI_API_SELECTOR;
+  if (xai) validateXaiEntry(provider, entry);
 
   const compressServiceTier = entry.compress_service_tier;
   if (
@@ -224,7 +253,7 @@ export function parseRelayConfig(provider: string, value: unknown): RelayConfig 
     throw new Error(`provider ${provider} compress_model must be a valid model ID or null`);
   }
 
-  const configuredApi = entry.api as SupportedApi | undefined;
+  const configuredApi = xai ? "openai-responses" : (entry.api as SupportedApi | undefined);
   const serverTools = parseServerTools(provider, entry.serverTools);
   validateServerToolsForApi(provider, configuredApi, serverTools);
   const requestModes =
@@ -234,7 +263,15 @@ export function parseRelayConfig(provider: string, value: unknown): RelayConfig 
   const modelRequestModes = parseModelRequestModes(provider, entry.modelRequestModes);
 
   const apiKey = resolveToken(provider, entry.token);
-  const { baseUrl, anthropicBaseUrl } = normalizeBaseUrls(entry.baseURL);
+  let urls: ReturnType<typeof normalizeBaseUrls>;
+  try {
+    urls = normalizeBaseUrls(entry.baseURL);
+  } catch (error) {
+    throw new Error(
+      `provider ${provider} ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  const { baseUrl, anthropicBaseUrl } = urls;
   const accountId = createRelayAccountId(provider);
   return {
     provider,
@@ -243,6 +280,7 @@ export function parseRelayConfig(provider: string, value: unknown): RelayConfig 
     anthropicBaseUrl,
     apiKey,
     api: configuredApi,
+    xai,
     compressServiceTier,
     compressModel,
     serverTools,
@@ -266,7 +304,13 @@ export async function loadRelayConfigs(configPath: string) {
     // output are literal secrets, even when they begin with ! or contain $.
     const configuredToken = (value as { token: string }).token;
     if (configuredToken.startsWith("!")) {
-      relay.apiKey = await resolveCredentialCommand(configuredToken);
+      try {
+        relay.apiKey = await resolveCredentialCommand(configuredToken);
+      } catch (error) {
+        throw new Error(
+          `provider ${provider} token: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
     }
     relays.push(relay);
   }

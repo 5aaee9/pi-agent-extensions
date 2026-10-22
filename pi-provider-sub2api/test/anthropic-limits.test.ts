@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { ExtensionAPI, ProviderConfig } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import extension from "../index.ts";
+import { chatModels } from "./chat-models.ts";
 
 let stateDir: string;
 
@@ -50,7 +51,7 @@ async function discover(models: Record<string, unknown>[]) {
     "https://claude-limits.example/v1/models",
     "https://claude-limits.example/v1/sub2api/billing",
   ]);
-  return registrations[0]!.models!;
+  return chatModels(registrations[0]!.models);
 }
 
 describe("Anthropic context and output limits", () => {

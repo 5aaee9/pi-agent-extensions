@@ -5,6 +5,7 @@ import { zstdDecompressSync } from "node:zlib";
 import type { ExtensionAPI, ProviderConfig } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import extension from "../index.ts";
+import { chatModels } from "./chat-models.ts";
 
 let stateDir: string;
 
@@ -408,7 +409,7 @@ describe("real Codex adapter integration", () => {
     expect(setThinkingLevel).toHaveBeenCalledWith("max");
 
     controller = new AbortController();
-    const ultraModelConfig = providerConfig?.models?.[0];
+    const ultraModelConfig = chatModels(providerConfig?.models)[0];
     expect(ultraModelConfig?.thinkingLevelMap).toMatchObject({ max: "ultra" });
     const ultraModel = { ...ultraModelConfig, provider: "codex" };
     const ultraStream = providerConfig!.streamSimple!(

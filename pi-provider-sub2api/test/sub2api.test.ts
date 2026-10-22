@@ -10,6 +10,7 @@ import type {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { renderUsageFooter } from "../footer.ts";
+import { chatModels } from "./chat-models.ts";
 
 type CodexStream = (
   model: Record<string, any>,
@@ -206,8 +207,7 @@ afterEach(() => {
 });
 
 function modelConfigs(registration: Registration) {
-  expect(registration.config.models).toBeDefined();
-  return registration.config.models!;
+  return chatModels(registration.config.models);
 }
 
 async function registerProviders() {
@@ -369,6 +369,41 @@ describe("sub2api provider extension", () => {
       200,
     );
     expect(footer[1]!.match(/CH[\d.]+%/)?.[0]).toBe(expected);
+  });
+
+  it("disables only xAI entries when the host lacks the Responses adapter", async () => {
+    writeFileSync(
+      join(stateDir, "sub2api.json"),
+      JSON.stringify({
+        grok: { baseURL: "https://grok.example", token: "sk-grok", api: "xai" },
+        "responses-only": relayDefinitions["responses-only"],
+      }),
+    );
+    const urls: string[] = [];
+    vi.stubGlobal("fetch", async (input: URL | RequestInfo) => {
+      const url = String(input);
+      urls.push(url);
+      if (url === "https://responses.example/v1/models") {
+        return Response.json({ data: [{ id: "grok-4.7" }] });
+      }
+      return new Response(null, { status: 404 });
+    });
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const registrations: Registration[] = [];
+    await extension({
+      registerProvider(name: string, config: ProviderConfig) {
+        registrations.push({ name, config });
+      },
+      registerCommand() {},
+      on() {},
+    } as unknown as ExtensionAPI);
+
+    expect(registrations.map(({ name }) => name)).toEqual(["responses-only"]);
+    expect(modelConfigs(registrations[0]!).map(({ id }) => id)).toEqual(["grok-4.7"]);
+    expect(consoleError).toHaveBeenCalledWith(
+      '[sub2api:grok] api "xai" requires Pi\'s OpenAI Responses adapter (Pi 1.4.0 or newer); this entry is disabled',
+    );
+    expect(urls.some((url) => url.startsWith("https://grok.example"))).toBe(false);
   });
 
   it("registers native Anthropic, Codex, Responses, and Completions model APIs", async () => {
@@ -717,7 +752,7 @@ describe("sub2api provider extension", () => {
       expect(events.at(-1)).toMatchObject({ type: "error" });
     }
     expect(transportFetchCalls.slice(nativeFetchStart).map((call) => call.url)).toEqual([
-      "https://anthropic.example/v1/messages",
+      "https://anthropic.example/v1/messages?beta=true",
       "https://responses.example/v1/responses",
       "http://v1/v1/chat/completions",
     ]);

@@ -21,10 +21,12 @@ import { isSafeModelId } from "./util.ts";
 // skip native compaction when the host runtime cannot provide the serializers.
 type ConstrainedSamplingModule = typeof import("@earendil-works/pi-ai/api/constrained-sampling");
 type ResponsesSharedModule = typeof import("@earendil-works/pi-ai/api/openai-responses-shared");
+type TranscriptModule = typeof import("@earendil-works/pi-ai/utils/transcript");
 type CodingAgentModule = typeof import("@earendil-works/pi-coding-agent");
 type PrivateRuntime = {
   createGrammarToolInputProperties: ConstrainedSamplingModule["createGrammarToolInputProperties"];
   convertResponsesMessages: ResponsesSharedModule["convertResponsesMessages"];
+  normalizeContext: TranscriptModule["normalizeContext"];
   buildContextEntries: CodingAgentModule["buildContextEntries"];
   convertToLlm: CodingAgentModule["convertToLlm"];
   sessionEntryToContextMessages: CodingAgentModule["sessionEntryToContextMessages"];
@@ -46,21 +48,24 @@ async function loadPrivateRuntime(): Promise<PrivateRuntime | undefined> {
       if (!manifest) return undefined;
       runtimeEntry = new URL("./dist/index.js", pathToFileURL(manifest)).href;
     }
-    const [constrainedSampling, responsesShared, codingAgent] = await Promise.all([
+    const [constrainedSampling, responsesShared, transcript, codingAgent] = await Promise.all([
       import(
         new URL("./api/constrained-sampling.js", runtimeEntry).href
       ) as Promise<ConstrainedSamplingModule>,
       import(
         new URL("./api/openai-responses-shared.js", runtimeEntry).href
       ) as Promise<ResponsesSharedModule>,
+      import(new URL("./utils/transcript.js", runtimeEntry).href) as Promise<TranscriptModule>,
       import("@earendil-works/pi-coding-agent") as Promise<CodingAgentModule>,
     ]);
     const { createGrammarToolInputProperties } = constrainedSampling;
     const { convertResponsesMessages } = responsesShared;
+    const { normalizeContext } = transcript;
     const { buildContextEntries, convertToLlm, sessionEntryToContextMessages } = codingAgent;
     if (
       typeof createGrammarToolInputProperties !== "function" ||
       typeof convertResponsesMessages !== "function" ||
+      typeof normalizeContext !== "function" ||
       typeof buildContextEntries !== "function" ||
       typeof convertToLlm !== "function" ||
       typeof sessionEntryToContextMessages !== "function"
@@ -70,6 +75,7 @@ async function loadPrivateRuntime(): Promise<PrivateRuntime | undefined> {
     return {
       createGrammarToolInputProperties,
       convertResponsesMessages,
+      normalizeContext,
       buildContextEntries,
       convertToLlm,
       sessionEntryToContextMessages,
@@ -356,19 +362,23 @@ function serializeMessages(
     | {
         supportsOpenAIGrammarTools?: boolean;
         supportsStrictMode?: boolean;
+        supportsMidConvoSystemMessages?: boolean;
+        supportsAdditionalTools?: boolean;
         supportsToolSearch?: boolean;
       }
     | undefined;
   const supportsGrammarTools = compat?.supportsOpenAIGrammarTools ?? false;
   const messages = entries.flatMap((entry) => rt.sessionEntryToContextMessages(entry));
+  // Mirror the host Codex adapter's serializer options so the replay prefix matches
+  // the input items it sends.
   return structuredClone(
     rt.convertResponsesMessages(
       model,
-      {
+      rt.normalizeContext({
         systemPrompt: "",
         messages: rt.convertToLlm(messages),
         tools: activeTools,
-      },
+      }),
       CODEX_TOOL_CALL_PROVIDERS,
       {
         includeSystemPrompt: false,
@@ -376,9 +386,9 @@ function serializeMessages(
           activeTools,
           supportsGrammarTools,
         ),
-        deferredTools: compat?.supportsToolSearch
-          ? new Map(allTools.map((tool) => [tool.name, tool]))
-          : undefined,
+        supportsMidConvoSystemMessages: compat?.supportsMidConvoSystemMessages ?? false,
+        supportsAdditionalTools: compat?.supportsAdditionalTools ?? false,
+        supportsToolSearch: compat?.supportsToolSearch ?? false,
         toolOptions: {
           strict: null,
           supportsStrictMode: compat?.supportsStrictMode ?? true,

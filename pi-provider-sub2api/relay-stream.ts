@@ -2,9 +2,9 @@ import { isDeepStrictEqual } from "node:util";
 
 import type {
   AssistantMessageEventStream,
-  Context,
   Model,
   SimpleStreamOptions,
+  TranscriptContext,
 } from "@earendil-works/pi-ai";
 
 import { CODEX_API } from "./codex-api.ts";
@@ -44,7 +44,7 @@ export function createRelayFetch(
 
 export function streamCodex(
   model: Model<any>,
-  context: Context,
+  context: TranscriptContext,
   options: SimpleStreamOptions = {},
 ): AssistantMessageEventStream {
   const relay = relaysByProvider.get(model.provider);

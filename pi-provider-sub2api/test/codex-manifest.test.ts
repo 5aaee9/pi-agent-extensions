@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { ExtensionAPI, ProviderConfig } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import extension from "../index.ts";
+import { chatModels } from "./chat-models.ts";
 
 const root = "https://codex-manifest.example";
 let stateDir: string;
@@ -240,7 +241,7 @@ describe("explicit Codex manifest discovery", () => {
         maxTokens: 128000,
         cost: { input: 5, output: 30 },
       });
-      expect(provider.models![0]!.thinkingLevelMap).toBeUndefined();
+      expect(chatModels(provider.models)[0]!.thinkingLevelMap).toBeUndefined();
     },
   );
 

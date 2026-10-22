@@ -11,6 +11,7 @@ import { refreshActiveQuota, renderUsageFooter } from "./footer.ts";
 import type { UsageFooterColor, UsageFooterLine } from "./footer.ts";
 import {
   getApiBaseUrl,
+  BUILTIN_MODEL_METADATA,
   getBuiltinModelMetadata,
   getDefaultMaxTokens,
   getModelApi,
@@ -49,6 +50,12 @@ import type {
   SupportedApi,
 } from "./types.ts";
 import { firstMaxTokensWithinContext, sanitizeDisplayString } from "./util.ts";
+import { resolveXaiMetadata } from "./xai.ts";
+import { streamXai, XAI_RESPONSES_API } from "./xai-stream.ts";
+
+function isXaiModel(model: { provider: string } | undefined): model is { provider: string } {
+  return model !== undefined && relaysByProvider.get(model.provider)?.xai === true;
+}
 
 export default async function (pi: ExtensionAPI) {
   const configPath = getConfigPath();
@@ -58,6 +65,15 @@ export default async function (pi: ExtensionAPI) {
   } catch (error) {
     console.error(`[sub2api] failed to load ${configPath}:`, error);
     return;
+  }
+  if (!XAI_RESPONSES_API) {
+    relays = relays.filter((relay) => {
+      if (!relay.xai) return true;
+      console.error(
+        `[sub2api:${relay.provider}] api "xai" requires Pi's OpenAI Responses adapter (Pi 1.4.0 or newer); this entry is disabled`,
+      );
+      return false;
+    });
   }
 
   const generation = nextExtensionGeneration();
@@ -112,7 +128,7 @@ export default async function (pi: ExtensionAPI) {
             footerData,
             theme,
             usageFooterLine,
-            ultraEnabled,
+            ultraEnabled && !isXaiModel(ctx.model),
             modes.serviceTier === "fast",
             width,
             modes.serviceTier === "ultrafast",
@@ -171,7 +187,46 @@ export default async function (pi: ExtensionAPI) {
     providers.map(({ relay, models }) => [relay.provider, models]),
   );
   const registeredPriceMultipliers = new Map<string, number>();
+  const registerXaiProvider = (relay: RelayConfig, models: DiscoveredModel[]) => {
+    const priceMultiplier = billingByProvider.get(relay.provider)?.effectiveRateMultiplier ?? 1;
+    const registeredModels: ProviderModelConfig[] = models
+      .filter((model) => !EXCLUDED.test(model.id))
+      .map((model) => {
+        const metadata = resolveXaiMetadata(
+          model,
+          cachedModelMetadata?.get("xai")?.get(model.id),
+          BUILTIN_MODEL_METADATA.get("xai")?.get(model.id),
+        );
+        return {
+          id: model.id,
+          name: model.name,
+          api: "openai-responses",
+          baseUrl: relay.baseUrl,
+          reasoning: metadata.reasoning,
+          thinkingLevelMap: metadata.thinkingLevelMap,
+          input: metadata.input,
+          cost: scaleModelCost(metadata.cost, priceMultiplier),
+          contextWindow: metadata.contextWindow,
+          maxTokens: metadata.maxTokens,
+          // Matches Pi's xAI Responses policy: no 24h prompt_cache_retention.
+          compat: { supportsLongCacheRetention: false },
+        };
+      });
+    pi.registerProvider(relay.provider, {
+      name: relay.provider,
+      baseUrl: relay.baseUrl,
+      apiKey: escapeConfigLiteral(relay.apiKey),
+      api: "openai-responses",
+      streamSimple: streamXai,
+      models: registeredModels,
+    });
+    registeredPriceMultipliers.set(relay.provider, priceMultiplier);
+  };
   const registerRelayProvider = (relay: RelayConfig, models: DiscoveredModel[]) => {
+    if (relay.xai) {
+      registerXaiProvider(relay, models);
+      return;
+    }
     const priceMultiplier = billingByProvider.get(relay.provider)?.effectiveRateMultiplier ?? 1;
     const registeredModels: ProviderModelConfig[] = models
       .filter((model) => !EXCLUDED.test(model.id))
@@ -234,9 +289,20 @@ export default async function (pi: ExtensionAPI) {
     registerRelayProvider(relay, models);
   }
 
+  // xAI entries do not take part in ultra reasoning or request modes.
+  const rejectXaiSelection = (ctx: ExtensionContext, command: string) => {
+    if (!isXaiModel(ctx.model)) return false;
+    ctx.ui.notify(
+      `/${command} is not supported for the selected xAI entry ${ctx.model.provider}.`,
+      "warning",
+    );
+    return true;
+  };
+
   pi.registerCommand("toggle-ultra", {
     description: "Toggle upstream ultra reasoning for max thinking requests",
     handler: async (_args, ctx) => {
+      if (rejectXaiSelection(ctx, "toggle-ultra")) return;
       ultraEnabled = !ultraEnabled;
       for (const { relay, models } of providers) {
         registerRelayProvider(relay, models);
@@ -248,6 +314,7 @@ export default async function (pi: ExtensionAPI) {
   });
 
   const toggleServiceTier = (ctx: ExtensionContext, tier: ServiceTierMode, label: string) => {
+    if (rejectXaiSelection(ctx, tier === "fast" ? "toggle-fast" : "toggle-ultrafast")) return;
     const model = ctx.model;
     if (!supportsServiceTier(model, tier)) {
       ctx.ui.notify(`${label} mode is not supported for the selected model.`, "warning");
@@ -272,6 +339,7 @@ export default async function (pi: ExtensionAPI) {
   pi.registerCommand("toggle-daybreak", {
     description: "Toggle Daybreak Blue access program for the selected model (not saved)",
     handler: async (_args, ctx) => {
+      if (rejectXaiSelection(ctx, "toggle-daybreak")) return;
       const model = ctx.model;
       if (!supportsDaybreak(model)) {
         ctx.ui.notify("Daybreak is not supported for the selected model.", "warning");
@@ -297,6 +365,7 @@ export default async function (pi: ExtensionAPI) {
         ? [{ value: "provider", label: "provider" }]
         : null,
     handler: async (args, ctx) => {
+      if (rejectXaiSelection(ctx, "sub2api-save")) return;
       const scope = args.trim();
       if (scope !== "" && scope !== "provider") {
         ctx.ui.notify("Usage: /sub2api-save [provider]", "warning");
