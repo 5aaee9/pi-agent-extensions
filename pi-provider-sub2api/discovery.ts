@@ -1,4 +1,5 @@
 import { getModelMetadataIds } from "./model-metadata.ts";
+import { isGrokMediaModel, pickXaiReasoning, toInputModalities } from "./xai.ts";
 import { EXCLUDED, OPENAI, REASONING } from "./types.ts";
 import type { DiscoveredModel, RelayConfig } from "./types.ts";
 import {
@@ -9,6 +10,7 @@ import {
   firstPositiveInteger,
   isSafeModelId,
   sanitizeDisplayString,
+  toPositiveInteger,
 } from "./util.ts";
 
 function pickRemoteContextWindow(model: Record<string, unknown>) {
@@ -25,17 +27,21 @@ function pickRemoteContextWindow(model: Record<string, unknown>) {
   );
 }
 
-function pickRemoteMaxTokens(model: Record<string, unknown>) {
+function remoteMaxTokenAliases(model: Record<string, unknown>) {
   const limit = asRecord(model.limit);
   const limits = asRecord(model.limits);
-  return firstPositiveInteger(
+  return [
     model.max_tokens,
     model.maxTokens,
     model.max_output_tokens,
     model.max_completion_tokens,
     limit?.output,
     limits?.output,
-  );
+  ];
+}
+
+function pickRemoteMaxTokens(model: Record<string, unknown>) {
+  return firstPositiveInteger(...remoteMaxTokenAliases(model));
 }
 
 function pickRemoteThinkingLevels(model: Record<string, unknown>) {
@@ -80,10 +86,13 @@ async function fetchModelInventory(relay: RelayConfig): Promise<DiscoveredModel[
     if (!("text" in result)) throw new Error("model response body is unavailable");
 
     const payload = asRecord(JSON.parse(result.text) as unknown);
-    if (!Array.isArray(payload?.data)) return [];
+    if (!Array.isArray(payload?.data)) {
+      if (relay.xai) throw new Error("model inventory must contain a data array");
+      return [];
+    }
 
     const seen = new Set<string>();
-    return payload.data
+    const models = payload.data
       .map(asRecord)
       .filter((model): model is Record<string, unknown> => Boolean(model))
       .filter((model): model is Record<string, unknown> & { id: string } => {
@@ -91,7 +100,10 @@ async function fetchModelInventory(relay: RelayConfig): Promise<DiscoveredModel[
         seen.add(model.id);
         return true;
       })
-      .map((model) => {
+      // Sub2API lists Grok image/video generators beside chat models. Excluding every
+      // non-chat ID here lets an inventory without chat models fail visibly.
+      .filter((model) => !relay.xai || !(isGrokMediaModel(model.id) || EXCLUDED.test(model.id)))
+      .map((model): DiscoveredModel => {
         const displayName =
           typeof model.display_name === "string"
             ? sanitizeDisplayString(model.display_name)
@@ -103,9 +115,22 @@ async function fetchModelInventory(relay: RelayConfig): Promise<DiscoveredModel[
           name: displayName || model.id,
           contextWindow: pickRemoteContextWindow(model),
           maxTokens: pickRemoteMaxTokens(model),
-          supportedThinkingLevels: pickRemoteThinkingLevels(model),
+          ...(relay.xai
+            ? {
+                // Every valid alias, so one that does not fit the context falls through.
+                remoteMaxTokens: remoteMaxTokenAliases(model)
+                  .map(toPositiveInteger)
+                  .filter((value) => value !== undefined),
+                input: toInputModalities(model.input_modalities),
+                xaiReasoning: pickXaiReasoning(model),
+              }
+            : { supportedThinkingLevels: pickRemoteThinkingLevels(model) }),
         };
       });
+    if (relay.xai && models.length === 0) {
+      throw new Error("model inventory contains no valid chat model IDs");
+    }
+    return models;
   } catch (error) {
     console.error(`[sub2api:${relay.provider}] failed to fetch models:`, error);
     return [];
@@ -164,6 +189,8 @@ export async function fetchModels(relay: RelayConfig): Promise<DiscoveredModel[]
   if (relay.api === "openai-codex-responses") {
     return [...(await fetchCodexManifest(relay)).values()];
   }
+  // xAI entries use /v1/models as their sole inventory and metadata source.
+  if (relay.xai) return fetchModelInventory(relay);
   const models = await fetchModelInventory(relay);
   const needsCodexMetadata = models.some(
     (model) =>

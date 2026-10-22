@@ -1,4 +1,4 @@
-import type { ModelCost } from "@earendil-works/pi-ai";
+import type { Api, Model, ModelCost } from "@earendil-works/pi-ai";
 
 export const CONFIG_FILENAME = "sub2api.json";
 export const REQUEST_TIMEOUT_MS = 5_000;
@@ -28,6 +28,12 @@ export const SUPPORTED_APIS = [
   "openai-completions",
 ] as const;
 export type SupportedApi = (typeof SUPPORTED_APIS)[number];
+// `xai` selects the Sub2API Grok entry type; its models use Pi's `openai-responses` API.
+export const XAI_API_SELECTOR = "xai";
+export const CONFIGURED_APIS = [...SUPPORTED_APIS, XAI_API_SELECTOR] as const;
+// Wire values of the Responses `reasoning.effort` field accepted from Grok metadata.
+export const XAI_EFFORTS = ["none", "low", "medium", "high", "xhigh"] as const;
+export type XaiEffort = (typeof XAI_EFFORTS)[number];
 export const FAST_MODE_APIS = new Set<SupportedApi>([
   "openai-codex-responses",
   "openai-responses",
@@ -64,7 +70,10 @@ export interface RelayConfig {
   baseUrl: string;
   anthropicBaseUrl: string;
   apiKey: string;
+  // The Pi API every model uses; `openai-responses` for xAI entries.
   api?: SupportedApi;
+  // True for entries configured with `api: "xai"`.
+  xai: boolean;
   compressServiceTier?: "fast" | "ultrafast" | null;
   compressModel?: string | null;
   serverTools?: RelayServerTools;
@@ -83,6 +92,16 @@ export interface DiscoveredModel {
   supportedThinkingLevels?: string[];
   reasoning?: boolean;
   input?: ("text" | "image")[];
+  // xAI only: valid remote output limits in alias order.
+  remoteMaxTokens?: number[];
+  xaiReasoning?: XaiRemoteReasoning;
+}
+
+// Reasoning metadata published by a Sub2API Grok inventory item.
+export interface XaiRemoteReasoning {
+  supportsReasoningEffort?: boolean;
+  // Present when the item carries an effort array; an empty array is an explicit bound.
+  efforts?: XaiEffort[];
 }
 
 export interface ModelTokenLimits {
@@ -91,7 +110,10 @@ export interface ModelTokenLimits {
 }
 
 export interface BuiltinModelMetadata extends ModelTokenLimits {
-  cost: ModelCost;
+  cost?: ModelCost;
+  input?: ("text" | "image")[];
+  reasoning?: boolean;
+  thinkingLevelMap?: Model<Api>["thinkingLevelMap"];
 }
 
 export type ModelMetadataCatalogs = Map<string, Map<string, BuiltinModelMetadata>>;

@@ -4,9 +4,9 @@ A [pi](https://github.com/earendil-works/pi-mono) provider extension for Sub2API
 
 ## Requirements
 
-- pi 0.83.0 or newer
+- Pi 1.4.0 or newer
 - Node.js 22.19 or newer
-- A Sub2API-compatible relay exposing `GET /backend-api/codex/models` for explicitly configured Codex providers, or `GET /v1/models` for other providers, plus at least one supported generation endpoint
+- A Sub2API-compatible relay exposing `GET /backend-api/codex/models` for explicitly configured Codex providers, or `GET /v1/models` for other providers (including [xAI entries](#xai-grok-entries)), plus at least one supported generation endpoint
 
 ## Install
 
@@ -63,7 +63,7 @@ Create `~/.pi/agent/sub2api.json`:
 }
 ```
 
-Each top-level key becomes the provider name shown by pi. `baseURL` may include the `/v1` suffix; the extension normalizes both forms. The optional `api` setting accepts `anthropic-messages`, `openai-codex-responses`, `openai-responses`, or `openai-completions`. When present, it is applied to every discovered model for that provider instead of inferring an API from model IDs.
+Each top-level key becomes the provider name shown by pi. `baseURL` may include the `/v1` suffix; the extension normalizes both forms. The optional `api` setting accepts `anthropic-messages`, `openai-codex-responses`, `openai-responses`, `openai-completions`, or `xai`. When present, it is applied to every discovered model for that provider instead of inferring an API from model IDs; `xai` selects a [Grok entry](#xai-grok-entries).
 
 A `token` may reference an environment variable instead of a literal secret, keeping the key out of the file:
 
@@ -98,6 +98,66 @@ Commands have a 10-second timeout and a 64 KiB output limit. Standard output mus
 The configuration directory follows `PI_CODING_AGENT_DIR` when that environment variable is set. Otherwise it defaults to `~/.pi/agent`.
 
 Restart pi after creating the file, or run `/reload` in an interactive session. Then use `/model` to select a discovered model under the configured provider.
+
+### xAI (Grok) entries
+
+Sub2API Grok groups need their own API key. Add a separate entry with `"api": "xai"` for that key:
+
+```json
+{
+  "zero-aicoding-xai": {
+    "baseURL": "https://relay.example.com/v1",
+    "token": "${SUB2API_GROK_TOKEN}",
+    "api": "xai"
+  }
+}
+```
+
+The entry key (`zero-aicoding-xai` here) is the Pi provider ID: models appear as `zero-aicoding-xai/<model>` in `/model`, and the extension never renames it. `xai` only selects this entry type; its models use Pi's `openai-responses` API and call `POST <baseURL>/v1/responses`. `baseURL` is normalized like any other entry, so `https://relay.example.com` and `https://relay.example.com/v1` are equivalent. The token accepts the same literal, `${ENV_VAR}`, and `!command` forms, for example `"token": "!/home/you/bin/get-grok-key"`. Discovery, generation, billing, and quota use only this entry's endpoint and token, so two entries on the same host with different keys keep separate prices, usage, and failures; an authentication failure is reported for its entry and never retried with another credential.
+
+An xAI entry rejects settings that do not apply to it, naming the provider and field:
+
+- `compress_model` and `compress_service_tier` must be omitted or `null`.
+- `serverTools` may be omitted or contain only empty groups; hosted tools are outside this entry type.
+- `requestModes` and `modelRequestModes` are validated and kept in the file, but stay inactive for every model of the entry.
+
+xAI entries require Pi 1.4.0 or newer. On a host without Pi's public OpenAI Responses adapter, xAI entries are disabled with an error on stderr while other entries keep working.
+
+#### Models and metadata
+
+`GET /v1/models` is the only inventory; the Codex manifest is never consulted. Every valid ID is registered unchanged, including aliases such as `grok-latest`, `xai/grok-4.7`, or mapping keys like `gpt-*`, except Grok image and video generators: IDs equal to `grok-imagine`, `grok-imagine-1`, `grok-imagine-edit`, or `grok-video-1.5`, or starting with `imagine`, `grok-imagine-image`, or `grok-imagine-video`, compared case-insensitively after removing one `xai/`, `x-ai/`, or `grok/` prefix. A failed, malformed, or empty inventory leaves that entry without models (logged as `[sub2api:<provider>] failed to fetch models`) and never substitutes catalog models.
+
+Each field resolves on its own. Pi's xAI catalogs match the exact registered ID only: the locally cached catalog (`models-store.json`, restored offline) first, then the catalog bundled with Pi.
+
+| Field              | Source, first available wins                                                                                                   |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
+| Context window     | Remote limit aliases, cached catalog, bundled catalog, 200,000                                                                 |
+| Output limit       | Remote aliases, cached, bundled, then `min(16384, context window)`; a value larger than the resolved context window is skipped |
+| Input              | Remote `input_modalities` (`text`/`image`), cached, bundled, text only                                                         |
+| Prices             | Cached, bundled, zero; scaled by the entry's billing multiplier, including long-context tiers                                  |
+| Reasoning          | `supportsReasoningEffort: true` or a remote effort other than `none`, cached, bundled, no reasoning                            |
+| Selectable efforts | None when `supportsReasoningEffort` is `false`; otherwise the remote list, then the cached or bundled thinking map, then none  |
+
+Remote limit aliases are the ones listed under [Quota reporting](#quota-reporting); an invalid alias falls through to the next one. The remote effort list is read from `reasoningEfforts[].value`; when that field is missing or not an array, from `supported_reasoning_levels` or `supportedReasoningLevels` (strings or `{ "effort": ... }` objects). Values are trimmed, lowercased, and deduplicated; `none`, `low`, `medium`, `high`, and `xhigh` are recognized and anything else is ignored. A present list is authoritative even when empty or unrecognized; so is a cached or bundled thinking map, which leaves only `off` when it enables no effort. Pi exposes exactly the matching levels; `none` becomes Pi's `off`, and `minimal` and `max` are never offered. The relay's `reasoningEffort` and `default` markers are informational; Pi keeps your session's level and clamps it as usual when you switch models.
+
+With Pi 1.4.0, `grok-4.6` and `grok-4.7` advertised without limits get the bundled 500,000-token context and output limits, text and image input, and catalog prices. For IDs absent from both catalogs, including prefixed or differently cased spellings of known models, fields the relay does not supply fall back to 200,000/16,384 tokens, text-only input, and zero estimated prices. These are conservative estimates, not the service's capacity: they can cap long sessions and hide image input, and a zero price means "unknown", not free. Reasoning support the relay does not advertise is not guessed from names, so a model such as `grok-4.20-0309-reasoning` without metadata is registered without reasoning controls or encrypted-reasoning replay.
+
+A model that reasons but has no selectable effort (for example `supportsReasoningEffort: false` on `grok-4.7`, or `true` without a list on an unknown ID) shows only `off`. For these models `off` means "no override": the request omits `reasoning` and the backend reasons at its default level. It does not disable reasoning.
+
+#### Requests and session behavior
+
+Requests go through Pi's own Responses adapter, so streaming, tool calls, cancellation, response hooks, and retries behave as for Pi's built-in xAI provider. After other extensions' payload hooks run, the extension ensures `store: false`, adds `reasoning.encrypted_content` to `include` for reasoning models (keeping other values), and sends `reasoning.effort` only when it is one of the model's selectable efforts. Encrypted reasoning, local function calls, and their results replay on later turns of the same entry and model. Long prompt-cache retention is disabled: `PI_CACHE_RETENTION=long` or a request for long retention never sends `prompt_cache_retention: "24h"`. Redirects are rejected.
+
+Pi's ordinary function tools work, including local tools named `web_search` or `x_search`. Sub2API routes known Grok Free OAuth accounts that send client tools through a mixed native/client-tool cache route, which can add native searches or turn those functions into native ones. Every xAI generation request therefore sends `X-Sub2API-Grok-Client-Tool-Cache: off`, overriding any value from other headers, so local tools stay local. On Free accounts this gives up that cache-capable route and can raise prompt costs. The extension registers no search tool and calls no search endpoint for xAI entries.
+
+| Feature                                                                                   | xAI entry                                                                             |
+| ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| `/compact`, threshold and overflow compaction                                             | Pi's ordinary textual summary through the selected Grok model                         |
+| `/toggle-fast`, `/toggle-ultrafast`, `/toggle-daybreak`, `/sub2api-save`, `/toggle-ultra` | Rejected for the selected xAI model; nothing changes in memory or on disk             |
+| `/openai-compress`                                                                        | Rejected; native Codex compaction is for Codex models only                            |
+| Usage footer                                                                              | The entry's own usage; no `[FAST]`, `[ULTRAFAST]`, `[DAYBREAK]`, or `[ULTRA ENABLED]` |
+
+The same rules apply to every model of the entry, whatever its ID. Other entries keep their own request modes and toggles when you switch to and from an xAI model.
 
 ### Request modes
 
@@ -304,6 +364,8 @@ When a provider does not set `api`, model IDs select an API as follows:
 - `claude-*` → `anthropic-messages`
 - OpenAI IDs such as `gpt-*`, `codex-*`, `chatgpt-*`, and `o3-*` → `openai-codex-responses`
 - Other IDs, including `grok-*` → `openai-responses`
+
+Sub2API Grok groups should use an [xAI entry](#xai-grok-entries) instead, which this list does not apply to.
 
 Anthropic models are registered directly with pi's built-in Anthropic Messages implementation and a model-level base URL without `/v1`. Claude 4.6+ models receive `compat.forceAdaptiveThinking`.
 

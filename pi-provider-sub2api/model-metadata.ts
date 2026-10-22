@@ -124,12 +124,17 @@ export async function loadCachedModelMetadata(): Promise<ModelMetadataCatalogs |
       METADATA_PROVIDERS.map((provider) => [
         provider,
         new Map(
-          runtime
-            .getModels(provider)
-            .map((model) => [
-              model.id,
-              { contextWindow: model.contextWindow, maxTokens: model.maxTokens, cost: model.cost },
-            ]),
+          runtime.getModels(provider).map((model) => [
+            model.id,
+            {
+              contextWindow: model.contextWindow,
+              maxTokens: model.maxTokens,
+              cost: model.cost,
+              input: model.input,
+              reasoning: model.reasoning,
+              thinkingLevelMap: model.thinkingLevelMap,
+            },
+          ]),
         ),
       ]),
     );

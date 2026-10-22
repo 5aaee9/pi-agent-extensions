@@ -22,9 +22,12 @@ export type DaybreakWire = (typeof DAYBREAK_WIRE)[DaybreakMode];
 // Protocol guards only: they say where a field may be sent, not whether the
 // upstream model or account is eligible for it.
 export function supportsRequestModes(model: ModeModel | undefined): model is ModeModel {
+  const relay = model && relaysByProvider.get(model.provider);
   return (
     model !== undefined &&
-    relaysByProvider.has(model.provider) &&
+    relay !== undefined &&
+    // xAI entries keep saved preferences inactive for every model ID, including aliases.
+    !relay.xai &&
     // A saved ID must pass the same check configuration loading applies.
     isSafeModelId(model.id) &&
     OPENAI.test(model.id) &&

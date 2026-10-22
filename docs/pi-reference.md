@@ -6,14 +6,14 @@ Pi's own documentation, examples, and type declarations are the source of truth 
 
 Packages pin their Pi version independently. After `npm install`:
 
-| Package               | Pinned Pi | Installed copy                                                 |
-| --------------------- | --------- | -------------------------------------------------------------- |
-| `pi-provider-sub2api` | 0.84.0    | `node_modules/@earendil-works/pi-coding-agent/`                |
-| `pi-custom-provider`  | 0.84.0    | `node_modules/@earendil-works/pi-coding-agent/`                |
-| `pi-continue`         | 0.84.0    | `node_modules/@earendil-works/pi-coding-agent/`                |
-| `pi-skill`            | 0.84.0    | `node_modules/@earendil-works/pi-coding-agent/`                |
-| `pi-model-trace`      | 0.84.0    | `node_modules/@earendil-works/pi-coding-agent/`                |
-| `pi-autocompact`      | 0.87.1    | `pi-autocompact/node_modules/@earendil-works/pi-coding-agent/` |
+| Package               | Pinned Pi | Installed copy                                                      |
+| --------------------- | --------- | ------------------------------------------------------------------- |
+| `pi-provider-sub2api` | 1.4.0     | `pi-provider-sub2api/node_modules/@earendil-works/pi-coding-agent/` |
+| `pi-custom-provider`  | 0.84.0    | `node_modules/@earendil-works/pi-coding-agent/`                     |
+| `pi-continue`         | 0.84.0    | `node_modules/@earendil-works/pi-coding-agent/`                     |
+| `pi-skill`            | 0.84.0    | `node_modules/@earendil-works/pi-coding-agent/`                     |
+| `pi-model-trace`      | 0.84.0    | `node_modules/@earendil-works/pi-coding-agent/`                     |
+| `pi-autocompact`      | 0.87.1    | `pi-autocompact/node_modules/@earendil-works/pi-coding-agent/`      |
 
 The rule behind the table: when a package pins a different version than most of the workspace, npm installs that version inside the package's own `node_modules/`; otherwise the package uses the root copy. Check the `devDependencies` of the package you edit, and read the copy at that version. The matching `pi` binary is in the `node_modules/.bin/` next to it (`docs/workflow.md`, "Verify"). Update this table when a pin changes.
 

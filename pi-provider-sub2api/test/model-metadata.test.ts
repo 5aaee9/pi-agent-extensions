@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { ExtensionAPI, ProviderConfig } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import extension from "../index.ts";
+import { chatModels } from "./chat-models.ts";
 
 interface Registration {
   name: string;
@@ -142,7 +143,7 @@ describe("model metadata discovery", () => {
       registerCommand() {},
     } as unknown as ExtensionAPI);
 
-    const autoModels = registrations.find(({ name }) => name === "auto")!.config.models!;
+    const autoModels = chatModels(registrations.find(({ name }) => name === "auto")!.config.models);
     expect(autoModels.map(({ id }) => id)).toEqual([
       "gpt-5.5",
       "gpt-5.6",
@@ -156,7 +157,7 @@ describe("model metadata discovery", () => {
     expect(autoModels.map(({ contextWindow, maxTokens }) => [contextWindow, maxTokens])).toEqual([
       [272000, 128000],
       [272000, 96000],
-      [128000, 128000],
+      [128000, 32000],
       [272000, 16384],
       [100000, 50000],
       [100000, 50000],
@@ -352,7 +353,7 @@ describe("model metadata discovery", () => {
       registerCommand() {},
     } as unknown as ExtensionAPI);
 
-    expect(registrations[0]!.config.models![0]!.thinkingLevelMap).toMatchObject({
+    expect(chatModels(registrations[0]!.config.models)[0]!.thinkingLevelMap).toMatchObject({
       max: "max",
     });
   });
