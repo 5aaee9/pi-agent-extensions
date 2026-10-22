@@ -855,6 +855,21 @@ describe("xAI Responses requests", () => {
     expect(result.usage.cost.total).toBeGreaterThan(0);
   });
 
+  it("strips hook-added reasoning from models without reasoning", async () => {
+    const { composed, requests, callerFetch } = await setup([{ id: "plain-alias" }]);
+    await composed.run("plain-alias", userTurn("hello"), {
+      fetch: callerFetch,
+      onPayload: (payload) => ({
+        ...(payload as Record<string, unknown>),
+        reasoning: { effort: "high" },
+        store: true,
+      }),
+    });
+    expect(requests[0]!.body.store).toBe(false);
+    expect(requests[0]!.body).not.toHaveProperty("reasoning");
+    expect(requests[0]!.body).not.toHaveProperty("include");
+  });
+
   it("omits 24h retention requested through the environment", async () => {
     vi.stubEnv("PI_CACHE_RETENTION", "long");
     const { composed, requests, callerFetch } = await setup([{ id: "grok-4.7" }]);

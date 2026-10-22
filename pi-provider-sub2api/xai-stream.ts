@@ -42,17 +42,18 @@ export function normalizeXaiPayload(payload: unknown, model: Model<Api>): unknow
   const request = asRecord(payload);
   if (!request) return payload;
   const normalized: Record<string, unknown> = { ...request, store: false };
-  if (!model.reasoning) return normalized;
 
   // A level whose mapping is unset (the no-override `off`) makes the adapter send
-  // `effort: "none"`; omit any effort the model does not advertise instead.
+  // `effort: "none"`; omit any effort the model does not advertise instead. Models
+  // without reasoning advertise none, so a hook cannot add a reasoning control.
   const effort = asRecord(normalized.reasoning)?.effort;
   if (
     normalized.reasoning !== undefined &&
-    (typeof effort !== "string" || !supportedEfforts(model).has(effort))
+    (!model.reasoning || typeof effort !== "string" || !supportedEfforts(model).has(effort))
   ) {
     delete normalized.reasoning;
   }
+  if (!model.reasoning) return normalized;
   const include = Array.isArray(normalized.include) ? (normalized.include as unknown[]) : [];
   normalized.include = include.includes(ENCRYPTED_REASONING)
     ? include
