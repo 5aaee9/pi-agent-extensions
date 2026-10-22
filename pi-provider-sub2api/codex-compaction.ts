@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { realpathSync } from "node:fs";
+import { findPackageJSON } from "node:module";
+import { pathToFileURL } from "node:url";
 import { calculateCost, type Model, type Tool, type Usage } from "@earendil-works/pi-ai";
 import {
   type ExtensionAPI,
@@ -29,7 +32,20 @@ type PrivateRuntime = {
 
 async function loadPrivateRuntime(): Promise<PrivateRuntime | undefined> {
   try {
-    const runtimeEntry = import.meta.resolve("@earendil-works/pi-ai");
+    let runtimeEntry: string;
+    try {
+      runtimeEntry = import.meta.resolve("@earendil-works/pi-ai");
+    } catch {
+      // Bundled Pi's virtual imports have no path. Resolve the host installation
+      // using ESM lookup, since pi-ai's import-only exports reject require.resolve.
+      if (!process.argv[1]) return undefined;
+      const manifest = findPackageJSON(
+        "@earendil-works/pi-ai",
+        pathToFileURL(realpathSync(process.argv[1])),
+      );
+      if (!manifest) return undefined;
+      runtimeEntry = new URL("./dist/index.js", pathToFileURL(manifest)).href;
+    }
     const [constrainedSampling, responsesShared, codingAgent] = await Promise.all([
       import(
         new URL("./api/constrained-sampling.js", runtimeEntry).href
