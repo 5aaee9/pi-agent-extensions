@@ -453,7 +453,8 @@ describe("xAI chat inventory", () => {
     ["a missing data array", () => Response.json({ models: [] }), "data array"],
     [
       "only media or invalid models",
-      () => Response.json({ data: [{ id: "grok-imagine-image" }, { id: "" }] }),
+      () =>
+        Response.json({ data: [{ id: "grok-imagine-image" }, { id: "gpt-image-1" }, { id: "" }] }),
       "no valid chat model IDs",
     ],
   ])("keeps other entries operational after %s", async (_label, route, message) => {

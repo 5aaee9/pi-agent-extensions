@@ -100,8 +100,9 @@ async function fetchModelInventory(relay: RelayConfig): Promise<DiscoveredModel[
         seen.add(model.id);
         return true;
       })
-      // Sub2API lists Grok image/video generators beside chat models.
-      .filter((model) => !relay.xai || !isGrokMediaModel(model.id))
+      // Sub2API lists Grok image/video generators beside chat models. Excluding every
+      // non-chat ID here lets an inventory without chat models fail visibly.
+      .filter((model) => !relay.xai || !(isGrokMediaModel(model.id) || EXCLUDED.test(model.id)))
       .map((model): DiscoveredModel => {
         const displayName =
           typeof model.display_name === "string"
