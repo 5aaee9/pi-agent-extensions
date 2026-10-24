@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- `/autocompact 300k --save` stores that model's threshold in user settings under `piAutocompact.modelLimits`. Without `--save`, the threshold stays session-only.
+
 ## 0.1.43 - 2026-10-11
 
 - Synchronize the package version with the provider packages for coordinated workspace releases.

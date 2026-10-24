@@ -11,15 +11,17 @@ import { summarizeBoundary } from "./compaction.ts";
 import {
   defaultLimits,
   effectiveCompaction,
-  parseLimit,
+  parseAutocompactCommand,
   readSettings,
+  saveModelLimit,
   supportsBoundaries,
   validateLimit,
 } from "./settings.ts";
 
 export default function piAutocompact(pi: ExtensionAPI) {
-  // Never append these to the session or write settings. null explicitly
+  // Session overrides are not stored in the transcript. null explicitly
   // suppresses a global plugin default for this model until the session ends.
+  // Only `/autocompact <threshold> --save` writes user settings.
   const overrides = new Map<string, number | null>();
   let defaults = new Map<string, number>();
   let active: AbortController | undefined;
@@ -131,29 +133,40 @@ export default function piAutocompact(pi: ExtensionAPI) {
   });
 
   pi.registerCommand("autocompact", {
-    description: "Session-only compaction threshold: /autocompact [300k | off | default]",
+    description: "Compaction threshold: /autocompact [300k | off | default] [--save]",
     handler: async (args, ctx) => {
       try {
         if (!supported) throw new Error("pi-autocompact requires Pi 0.87.1 or newer");
         await ctx.waitForIdle();
         const key = keyOf(ctx);
         if (!key || !ctx.model) throw new Error("No model selected");
-        const input = args.trim().toLowerCase();
+        const parsed = parseAutocompactCommand(args);
         const settings = await nativeSettings(ctx, key);
-        if (input === "off") overrides.set(key, null);
-        else if (input === "default") overrides.delete(key);
-        else if (input) {
-          const limit = parseLimit(input);
-          validateLimit(limit, ctx.model.contextWindow, settings.keepRecentTokens);
+        if (parsed.kind === "off") overrides.set(key, null);
+        else if (parsed.kind === "default") overrides.delete(key);
+        else if (parsed.kind === "limit") {
+          validateLimit(parsed.tokens, ctx.model.contextWindow, settings.keepRecentTokens);
           if (!settings.enabled)
             throw new Error("Automatic compaction is disabled. Enable it via /settings first.");
-          overrides.set(key, limit);
+          if (parsed.save) {
+            await saveModelLimit(join(getAgentDir(), "settings.json"), key, parsed.tokens);
+            defaults.set(key, parsed.tokens);
+          }
+          overrides.set(key, parsed.tokens);
         }
-        if (input) attemptedLeaf = undefined;
+        if (parsed.kind !== "status") attemptedLeaf = undefined;
         const limit = limitOf(key);
         const source = overrides.has(key) ? "session" : "global default";
+        const threshold =
+          limit === undefined
+            ? "Pi default compaction (no plugin threshold)"
+            : `autocompact above ${limit.toLocaleString("en-US")} tokens (${source})`;
+        const persistence =
+          parsed.kind === "limit" && parsed.save
+            ? "Saved as the global default for this model."
+            : "No settings written.";
         ctx.ui.notify(
-          `${key}: ${limit === undefined ? "Pi default compaction (no plugin threshold)" : `autocompact above ${limit.toLocaleString("en-US")} tokens (${source})`}. Native automatic compaction: ${settings.enabled ? "enabled" : "disabled"}. No settings written.`,
+          `${key}: ${threshold}. Native automatic compaction: ${settings.enabled ? "enabled" : "disabled"}. ${persistence}`,
           "info",
         );
       } catch (error) {

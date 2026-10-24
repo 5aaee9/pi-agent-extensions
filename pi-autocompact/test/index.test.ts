@@ -12,10 +12,11 @@ vi.mock("../compaction.ts", () => ({
 vi.mock("../settings.ts", async (original) => ({
   ...(await original<typeof import("../settings.ts")>()),
   readSettings: vi.fn<typeof readSettings>(),
+  saveModelLimit: vi.fn<typeof saveModelLimit>(async () => {}),
 }));
 
 import plugin from "../index.ts";
-import { readSettings } from "../settings.ts";
+import { readSettings, saveModelLimit } from "../settings.ts";
 import { summarizeBoundary } from "../compaction.ts";
 
 function harness() {
@@ -86,6 +87,77 @@ describe("session-only commands", () => {
     expect(await handlers.get("turn_end")!({ context: {} }, ctx)).toMatchObject({
       entries: [{ type: "compaction" }],
     });
+  });
+  it("writes the user model limit only when --save is present", async () => {
+    const { handlers, command, ctx } = harness();
+    await handlers.get("session_start")!({}, ctx);
+    await command("300k", ctx);
+    expect(saveModelLimit).not.toHaveBeenCalled();
+    expect(ctx.ui.notify).toHaveBeenLastCalledWith(
+      expect.stringContaining("No settings written."),
+      "info",
+    );
+    await command("--save 300k", ctx);
+    expect(saveModelLimit).toHaveBeenCalledExactlyOnceWith(
+      "/agent/settings.json",
+      "provider/model",
+      300000,
+    );
+    expect(ctx.ui.notify).toHaveBeenLastCalledWith(
+      expect.stringContaining("Saved as the global default for this model."),
+      "info",
+    );
+    expect(ctx.ui.notify).toHaveBeenLastCalledWith(
+      expect.not.stringContaining("No settings written."),
+      "info",
+    );
+    await command("default", ctx);
+    expect(await handlers.get("turn_end")!({ context: {} }, ctx)).toMatchObject({
+      entries: [{ type: "compaction" }],
+    });
+    expect(ctx.ui.notify).toHaveBeenLastCalledWith(
+      expect.stringContaining("global default"),
+      "info",
+    );
+  });
+  it("rejects --save without a usable threshold and keeps the previous override", async () => {
+    const { handlers, command, ctx } = harness();
+    await handlers.get("session_start")!({}, ctx);
+    await command("300k", ctx);
+    for (const args of ["off --save", "--save", "default --save", "2m --save"]) {
+      await command(args, ctx);
+      expect(ctx.ui.notify).toHaveBeenLastCalledWith(
+        expect.stringMatching(/--save|Threshold|context window/),
+        "error",
+      );
+    }
+    expect(saveModelLimit).not.toHaveBeenCalled();
+    expect(await handlers.get("turn_end")!({ context: {} }, ctx)).toMatchObject({
+      entries: [{ type: "compaction" }],
+    });
+    await command("300k", ctx);
+    vi.mocked(ctx.getContextUsage).mockReturnValue({ tokens: 280000 } as ReturnType<
+      typeof ctx.getContextUsage
+    >);
+    vi.mocked(readSettings).mockResolvedValue({ compaction: { enabled: false } });
+    await command("250k --save", ctx);
+    expect(saveModelLimit).not.toHaveBeenCalled();
+    expect(ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("disabled"), "error");
+    vi.mocked(readSettings).mockResolvedValue({});
+    expect(await handlers.get("turn_end")!({ context: {} }, ctx)).toBeUndefined();
+  });
+  it("loads a saved model limit on the next session without another command", async () => {
+    vi.mocked(readSettings).mockImplementation(async (path) =>
+      path === "/agent/settings.json"
+        ? { piAutocompact: { modelLimits: { "provider/model": 300000 } } }
+        : {},
+    );
+    const { handlers, ctx } = harness();
+    await handlers.get("session_start")!({}, ctx);
+    expect(await handlers.get("turn_end")!({ context: {} }, ctx)).toMatchObject({
+      entries: [{ type: "compaction" }],
+    });
+    expect(saveModelLimit).not.toHaveBeenCalled();
   });
   it("does not compact below the threshold or when native auto-compaction is disabled", async () => {
     const { handlers, command, ctx } = harness();
