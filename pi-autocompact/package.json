@@ -1,6 +1,6 @@
 {
   "name": "@indexyz/pi-autocompact",
-  "version": "0.1.43",
+  "version": "0.2.0",
   "description": "Set per-model automatic compaction thresholds with /autocompact",
   "keywords": [
     "compaction",
