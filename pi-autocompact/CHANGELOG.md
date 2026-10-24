@@ -1,8 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.2.0
 
-- `/autocompact 300k --save` stores that model's threshold in user settings under `piAutocompact.modelLimits`. Without `--save`, the threshold stays session-only.
+### Minor Changes
+
+- Save a model's compaction threshold with `/autocompact 300k --save` so later sessions reuse it. The value is stored in user settings under `piAutocompact.modelLimits`. Without `--save`, the threshold stays session-only.
 
 ## 0.1.43 - 2026-10-11
 
