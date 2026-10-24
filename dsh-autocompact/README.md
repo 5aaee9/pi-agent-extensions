@@ -22,7 +22,11 @@ Build output is Git-ignored. Local `link:` installs read that output directly;
 It is built and tested against dsh `0.2.0-rc.2` and declares that range as
 `engines.dsh` (`>=0.2.0-rc.2 <0.3.0-0`), which the plugin market reads before it
 installs: on a harness outside it the market refuses the install instead of
-installing something that breaks. Node `22.19.0` or newer is required as well.
+installing something that breaks. That range includes `0.2.1-rc.2`. Preset
+backends are resolved with `agentPresets.serviceFor`, which both registry
+versions provide; `0.2.1-rc.2` no longer exports `serviceForAgent`, and importing
+that name prevents the plugin from activating. Node `22.19.0` or newer is
+required as well.
 
 ```text
 /autocompact 300k    # 300,000 tokens, current session/model only
@@ -175,8 +179,9 @@ row therefore cannot `inject` `compaction`; this plugin mounts on the Host plane
 (one row serves every preset) and addresses the backend of the exact Agent at
 event time:
 
-1. `serviceForAgent(ctx, agent, "compaction")` from
-   `@deepseek-ai/dsh-agent-preset-registry` — the preset-mounted instance.
+1. `ctx.get("agentPresets")?.serviceFor(agent, "compaction")` — the
+   preset-mounted instance. This is `AgentPresetRegistry#serviceFor` from
+   `@deepseek-ai/dsh-agent-preset-registry` (dsh 0.2.0-rc.2 and 0.2.1-rc.2).
 2. `ctx.get("compaction")` — the Host-plane instance, for compositions such as
    the headless, ACP, and SDK bundles that mount it there.
 

@@ -13,16 +13,16 @@
  * root row and lets each Agent preset mount its own isolated instance. This
  * plugin therefore mounts on the Host plane (so one row serves every preset) and
  * addresses the backend of the exact Agent at event time through
- * {@link serviceForAgent}, falling back to the Host plane for compositions (the
+ * `agentPresets.serviceFor`, falling back to the Host plane for compositions (the
  * headless, ACP, and SDK bundles) that do mount it there.
  *
  * @module @indexyz/dsh-autocompact
  */
 import z from "@deepseek-ai/schemastery";
-import { serviceForAgent } from "@deepseek-ai/dsh-agent-preset-registry";
 import { CommandDefinitionId } from "@deepseek-ai/dsh-commands/brand";
 import type { Context } from "@deepseek-ai/cordis";
 import type { Agent } from "@deepseek-ai/dsh-agent";
+import type { AgentPresetRegistry } from "@deepseek-ai/dsh-agent-preset-registry";
 import type { CompactionEngine } from "@deepseek-ai/dsh-compaction";
 import type { CommandInvocation, CommandResult } from "@deepseek-ai/dsh-commands";
 import type { Session } from "@deepseek-ai/dsh-session";
@@ -146,8 +146,12 @@ export function targetOf(agent: Agent): Target | undefined {
  * Resolve the compaction backend serving one Agent.
  *
  * A preset-mounted backend is isolated to that Agent's preset realm, so the
- * Agent's own identity is the only key that reaches it; compositions that mount
- * a backend on the Host plane are served by the direct lookup instead.
+ * Agent's own identity is the only key that reaches it. Both dsh 0.2.0-rc.2 and
+ * 0.2.1-rc.2 expose that lookup as {@link AgentPresetRegistry.serviceFor} on the
+ * `agentPresets` service. The 0.2.1 line dropped the free `serviceForAgent`
+ * export; a static import of the missing name fails module evaluation and the
+ * plugin never activates. Compositions that mount a backend on the Host plane
+ * are served by the direct lookup instead.
  *
  * @param ctx - this plugin's Host-plane context.
  * @param agent - the Agent whose backend is requested.
@@ -155,7 +159,10 @@ export function targetOf(agent: Agent): Target | undefined {
  */
 export function backendFor(ctx: Context, agent: Agent): CompactionEngine | undefined {
   try {
-    const mounted = serviceForAgent(ctx, agent, "compaction");
+    // No service, or a registry object without the method: there is no preset
+    // backend. A throw from a torn-down scope is the same outcome, below.
+    const presets: AgentPresetRegistry | undefined = ctx.get("agentPresets");
+    const mounted = presets?.serviceFor?.(agent, "compaction");
     if (mounted !== undefined) return mounted;
   } catch {
     // A torn-down scope or an absent preset runtime leaves only the Host plane.

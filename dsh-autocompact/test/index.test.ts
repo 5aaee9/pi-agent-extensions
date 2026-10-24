@@ -3,14 +3,6 @@ import type { Context } from "@deepseek-ai/cordis";
 import type { Agent } from "@deepseek-ai/dsh-agent";
 import type { CommandDefinition, CommandInvocation } from "@deepseek-ai/dsh-commands";
 
-const { serviceForAgentMock } = vi.hoisted(() => ({
-  serviceForAgentMock: vi.fn<(ctx: unknown, agent: unknown, service: string) => unknown>(),
-}));
-
-vi.mock("@deepseek-ai/dsh-agent-preset-registry", () => ({
-  serviceForAgent: serviceForAgentMock,
-}));
-
 vi.mock("../compaction.ts", () => ({
   needsCompaction: (measurement: { totalTokens: number }, limit: number) =>
     measurement.totalTokens > limit,
@@ -29,7 +21,7 @@ function createAgent(sessionId = "session-1", model = "model", scope: object = {
   return {
     id: sessionId,
     session,
-    // A preset-free fake scope: `serviceForAgent` finds no standing mount for it
+    // A preset-free fake scope: the registry finds no standing mount for it
     // and the plugin falls back to the Host-plane lookup.
     ctx: scope,
     options: { provider: "provider", model },
@@ -44,6 +36,8 @@ function createHarness(
     engine?: Record<string, unknown>;
     noBackend?: boolean;
     presetBackend?: Record<string, unknown>;
+    /** How the `agentPresets` service answers. Default: `serviceFor` returns `presetBackend`. */
+    presetLookup?: "absent" | "throw";
   } = {},
 ) {
   const listeners = new Map<string, (payload: any, next: any) => any>();
@@ -57,8 +51,14 @@ function createHarness(
       compactRegion,
       config: { auto: true, retainRatio: 0.16, retainTokens: 20000 },
     } as Record<string, unknown>);
-  serviceForAgentMock.mockReset();
-  serviceForAgentMock.mockReturnValue(options.presetBackend);
+  const serviceFor = vi.fn<(agent: unknown, service: string) => unknown>(
+    () => options.presetBackend,
+  );
+  if (options.presetLookup === "throw") {
+    serviceFor.mockImplementation(() => {
+      throw new Error("preset scope torn down");
+    });
+  }
   const ctx = {
     logger: {
       info: vi.fn<(message: string) => void>(),
@@ -69,8 +69,13 @@ function createHarness(
       listeners.set(event, listener);
     },
     effect: (execute: () => unknown) => execute(),
-    get: (service: string) =>
-      service === "compaction" && options.noBackend !== true ? engine : undefined,
+    get: (service: string) => {
+      if (service === "agentPresets") {
+        if (options.presetLookup === "absent") return undefined;
+        return { serviceFor };
+      }
+      return service === "compaction" && options.noBackend !== true ? engine : undefined;
+    },
     commands: {
       register: (definition: CommandDefinition) => {
         definitions.push(definition);
@@ -86,7 +91,7 @@ function createHarness(
     },
   };
   apply(ctx as unknown as Context, options.pluginConfig ?? {});
-  return { ctx, listeners, definitions, compactRegion, engine };
+  return { ctx, listeners, definitions, compactRegion, engine, serviceFor };
 }
 
 function invocation(agent: Agent, rawInput: string): CommandInvocation {
@@ -157,9 +162,27 @@ describe("session-only thresholds", () => {
     const agent = createAgent();
     await h.definitions[0]!.handler(invocation(agent, "300k"));
     await step(h, agent);
-    expect(serviceForAgentMock).toHaveBeenCalledWith(expect.anything(), agent, "compaction");
+    expect(h.serviceFor).toHaveBeenCalledWith(agent, "compaction");
     expect(presetCompactRegion).toHaveBeenCalledOnce();
     expect(h.compactRegion).not.toHaveBeenCalled();
+  });
+
+  it("uses the host backend when agentPresets is not mounted", async () => {
+    const h = createHarness({ presetLookup: "absent" });
+    const agent = createAgent();
+    await h.definitions[0]!.handler(invocation(agent, "300k"));
+    await step(h, agent);
+    expect(h.serviceFor).not.toHaveBeenCalled();
+    expect(h.compactRegion).toHaveBeenCalledOnce();
+  });
+
+  it("uses the host backend when the preset lookup throws", async () => {
+    const h = createHarness({ presetLookup: "throw" });
+    const agent = createAgent();
+    await h.definitions[0]!.handler(invocation(agent, "300k"));
+    await step(h, agent);
+    expect(h.serviceFor).toHaveBeenCalledWith(agent, "compaction");
+    expect(h.compactRegion).toHaveBeenCalledOnce();
   });
 
   it("reports a composition that mounts no compaction backend", async () => {
