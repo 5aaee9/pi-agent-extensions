@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.1
+
+### Patch Changes
+
+- Raise the native Codex compaction timeout from three to five minutes. Sessions holding more than roughly 200k tokens regularly need longer than the old limit for a remote compaction round trip, and the abort threw away the native checkpoint and forced the textual fallback.
+
 ## 0.3.0
 
 ### Minor Changes
