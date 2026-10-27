@@ -91,7 +91,10 @@ const NATIVE_COMPACTION_KIND = "sub2api-codex-native-compaction";
 const LEGACY_NATIVE_COMPACTION_VERSION = 1;
 const NATIVE_COMPACTION_VERSION = 2;
 const NATIVE_COMPACTION_SUMMARY = "[OpenAI native compaction checkpoint]";
-const COMPACTION_TIMEOUT_MS = 180_000;
+// Large sessions (200k+ tokens) regularly need more than three minutes for a
+// remote compaction round trip, which aborted the request and forced the
+// textual fallback.
+const COMPACTION_TIMEOUT_MS = 300_000;
 const MAX_COMPACTION_RESPONSE_BYTES = 32 * 1024 * 1024;
 const MAX_RETAINED_COMPACTION_TOKENS = 64_000;
 const MAX_RETAINED_COMPACTION_BYTES = 16 * 1024 * 1024;
