@@ -5,7 +5,7 @@ import type { ExtensionAPI, ProviderConfig } from "@earendil-works/pi-coding-age
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import extension from "../index.ts";
-import { DISCOVERY_CACHE_FILENAME } from "../model-cache.ts";
+import { DISCOVERY_CACHE_FILENAME, DISCOVERY_CACHE_TTL_MS } from "../model-cache.ts";
 
 let stateDir: string;
 
@@ -32,7 +32,7 @@ function cachePath() {
 function readCache() {
   return JSON.parse(readFileSync(cachePath(), "utf8")) as {
     version: number;
-    providers: Record<string, { models: Record<string, unknown>[] }>;
+    providers: Record<string, { fetchedAt?: number; models: Record<string, unknown>[] }>;
   };
 }
 
@@ -41,7 +41,7 @@ type CommandHandler = (
   ctx: { ui: { notify: (message: string, level?: string) => void } },
 ) => Promise<void>;
 
-async function load(route: (url: string) => Response) {
+async function load(route: (url: string) => Response | Promise<Response>) {
   const calls: string[] = [];
   vi.stubGlobal("fetch", async (input: URL | RequestInfo) => {
     const url = input instanceof Request ? input.url : String(input);
@@ -114,6 +114,7 @@ describe("discovered model cache", () => {
     });
     const cached = readCache();
     expect(cached.version).toBe(1);
+    expect(cached.providers.codex?.fetchedAt).toBeGreaterThan(Date.now() - 60_000);
     expect(cached.providers.codex?.models[0]).toMatchObject({
       id: "astra-preview",
       contextWindow: 262144,
@@ -315,5 +316,118 @@ describe("discovered model cache", () => {
     );
     expect(notify.mock.calls[0]?.[0]).toContain("codex: HTTP 503");
     expect(notify.mock.calls[0]?.[0]).toContain("other (1)");
+  });
+
+  function writeCodexCache(id: string, fetchedAt?: number) {
+    writeFileSync(
+      cachePath(),
+      JSON.stringify({
+        version: 1,
+        providers: {
+          codex: {
+            baseUrl: "https://cache.example/v1",
+            api: "openai-codex-responses",
+            xai: false,
+            ...(fetchedAt === undefined ? {} : { fetchedAt }),
+            models: [
+              {
+                id,
+                name: id,
+                contextWindow: 1000,
+                maxTokens: 100,
+                reasoning: false,
+                input: ["text"],
+                supportedThinkingLevels: [],
+              },
+            ],
+          },
+        },
+      }),
+    );
+  }
+
+  it("keeps a cache younger than 12 hours without discovery", async () => {
+    writeConfig(codexConfig);
+    writeCodexCache("cached-old", Date.now() - DISCOVERY_CACHE_TTL_MS + 60_000);
+    const loaded = await load((url) => {
+      if (discoveryUrl(url)) throw new Error(`unexpected discovery request ${url}`);
+      return new Response(null, { status: 404 });
+    });
+    expect(loaded.providers.get("codex")?.models?.[0]?.id).toBe("cached-old");
+    expect(loaded.calls.filter(discoveryUrl)).toEqual([]);
+  });
+
+  it.each([
+    {
+      label: "12 hours old",
+      fetchedAt: () => Date.now() - DISCOVERY_CACHE_TTL_MS,
+    },
+    {
+      label: "missing a timestamp",
+      fetchedAt: () => undefined,
+    },
+  ])("registers a cache that is $label immediately, then refreshes it", async ({ fetchedAt }) => {
+    writeConfig(codexConfig);
+    const previousFetchedAt = fetchedAt();
+    writeCodexCache("cached-old", previousFetchedAt);
+    let releaseDiscovery: (() => void) | undefined;
+    const discoveryGate = new Promise<void>((resolve) => {
+      releaseDiscovery = resolve;
+    });
+    const loaded = await load(async (url) => {
+      if (url === "https://cache.example/backend-api/codex/models") {
+        await discoveryGate;
+        return Response.json({ models: [astra] });
+      }
+      return new Response(null, { status: 404 });
+    });
+
+    expect(loaded.providers.get("codex")?.models?.[0]?.id).toBe("cached-old");
+    expect(loaded.calls.filter(discoveryUrl)).toEqual([
+      "https://cache.example/backend-api/codex/models",
+    ]);
+    releaseDiscovery?.();
+    await vi.waitFor(() => {
+      expect(loaded.providers.get("codex")?.models?.[0]?.id).toBe("astra-preview");
+    });
+    expect(readCache().providers.codex?.fetchedAt).toBeGreaterThan(
+      previousFetchedAt ?? Date.now() - 60_000,
+    );
+  });
+
+  it("keeps an expired cache when the background refresh fails", async () => {
+    writeConfig(codexConfig);
+    const fetchedAt = Date.now() - DISCOVERY_CACHE_TTL_MS - 5;
+    writeCodexCache("cached-old", fetchedAt);
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const loaded = await load((url) => {
+      if (url.endsWith("/backend-api/codex/models")) return new Response(null, { status: 503 });
+      return new Response(null, { status: 404 });
+    });
+    await vi.waitFor(() => {
+      expect(consoleError).toHaveBeenCalledWith(
+        expect.stringContaining("background model refresh kept the last cached models"),
+      );
+    });
+    expect(readCache().providers.codex?.fetchedAt).toBe(fetchedAt);
+    expect(loaded.providers.get("codex")?.models?.[0]?.id).toBe("cached-old");
+  });
+
+  it("forces a refresh from /sub2api-refresh while the cache is fresh", async () => {
+    writeConfig(codexConfig);
+    let manifest = [astra];
+    const loaded = await load((url) => {
+      if (url === "https://cache.example/backend-api/codex/models") {
+        return Response.json({ models: manifest });
+      }
+      return new Response(null, { status: 404 });
+    });
+    expect(loaded.calls.filter(discoveryUrl)).toHaveLength(1);
+    manifest = [{ ...astra, slug: "forced-preview", display_name: "Forced" }];
+    const notify = vi.fn<(message: string, level?: string) => void>();
+    await loaded.commands.get("sub2api-refresh")!("", { ui: { notify } });
+    expect(loaded.calls.filter(discoveryUrl)).toHaveLength(2);
+    expect(loaded.providers.get("codex")?.models?.[0]?.id).toBe("forced-preview");
+    expect(notify).toHaveBeenCalledWith(expect.stringContaining("codex (1)"), "info");
   });
 });

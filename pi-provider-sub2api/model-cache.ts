@@ -21,18 +21,26 @@ import {
 // Relay discovery results, separate from Pi's models-store.json catalog cache.
 // Pi's catalog has no Sub2API inventory and no Codex supported_reasoning_levels.
 export const DISCOVERY_CACHE_FILENAME = "sub2api-models.json";
+export const DISCOVERY_CACHE_TTL_MS = 12 * 60 * 60 * 1000;
 const CACHE_VERSION = 1;
 
 interface StoredEntry {
   baseUrl: string;
   api?: SupportedApi;
   xai: boolean;
+  // Absent on entries written before timestamps existed; those count as expired.
+  fetchedAt?: number;
   models: DiscoveredModel[];
+}
+
+export interface CachedDiscovery {
+  models: DiscoveredModel[];
+  fresh: boolean;
 }
 
 export interface DiscoveryCache {
   // Undefined when nothing usable is cached for this relay's endpoint and API.
-  get(relay: RelayConfig): DiscoveredModel[] | undefined;
+  get(relay: RelayConfig, now?: number): CachedDiscovery | undefined;
   store(relay: RelayConfig, models: DiscoveredModel[]): Promise<void>;
 }
 
@@ -181,7 +189,18 @@ function parseEntry(provider: string, value: unknown): StoredEntry | undefined {
     seen.add(model.id);
     models.push(model);
   }
-  return { baseUrl: entry.baseUrl, ...(api ? { api } : {}), xai: entry.xai, models };
+  const fetchedAt = parseFetchedAt(entry.fetchedAt);
+  return {
+    baseUrl: entry.baseUrl,
+    ...(api ? { api } : {}),
+    xai: entry.xai,
+    ...(fetchedAt !== undefined ? { fetchedAt } : {}),
+    models,
+  };
+}
+
+function parseFetchedAt(value: unknown) {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 }
 
 function parseCache(value: unknown) {
@@ -219,6 +238,7 @@ function serialize(entries: Map<string, StoredEntry>) {
       baseUrl: entry.baseUrl,
       ...(entry.api ? { api: entry.api } : {}),
       xai: entry.xai,
+      ...(entry.fetchedAt !== undefined ? { fetchedAt: entry.fetchedAt } : {}),
       models: entry.models.map(serializeModel),
     };
   }
@@ -274,10 +294,11 @@ export async function loadDiscoveryCache(agentDir: string): Promise<DiscoveryCac
   const entries = await readEntries(path);
   let queue: Promise<unknown> = Promise.resolve();
   return {
-    get(relay) {
+    get(relay, now = Date.now()) {
       const entry = entries.get(relay.provider);
       if (!entry || !sameIdentity(entry, relay)) return undefined;
-      return structuredClone(entry.models);
+      const fresh = entry.fetchedAt !== undefined && now - entry.fetchedAt < DISCOVERY_CACHE_TTL_MS;
+      return { models: structuredClone(entry.models), fresh };
     },
     store(relay, models) {
       const save = queue.then(async () => {
@@ -286,6 +307,7 @@ export async function loadDiscoveryCache(agentDir: string): Promise<DiscoveryCac
           baseUrl: relay.baseUrl,
           ...(relay.api ? { api: relay.api } : {}),
           xai: relay.xai,
+          fetchedAt: Date.now(),
           models: structuredClone(models),
         });
         await writeCache(path, next);

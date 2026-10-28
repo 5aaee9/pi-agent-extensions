@@ -160,13 +160,17 @@ export default async function (pi: ExtensionAPI) {
     );
 
   const discoveryCache = await loadDiscoveryCache(getAgentDir());
+  const staleRelays: RelayConfig[] = [];
   const [providers, cachedModelMetadata] = await Promise.all([
     Promise.all(
       relays.map(async (relay) => {
-        const cachedModels = discoveryCache.get(relay);
-        if (cachedModels) {
+        const cached = discoveryCache.get(relay);
+        if (cached) {
+          // An expired entry still registers immediately. Refresh continues after
+          // the factory returns so startup does not wait on discovery.
+          if (!cached.fresh) staleRelays.push(relay);
           await refreshRelayBilling(relay);
-          return { relay, models: cachedModels };
+          return { relay, models: cached.models };
         }
         const [discovery] = await Promise.all([fetchModels(relay), refreshRelayBilling(relay)]);
         if (discovery.ok) {
@@ -428,60 +432,86 @@ export default async function (pi: ExtensionAPI) {
   });
 
   let refreshTask: Promise<void> = Promise.resolve();
+  const enqueueModelRefresh = (work: () => Promise<void>) => {
+    const run = refreshTask.then(work);
+    refreshTask = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  };
+  const refreshDiscoveredModels = async (targets: readonly RelayConfig[]) => {
+    const failures: string[] = [];
+    const cacheWriteFailures: string[] = [];
+    const refreshed: string[] = [];
+    for (const relay of targets) {
+      const discovery = await fetchModels(relay);
+      if (!isCurrent()) return { failures, cacheWriteFailures, refreshed, cancelled: true };
+      if (!discovery.ok) {
+        failures.push(`${relay.provider}: ${discovery.error.message}`);
+        continue;
+      }
+      try {
+        await discoveryCache.store(relay, discovery.models);
+      } catch (error) {
+        cacheWriteFailures.push(
+          `${relay.provider}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      if (!isCurrent()) return { failures, cacheWriteFailures, refreshed, cancelled: true };
+      discoveredModelsByProvider.set(relay.provider, discovery.models);
+      registerRelayProvider(relay, discovery.models);
+      refreshed.push(`${relay.provider} (${discovery.models.length})`);
+    }
+    return { failures, cacheWriteFailures, refreshed, cancelled: false };
+  };
+  const describeModelRefresh = (report: Awaited<ReturnType<typeof refreshDiscoveredModels>>) => {
+    if (report.failures.length === 0 && report.cacheWriteFailures.length === 0) {
+      return {
+        message: `Refreshed discovered models for ${report.refreshed.join(", ")}.`,
+        level: "info" as const,
+      };
+    }
+    const parts = [
+      report.refreshed.length > 0 ? `Updated ${report.refreshed.join(", ")}.` : "",
+      report.failures.length > 0
+        ? `Kept the last cached models for relays that failed. ${report.failures.join("; ")}`
+        : "",
+      report.cacheWriteFailures.length > 0
+        ? `Could not write the model cache. ${report.cacheWriteFailures.join("; ")}`
+        : "",
+    ].filter((part) => part.length > 0);
+    return { message: parts.join(" "), level: "error" as const };
+  };
+
   pi.registerCommand("sub2api-refresh", {
-    description: "Fetch relay models again, update the local cache, and register them",
+    description: "Force a refresh of discovered relay models and register them",
     handler: async (_args, ctx) => {
-      const run = refreshTask.then(async () => {
+      await enqueueModelRefresh(async () => {
         if (!isCurrent()) return;
         if (relays.length === 0) {
           ctx.ui.notify("No Sub2API relays are configured.", "warning");
           return;
         }
-        const failures: string[] = [];
-        const cacheWriteFailures: string[] = [];
-        const refreshed: string[] = [];
-        for (const relay of relays) {
-          const discovery = await fetchModels(relay);
-          if (!isCurrent()) return;
-          if (!discovery.ok) {
-            failures.push(`${relay.provider}: ${discovery.error.message}`);
-            continue;
-          }
-          try {
-            await discoveryCache.store(relay, discovery.models);
-          } catch (error) {
-            cacheWriteFailures.push(
-              `${relay.provider}: ${error instanceof Error ? error.message : String(error)}`,
-            );
-          }
-          if (!isCurrent()) return;
-          discoveredModelsByProvider.set(relay.provider, discovery.models);
-          registerRelayProvider(relay, discovery.models);
-          refreshed.push(`${relay.provider} (${discovery.models.length})`);
-        }
-        if (!isCurrent()) return;
-        if (failures.length === 0 && cacheWriteFailures.length === 0) {
-          ctx.ui.notify(`Refreshed discovered models for ${refreshed.join(", ")}.`, "info");
-          return;
-        }
-        const parts = [
-          refreshed.length > 0 ? `Updated ${refreshed.join(", ")}.` : "",
-          failures.length > 0
-            ? `Kept the last cached models for relays that failed. ${failures.join("; ")}`
-            : "",
-          cacheWriteFailures.length > 0
-            ? `Could not write the model cache. ${cacheWriteFailures.join("; ")}`
-            : "",
-        ].filter((part) => part.length > 0);
-        ctx.ui.notify(parts.join(" "), "error");
+        // The command always fetches, including when the cache is younger than 12 hours.
+        const report = await refreshDiscoveredModels(relays);
+        if (report.cancelled || !isCurrent()) return;
+        const described = describeModelRefresh(report);
+        ctx.ui.notify(described.message, described.level);
       });
-      refreshTask = run.then(
-        () => undefined,
-        () => undefined,
-      );
-      await run;
     },
   });
+
+  if (staleRelays.length > 0) {
+    void enqueueModelRefresh(async () => {
+      const report = await refreshDiscoveredModels(staleRelays);
+      if (report.cancelled || !isCurrent()) return;
+      if (report.failures.length === 0 && report.cacheWriteFailures.length === 0) return;
+      console.error(
+        `[sub2api] background model refresh kept the last cached models. ${describeModelRefresh(report).message}`,
+      );
+    });
+  }
 
   pi.on("before_provider_request", (event, ctx) => {
     return addServerTools(event.payload, ctx.model);

@@ -1,0 +1,31 @@
+# xai-relay Spec Delta
+
+## MODIFIED Requirements
+
+### Requirement: Authoritative chat inventory
+
+An xAI entry SHALL use `GET /v1/models` as its only remote inventory. A matching cache younger than 12 hours SHALL be reused without that request. An older cache SHALL be registered immediately and refreshed in the background. `/sub2api-refresh` SHALL fetch immediately. Only chat models from that inventory or cache SHALL be registered. Pi catalogs SHALL supply metadata, not models. A failed discovery with no cache SHALL write nothing. A failed refresh SHALL keep the last cache.
+
+#### Scenario: Unfamiliar text alias
+
+- **WHEN** the inventory advertises a valid unfamiliar text alias
+- **THEN** it remains selectable with its exact ID and the xAI entry behavior
+
+#### Scenario: Missing inventory
+
+- **WHEN** no matching discovery cache exists and the inventory request fails, returns malformed data, or contains no valid IDs
+- **THEN** that entry registers no discovered models, reports a failure when appropriate, and does not substitute local catalog models
+
+#### Scenario: Cached inventory
+
+- **WHEN** a previous successful inventory for the same xAI entry is younger than 12 hours
+- **THEN** startup registers those models without calling `GET /v1/models`
+- **AND** `/sub2api-refresh` fetches the inventory again
+- **AND** a failed refresh keeps the cached models
+
+#### Scenario: Expired inventory
+
+- **WHEN** the cached inventory is 12 hours old or older
+- **THEN** startup registers those models without waiting for `GET /v1/models`
+- **AND** a background refresh fetches the inventory
+- **AND** a failed background refresh keeps the cached models
