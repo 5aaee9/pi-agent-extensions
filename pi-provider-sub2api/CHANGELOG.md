@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.0
+
+### Minor Changes
+
+- Cache discovered relay models in `sub2api-models.json` for 12 hours, including Codex reasoning levels, so startup can register them without waiting on discovery. An expired cache is registered immediately and refreshed in the background; a failed refresh keeps the previous models. `/sub2api-refresh` fetches immediately even when the cache is still fresh.
+
 ## 0.3.1
 
 ### Patch Changes
