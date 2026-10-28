@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.0
+
+### Minor Changes
+
+- Cache the billing price multiplier with discovered models so a fresh cache can register prices without waiting on billing.
+
 ## 0.4.0
 
 ### Minor Changes
