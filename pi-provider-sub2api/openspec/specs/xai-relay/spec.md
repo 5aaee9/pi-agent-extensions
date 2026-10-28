@@ -43,7 +43,7 @@ Discovery, generation, billing, and quota SHALL use the owning xAI entry’s end
 
 ### Requirement: Authoritative chat inventory
 
-An xAI entry SHALL use `GET /v1/models` as its sole inventory. Registered IDs SHALL remain unchanged and names SHALL be sanitized. Existing validity and deduplication rules SHALL apply. Only valid chat models present in that inventory SHALL be registered; catalogs SHALL provide metadata rather than additional inventory. Discovery failure SHALL preserve other entries.
+An xAI entry SHALL use `GET /v1/models` as its only remote inventory and SHALL reuse a matching discovery cache until `/sub2api-refresh`. Registered IDs SHALL stay unchanged. Only chat models from that inventory or cache SHALL be registered; Pi catalogs SHALL supply metadata, not models. A failed discovery with no cache SHALL write nothing. A failed refresh SHALL keep the last cache.
 
 #### Scenario: Unfamiliar text alias
 
@@ -52,8 +52,15 @@ An xAI entry SHALL use `GET /v1/models` as its sole inventory. Registered IDs SH
 
 #### Scenario: Missing inventory
 
-- **WHEN** the inventory request fails, returns malformed data, or contains no valid IDs
+- **WHEN** no matching discovery cache exists and the inventory request fails, returns malformed data, or contains no valid IDs
 - **THEN** that entry registers no discovered models, reports a failure when appropriate, and does not substitute local catalog models
+
+#### Scenario: Cached inventory
+
+- **WHEN** a previous successful inventory is cached for the same xAI entry
+- **THEN** startup registers those models without calling `GET /v1/models`
+- **AND** `/sub2api-refresh` fetches the inventory again
+- **AND** a failed refresh keeps the cached models
 
 ### Requirement: Media model classification
 

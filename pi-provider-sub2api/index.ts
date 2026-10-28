@@ -5,8 +5,9 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 
 import { registerCodexCompaction } from "./codex-compaction.ts";
-import { escapeConfigLiteral, getConfigPath, loadRelayConfigs } from "./config.ts";
+import { escapeConfigLiteral, getAgentDir, getConfigPath, loadRelayConfigs } from "./config.ts";
 import { fetchModels } from "./discovery.ts";
+import { loadDiscoveryCache } from "./model-cache.ts";
 import { refreshActiveQuota, renderUsageFooter } from "./footer.ts";
 import type { UsageFooterColor, UsageFooterLine } from "./footer.ts";
 import {
@@ -158,11 +159,27 @@ export default async function (pi: ExtensionAPI) {
       () => isCurrent() && relaysByProvider.get(relay.provider) === relay,
     );
 
+  const discoveryCache = await loadDiscoveryCache(getAgentDir());
   const [providers, cachedModelMetadata] = await Promise.all([
     Promise.all(
       relays.map(async (relay) => {
-        const [models] = await Promise.all([fetchModels(relay), refreshRelayBilling(relay)]);
-        return { relay, models };
+        const cachedModels = discoveryCache.get(relay);
+        if (cachedModels) {
+          await refreshRelayBilling(relay);
+          return { relay, models: cachedModels };
+        }
+        const [discovery] = await Promise.all([fetchModels(relay), refreshRelayBilling(relay)]);
+        if (discovery.ok) {
+          try {
+            await discoveryCache.store(relay, discovery.models);
+          } catch (error) {
+            console.error(
+              `[sub2api:${relay.provider}] failed to write discovered model cache:`,
+              error,
+            );
+          }
+        }
+        return { relay, models: discovery.ok ? discovery.models : [] };
       }),
     ),
     loadCachedModelMetadata(),
@@ -304,8 +321,9 @@ export default async function (pi: ExtensionAPI) {
     handler: async (_args, ctx) => {
       if (rejectXaiSelection(ctx, "toggle-ultra")) return;
       ultraEnabled = !ultraEnabled;
-      for (const { relay, models } of providers) {
-        registerRelayProvider(relay, models);
+      for (const relay of relays) {
+        const models = discoveredModelsByProvider.get(relay.provider);
+        if (models) registerRelayProvider(relay, models);
       }
       pi.setThinkingLevel("max");
       requestFooterRender?.();
@@ -406,6 +424,62 @@ export default async function (pi: ExtensionAPI) {
           : `Saved ${describeRequestModes(saved)} for ${relay.provider}/${model.id}.`,
         "info",
       );
+    },
+  });
+
+  let refreshTask: Promise<void> = Promise.resolve();
+  pi.registerCommand("sub2api-refresh", {
+    description: "Fetch relay models again, update the local cache, and register them",
+    handler: async (_args, ctx) => {
+      const run = refreshTask.then(async () => {
+        if (!isCurrent()) return;
+        if (relays.length === 0) {
+          ctx.ui.notify("No Sub2API relays are configured.", "warning");
+          return;
+        }
+        const failures: string[] = [];
+        const cacheWriteFailures: string[] = [];
+        const refreshed: string[] = [];
+        for (const relay of relays) {
+          const discovery = await fetchModels(relay);
+          if (!isCurrent()) return;
+          if (!discovery.ok) {
+            failures.push(`${relay.provider}: ${discovery.error.message}`);
+            continue;
+          }
+          try {
+            await discoveryCache.store(relay, discovery.models);
+          } catch (error) {
+            cacheWriteFailures.push(
+              `${relay.provider}: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          }
+          if (!isCurrent()) return;
+          discoveredModelsByProvider.set(relay.provider, discovery.models);
+          registerRelayProvider(relay, discovery.models);
+          refreshed.push(`${relay.provider} (${discovery.models.length})`);
+        }
+        if (!isCurrent()) return;
+        if (failures.length === 0 && cacheWriteFailures.length === 0) {
+          ctx.ui.notify(`Refreshed discovered models for ${refreshed.join(", ")}.`, "info");
+          return;
+        }
+        const parts = [
+          refreshed.length > 0 ? `Updated ${refreshed.join(", ")}.` : "",
+          failures.length > 0
+            ? `Kept the last cached models for relays that failed. ${failures.join("; ")}`
+            : "",
+          cacheWriteFailures.length > 0
+            ? `Could not write the model cache. ${cacheWriteFailures.join("; ")}`
+            : "",
+        ].filter((part) => part.length > 0);
+        ctx.ui.notify(parts.join(" "), "error");
+      });
+      refreshTask = run.then(
+        () => undefined,
+        () => undefined,
+      );
+      await run;
     },
   });
 

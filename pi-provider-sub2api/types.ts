@@ -16,6 +16,17 @@ export const OPENAI = /^(?:chatgpt(?:-|$)|codex(?:-|$)|gpt(?:-|$)|o\d(?:-|$))/i;
 
 // Models that support extended thinking / reasoning.
 export const REASONING = /(claude|codex|gpt-[56])/i;
+// Codex manifest efforts Pi can represent. `none` is not a selectable level.
+export const THINKING_LEVELS = [
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+  "ultra",
+] as const;
+export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 
 // Claude 4.6+ uses adaptive thinking instead of token-budget thinking.
 export const ADAPTIVE_CLAUDE =

@@ -27,6 +27,7 @@
     "discovery.ts",
     "footer.ts",
     "index.ts",
+    "model-cache.ts",
     "model-metadata.ts",
     "quota.ts",
     "relay-stream.ts",

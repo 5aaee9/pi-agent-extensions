@@ -357,6 +357,14 @@ Each valid manifest `slug` becomes the Pi model ID, and `display_name` supplies 
 
 Providers without an explicit Codex API setting keep `/v1/models` as their authoritative inventory, with best-effort Codex manifest enrichment. Set `api` explicitly to opt a Codex-only relay out of standard model discovery; automatic routing is retained for relays that mix OpenAI, Claude, or other model families.
 
+### Local discovery cache
+
+A successful discovery is written to `sub2api-models.json` in the same agent directory as `sub2api.json` (the directory named by `PI_CODING_AGENT_DIR`, or `~/.pi/agent`). The file stores, per provider, the normalized base URL, API, xAI flag, and the discovered models: id, display name, context window, output limit, input modalities, and reasoning metadata. Codex `supported_reasoning_levels` are stored as the normalized thinking levels the extension registers, and xAI entries also store `remoteMaxTokens` and `xaiReasoning`. Tokens are not written. This is separate from Pi's `models-store.json` catalog, which still only fills prices and limits the relay did not send.
+
+On a later startup or `/reload`, a cache entry is used only when the provider name, base URL, API, and xAI flag still match. Matching models are registered without calling `/v1/models` or the Codex manifest. Billing and quota requests are unchanged and still run at startup. There is no background refresh: the cache remains until `/sub2api-refresh` or until it no longer matches.
+
+`/sub2api-refresh` fetches every configured relay again, replaces each successful provider in the cache, and registers those models in the current session. A relay that fails keeps its last successful cache and its current registration; the command reports that error and still applies the relays that succeeded. A failed discovery does not create or replace a cache entry. When no matching cache exists, startup fetches as before. An unreadable cache is ignored and discovery runs again. A successful empty inventory is cached, so a relay that truly returns no models stays empty until refresh.
+
 ## Routing behavior
 
 When a provider does not set `api`, model IDs select an API as follows:
@@ -391,7 +399,7 @@ At startup and during quota refreshes, the extension queries Sub2API's API-key b
 
 For the active provider, the extension also probes a root `/usage` compatibility route and then Sub2API's official `GET /v1/usage` endpoint. A recognized response may contain key quotas, `rate_limits`, subscription daily/weekly/monthly usage, `daily_usage`, and `usage.today`/`usage.total` data; camelCase aliases are accepted for compatible relays.
 
-Usage refreshes run in the background on `session_start`, `model_select`, and `turn_end`. The extension registers `/toggle-ultra`, `/toggle-fast`, `/toggle-ultrafast`, `/toggle-daybreak`, and `/sub2api-save`, and installs a custom footer that keeps the project path first, followed by pi's token/model statistics and other extension statuses, then adds usage as its own final row. Keeping usage outside the shared status row prevents it from being joined with MCP and similar extension statuses:
+Usage refreshes run in the background on `session_start`, `model_select`, and `turn_end`. The extension registers `/toggle-ultra`, `/toggle-fast`, `/toggle-ultrafast`, `/toggle-daybreak`, `/sub2api-save`, and `/sub2api-refresh`, and installs a custom footer that keeps the project path first, followed by pi's token/model statistics and other extension statuses, then adds usage as its own final row. Keeping usage outside the shared status row prevents it from being joined with MCP and similar extension statuses:
 
 ```text
 my-relay · loading…
@@ -428,7 +436,7 @@ Use HTTPS for remote relays. Plain HTTP is accepted for trusted local developmen
 ## Troubleshooting
 
 - **Provider does not appear:** inspect stderr for `[sub2api] failed to load ...`; verify that the JSON is valid and every entry has non-empty `baseURL` and `token` strings. A `token` referencing an unset environment variable fails with an error naming that variable.
-- **No models appear:** for explicit `openai-codex-responses` providers, verify that the relay's `/backend-api/codex/models` endpoint returns a `models` array with `Authorization: Bearer <token>`; failures are logged as `[sub2api:<provider>] failed to fetch Codex model manifest`, without falling back to `/v1/models`. Other providers require `<baseURL>/v1/models`; their discovery failures are logged as `[sub2api:<provider>] failed to fetch models`.
+- **No models appear:** for explicit `openai-codex-responses` providers, verify that the relay's `/backend-api/codex/models` endpoint returns a `models` array with `Authorization: Bearer <token>`; failures are logged as `[sub2api:<provider>] failed to fetch Codex model manifest`, without falling back to `/v1/models`. Other providers require `<baseURL>/v1/models`; their discovery failures are logged as `[sub2api:<provider>] failed to fetch models`. A previous success is reused from `sub2api-models.json` until `/sub2api-refresh`. Delete that file, or run the command, to force a new fetch; a failed refresh keeps the file.
 - **Requests fail:** confirm the configured API is supported by the relay: Anthropic Messages uses `/v1/messages`, Codex generation and Remote Compaction V2 both use `/v1/responses`, OpenAI Responses uses `/v1/responses`, and Chat Completions uses `/v1/chat/completions`.
 - **Fast mode is rejected:** verify that the selected OpenAI model/account supports `service_tier: "priority"` and that the Sub2API OpenAI Fast policy allows it. Request modes deliberately leave relay eligibility and policy enforcement to Sub2API.
 - **Request mode save fails:** the error names the cause; fix the file (valid JSON object, provider present) and run `/sub2api-save` again. Unsaved toggles remain in effect until reload.
