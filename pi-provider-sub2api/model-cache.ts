@@ -12,6 +12,7 @@ import type {
 } from "./types.ts";
 import {
   asRecord,
+  firstStrictNonNegativeNumber,
   hasControlCharacters,
   isSafeModelId,
   sanitizeDisplayString,
@@ -30,18 +31,27 @@ interface StoredEntry {
   xai: boolean;
   // Absent on entries written before timestamps existed; those count as expired.
   fetchedAt?: number;
+  // Absent until a billing lookup succeeds or reports no token-billing contract.
+  // Shares fetchedAt with the model list: a young entry that includes it skips
+  // another billing request. The effective rate scales registered model prices.
+  priceMultiplier?: number;
   models: DiscoveredModel[];
 }
 
 export interface CachedDiscovery {
   models: DiscoveredModel[];
   fresh: boolean;
+  priceMultiplier?: number;
 }
 
 export interface DiscoveryCache {
   // Undefined when nothing usable is cached for this relay's endpoint and API.
   get(relay: RelayConfig, now?: number): CachedDiscovery | undefined;
-  store(relay: RelayConfig, models: DiscoveredModel[]): Promise<void>;
+  // priceMultiplier is omitted to keep the previous rate. Pass a number, including
+  // 1 when billing is absent, to record the rate that matches this model list.
+  store(relay: RelayConfig, models: DiscoveredModel[], priceMultiplier?: number): Promise<void>;
+  // Records a rate on the matching entry without changing its model list or time.
+  setPriceMultiplier(relay: RelayConfig, priceMultiplier: number): Promise<void>;
 }
 
 function isErrno(error: unknown, code: string) {
@@ -190,13 +200,20 @@ function parseEntry(provider: string, value: unknown): StoredEntry | undefined {
     models.push(model);
   }
   const fetchedAt = parseFetchedAt(entry.fetchedAt);
+  const priceMultiplier = parsePriceMultiplier(entry.priceMultiplier);
   return {
     baseUrl: entry.baseUrl,
     ...(api ? { api } : {}),
     xai: entry.xai,
     ...(fetchedAt !== undefined ? { fetchedAt } : {}),
+    ...(priceMultiplier !== undefined ? { priceMultiplier } : {}),
     models,
   };
+}
+
+function parsePriceMultiplier(value: unknown) {
+  if (typeof value !== "number") return undefined;
+  return firstStrictNonNegativeNumber(value);
 }
 
 function parseFetchedAt(value: unknown) {
@@ -239,6 +256,7 @@ function serialize(entries: Map<string, StoredEntry>) {
       ...(entry.api ? { api: entry.api } : {}),
       xai: entry.xai,
       ...(entry.fetchedAt !== undefined ? { fetchedAt: entry.fetchedAt } : {}),
+      ...(entry.priceMultiplier !== undefined ? { priceMultiplier: entry.priceMultiplier } : {}),
       models: entry.models.map(serializeModel),
     };
   }
@@ -298,18 +316,40 @@ export async function loadDiscoveryCache(agentDir: string): Promise<DiscoveryCac
       const entry = entries.get(relay.provider);
       if (!entry || !sameIdentity(entry, relay)) return undefined;
       const fresh = entry.fetchedAt !== undefined && now - entry.fetchedAt < DISCOVERY_CACHE_TTL_MS;
-      return { models: structuredClone(entry.models), fresh };
+      return {
+        models: structuredClone(entry.models),
+        fresh,
+        ...(entry.priceMultiplier !== undefined ? { priceMultiplier: entry.priceMultiplier } : {}),
+      };
     },
-    store(relay, models) {
+    store(relay, models, priceMultiplier) {
       const save = queue.then(async () => {
+        const current = entries.get(relay.provider);
+        const keptMultiplier =
+          priceMultiplier ??
+          (current && sameIdentity(current, relay) ? current.priceMultiplier : undefined);
         const next = new Map(entries);
         next.set(relay.provider, {
           baseUrl: relay.baseUrl,
           ...(relay.api ? { api: relay.api } : {}),
           xai: relay.xai,
           fetchedAt: Date.now(),
+          ...(keptMultiplier !== undefined ? { priceMultiplier: keptMultiplier } : {}),
           models: structuredClone(models),
         });
+        await writeCache(path, next);
+        entries.clear();
+        for (const [provider, entry] of next) entries.set(provider, entry);
+      });
+      queue = save.catch(() => undefined);
+      return save;
+    },
+    setPriceMultiplier(relay, priceMultiplier) {
+      const save = queue.then(async () => {
+        const current = entries.get(relay.provider);
+        if (!current || !sameIdentity(current, relay)) return;
+        const next = new Map(entries);
+        next.set(relay.provider, { ...current, priceMultiplier });
         await writeCache(path, next);
         entries.clear();
         for (const [provider, entry] of next) entries.set(provider, entry);

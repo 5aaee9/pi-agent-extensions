@@ -21,7 +21,7 @@ import {
   loadCachedModelMetadata,
   scaleModelCost,
 } from "./model-metadata.ts";
-import { refreshBilling, refreshQuota } from "./quota.ts";
+import { getBillingUrl, refreshBilling, refreshQuota } from "./quota.ts";
 import { addDaybreakProgram, addServerTools, addServiceTier, streamCodex } from "./relay-stream.ts";
 import { createRequestModeStore } from "./request-mode-store.ts";
 import {
@@ -44,6 +44,8 @@ import {
   relaysByProvider,
 } from "./types.ts";
 import type {
+  BillingInfo,
+  BillingRefreshResult,
   DiscoveredModel,
   RelayConfig,
   RequestModes,
@@ -56,6 +58,34 @@ import { streamXai, XAI_RESPONSES_API } from "./xai-stream.ts";
 
 function isXaiModel(model: { provider: string } | undefined): model is { provider: string } {
   return model !== undefined && relaysByProvider.get(model.provider)?.xai === true;
+}
+
+function billingFromMultiplier(relay: RelayConfig, priceMultiplier: number): BillingInfo {
+  return {
+    billingUrl: getBillingUrl(relay),
+    schemaVersion: 1,
+    billingScope: "token",
+    groupRateMultiplier: priceMultiplier,
+    resolvedRateMultiplier: priceMultiplier,
+    peakRateEnabled: false,
+    effectiveRateMultiplier: priceMultiplier,
+    lastUpdated: Date.now(),
+  };
+}
+
+// A completed lookup is the effective rate, or 1 when the relay has no token-billing
+// contract. Transport, auth, and invalid responses keep the previous rate.
+function confirmedPriceMultiplier(result: BillingRefreshResult) {
+  if (result.kind === "ok") return result.info.effectiveRateMultiplier;
+  if (result.kind === "not-found") return 1;
+  return undefined;
+}
+
+function describeBillingFailure(provider: string, result: BillingRefreshResult) {
+  if (result.kind === "ok" || result.kind === "not-found") return undefined;
+  if (result.kind === "temporary") return `${provider} billing: ${result.detail}`;
+  if (result.kind === "auth") return `${provider} billing: HTTP ${result.status}`;
+  return `${provider} billing: invalid response`;
 }
 
 export default async function (pi: ExtensionAPI) {
@@ -161,21 +191,44 @@ export default async function (pi: ExtensionAPI) {
 
   const discoveryCache = await loadDiscoveryCache(getAgentDir());
   const staleRelays: RelayConfig[] = [];
+  const billingRelays: RelayConfig[] = [];
+  const rememberPriceMultiplier = (relay: RelayConfig, priceMultiplier: number) => {
+    const current = billingByProvider.get(relay.provider);
+    if (current?.effectiveRateMultiplier === priceMultiplier) return;
+    billingByProvider.set(relay.provider, billingFromMultiplier(relay, priceMultiplier));
+  };
+  const applyConfirmedMultiplier = (relay: RelayConfig, result: BillingRefreshResult) => {
+    const priceMultiplier = confirmedPriceMultiplier(result);
+    if (priceMultiplier === undefined) {
+      const cached = discoveryCache.get(relay)?.priceMultiplier;
+      if (cached !== undefined) rememberPriceMultiplier(relay, cached);
+      return undefined;
+    }
+    if (result.kind === "not-found") rememberPriceMultiplier(relay, priceMultiplier);
+    return priceMultiplier;
+  };
   const [providers, cachedModelMetadata] = await Promise.all([
     Promise.all(
       relays.map(async (relay) => {
         const cached = discoveryCache.get(relay);
         if (cached) {
-          // An expired entry still registers immediately. Refresh continues after
-          // the factory returns so startup does not wait on discovery.
+          // Models and the price multiplier share one cache. Register both
+          // immediately. Refresh continues after the factory returns.
+          if (cached.priceMultiplier !== undefined) {
+            rememberPriceMultiplier(relay, cached.priceMultiplier);
+          }
           if (!cached.fresh) staleRelays.push(relay);
-          await refreshRelayBilling(relay);
+          else if (cached.priceMultiplier === undefined) billingRelays.push(relay);
           return { relay, models: cached.models };
         }
-        const [discovery] = await Promise.all([fetchModels(relay), refreshRelayBilling(relay)]);
+        const [discovery, billing] = await Promise.all([
+          fetchModels(relay),
+          refreshRelayBilling(relay),
+        ]);
         if (discovery.ok) {
+          const priceMultiplier = applyConfirmedMultiplier(relay, billing);
           try {
-            await discoveryCache.store(relay, discovery.models);
+            await discoveryCache.store(relay, discovery.models, priceMultiplier);
           } catch (error) {
             console.error(
               `[sub2api:${relay.provider}] failed to write discovered model cache:`,
@@ -442,31 +495,53 @@ export default async function (pi: ExtensionAPI) {
   };
   const refreshDiscoveredModels = async (targets: readonly RelayConfig[]) => {
     const failures: string[] = [];
+    const billingFailures: string[] = [];
     const cacheWriteFailures: string[] = [];
     const refreshed: string[] = [];
     for (const relay of targets) {
-      const discovery = await fetchModels(relay);
-      if (!isCurrent()) return { failures, cacheWriteFailures, refreshed, cancelled: true };
+      const [discovery, billing] = await Promise.all([
+        fetchModels(relay),
+        refreshRelayBilling(relay),
+      ]);
+      if (!isCurrent())
+        return { failures, billingFailures, cacheWriteFailures, refreshed, cancelled: true };
+      const priceMultiplier = applyConfirmedMultiplier(relay, billing);
+      const billingError = describeBillingFailure(relay.provider, billing);
+      if (billingError) billingFailures.push(billingError);
       if (!discovery.ok) {
+        if (priceMultiplier !== undefined) {
+          try {
+            await discoveryCache.setPriceMultiplier(relay, priceMultiplier);
+          } catch (error) {
+            cacheWriteFailures.push(
+              `${relay.provider}: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          }
+        }
         failures.push(`${relay.provider}: ${discovery.error.message}`);
         continue;
       }
       try {
-        await discoveryCache.store(relay, discovery.models);
+        await discoveryCache.store(relay, discovery.models, priceMultiplier);
       } catch (error) {
         cacheWriteFailures.push(
           `${relay.provider}: ${error instanceof Error ? error.message : String(error)}`,
         );
       }
-      if (!isCurrent()) return { failures, cacheWriteFailures, refreshed, cancelled: true };
+      if (!isCurrent())
+        return { failures, billingFailures, cacheWriteFailures, refreshed, cancelled: true };
       discoveredModelsByProvider.set(relay.provider, discovery.models);
       registerRelayProvider(relay, discovery.models);
       refreshed.push(`${relay.provider} (${discovery.models.length})`);
     }
-    return { failures, cacheWriteFailures, refreshed, cancelled: false };
+    return { failures, billingFailures, cacheWriteFailures, refreshed, cancelled: false };
   };
   const describeModelRefresh = (report: Awaited<ReturnType<typeof refreshDiscoveredModels>>) => {
-    if (report.failures.length === 0 && report.cacheWriteFailures.length === 0) {
+    if (
+      report.failures.length === 0 &&
+      report.billingFailures.length === 0 &&
+      report.cacheWriteFailures.length === 0
+    ) {
       return {
         message: `Refreshed discovered models for ${report.refreshed.join(", ")}.`,
         level: "info" as const,
@@ -477,6 +552,9 @@ export default async function (pi: ExtensionAPI) {
       report.failures.length > 0
         ? `Kept the last cached models for relays that failed. ${report.failures.join("; ")}`
         : "",
+      report.billingFailures.length > 0
+        ? `Kept the last cached price multiplier. ${report.billingFailures.join("; ")}`
+        : "",
       report.cacheWriteFailures.length > 0
         ? `Could not write the model cache. ${report.cacheWriteFailures.join("; ")}`
         : "",
@@ -485,7 +563,7 @@ export default async function (pi: ExtensionAPI) {
   };
 
   pi.registerCommand("sub2api-refresh", {
-    description: "Force a refresh of discovered relay models and register them",
+    description: "Force a refresh of discovered relay models, price multipliers, and registrations",
     handler: async (_args, ctx) => {
       await enqueueModelRefresh(async () => {
         if (!isCurrent()) return;
@@ -506,10 +584,42 @@ export default async function (pi: ExtensionAPI) {
     void enqueueModelRefresh(async () => {
       const report = await refreshDiscoveredModels(staleRelays);
       if (report.cancelled || !isCurrent()) return;
-      if (report.failures.length === 0 && report.cacheWriteFailures.length === 0) return;
+      if (
+        report.failures.length === 0 &&
+        report.billingFailures.length === 0 &&
+        report.cacheWriteFailures.length === 0
+      ) {
+        return;
+      }
       console.error(
         `[sub2api] background model refresh kept the last cached models. ${describeModelRefresh(report).message}`,
       );
+    });
+  }
+  if (billingRelays.length > 0) {
+    void enqueueModelRefresh(async () => {
+      for (const relay of billingRelays) {
+        const result = await refreshRelayBilling(relay);
+        if (!isCurrent()) return;
+        const priceMultiplier = applyConfirmedMultiplier(relay, result);
+        const billingError = describeBillingFailure(relay.provider, result);
+        if (priceMultiplier !== undefined) {
+          try {
+            await discoveryCache.setPriceMultiplier(relay, priceMultiplier);
+          } catch (error) {
+            console.error(
+              `[sub2api:${relay.provider}] failed to write the cached price multiplier:`,
+              error,
+            );
+          }
+        }
+        if (!isCurrent()) return;
+        syncRelayProviderPricing(relay);
+        if (!billingError) continue;
+        console.error(
+          `[sub2api:${relay.provider}] background billing refresh kept the last cached price multiplier. ${billingError}`,
+        );
+      }
     });
   }
 
@@ -534,7 +644,25 @@ export default async function (pi: ExtensionAPI) {
     registerRelayProvider(relay, models);
   };
   const refreshRelayBillingAndPricing = async (relay: RelayConfig) => {
+    const cached = discoveryCache.get(relay);
+    if (cached?.fresh && cached.priceMultiplier !== undefined) {
+      rememberPriceMultiplier(relay, cached.priceMultiplier);
+      const info = billingByProvider.get(relay.provider);
+      if (info) return { kind: "ok" as const, info };
+    }
     const result = await refreshRelayBilling(relay);
+    if (!isCurrent()) return result;
+    const priceMultiplier = applyConfirmedMultiplier(relay, result);
+    if (priceMultiplier !== undefined) {
+      try {
+        await discoveryCache.setPriceMultiplier(relay, priceMultiplier);
+      } catch (error) {
+        console.error(
+          `[sub2api:${relay.provider}] failed to write the cached price multiplier:`,
+          error,
+        );
+      }
+    }
     syncRelayProviderPricing(relay);
     return result;
   };

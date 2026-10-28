@@ -2,13 +2,13 @@
 
 ## Purpose
 
-Reuse a Sub2API relay discovery for 12 hours, including Codex reasoning levels, refresh an expired cache in the background, and force a refresh from `/sub2api-refresh`.
+Reuse a Sub2API relay discovery and its billing price multiplier for 12 hours, refresh an expired cache in the background, and force a refresh from `/sub2api-refresh`.
 
 ## Requirements
 
 ### Requirement: Persistent discovery cache
 
-The extension SHALL store each successful relay discovery in `sub2api-models.json` in the agent directory. A stored entry SHALL include the provider identity, normalized endpoint, and the model metadata used for registration. Codex reasoning levels and xAI reasoning metadata SHALL be included. The file SHALL NOT contain tokens. Pi's `models-store.json` catalog SHALL remain a separate source.
+The extension SHALL store each successful relay discovery in `sub2api-models.json` in the agent directory. A stored entry SHALL include the provider identity, normalized endpoint, model metadata used for registration, and, once billing has completed, the price multiplier. Codex reasoning levels and xAI reasoning metadata SHALL be included. The file SHALL NOT contain tokens. Pi's `models-store.json` catalog SHALL remain a separate source.
 
 #### Scenario: Successful Codex discovery
 
@@ -23,12 +23,12 @@ The extension SHALL store each successful relay discovery in `sub2api-models.jso
 
 ### Requirement: Startup uses a matching cache
 
-When a cache entry matches the provider name, normalized base URL, configured API, and xAI flag and is younger than 12 hours, startup and `/reload` SHALL register those models without requesting `/v1/models` or the Codex manifest. Billing and quota requests SHALL still run. A missing, unreadable, or non-matching cache SHALL fetch as before. A successful empty discovery SHALL be cached with its discovery time and reused while it remains younger than 12 hours.
+When a matching cache is younger than 12 hours, startup and `/reload` SHALL register its models without requesting `/v1/models`, the Codex manifest, or billing. A stored multiplier SHALL scale prices immediately. A missing multiplier SHALL use standard prices and refresh billing in the background. Quota requests SHALL still run. A missing, unreadable, or non-matching cache SHALL fetch as before. An empty discovery SHALL be cached and reused while younger than 12 hours.
 
 #### Scenario: Second startup
 
-- **WHEN** a matching cache exists and is younger than 12 hours
-- **THEN** the extension registers those models, including their reasoning levels, without a discovery request
+- **WHEN** a matching cache exists, is younger than 12 hours, and includes a price multiplier
+- **THEN** the extension registers those models at that multiplier without a discovery or billing request
 
 #### Scenario: Endpoint change
 
@@ -37,7 +37,7 @@ When a cache entry matches the provider name, normalized base URL, configured AP
 
 ### Requirement: Manual refresh
 
-The extension SHALL register `/sub2api-refresh`. The command SHALL fetch every configured relay even when its cache is younger than 12 hours, replace each successful result in the cache, and register those models in the current session. A relay whose fetch fails SHALL keep its last successful cache entry and its current registration, and the command SHALL report the error. Successful relays in the same refresh SHALL still update. Refreshes from one extension instance SHALL run one at a time.
+The extension SHALL register `/sub2api-refresh`. The command SHALL fetch every relay's models and price multiplier even when its cache is younger than 12 hours, store each success, and register those models. A failed model fetch SHALL keep that relay's last models and multiplier. A billing failure SHALL keep the last multiplier. The command SHALL report the error. Other relays SHALL still update. Refreshes from one extension instance SHALL run one at a time.
 
 #### Scenario: Partial refresh failure
 
@@ -49,11 +49,11 @@ The extension SHALL register `/sub2api-refresh`. The command SHALL fetch every c
 #### Scenario: Fresh cache
 
 - **WHEN** the cache for a relay is younger than 12 hours and the user runs `/sub2api-refresh`
-- **THEN** the extension fetches that relay again and registers the result
+- **THEN** the extension fetches that relay's models and price multiplier again and registers the result
 
 ### Requirement: Expired cache refreshes in the background
 
-A matching cache that is 12 hours old or older, or that has no discovery time, SHALL be registered immediately without waiting for a discovery request. The extension SHALL then refresh that relay in the background. A successful background refresh SHALL update the cache time and the current registrations. A failed background refresh SHALL keep the previous cache, its discovery time, and the current registrations.
+A matching cache that is 12 hours old or older, or that has no discovery time, SHALL be registered immediately, using its stored multiplier when present, without waiting for discovery or billing. The extension SHALL then refresh that relay's models and multiplier in the background. A successful background refresh SHALL update the cache time, multiplier, and current registrations. A failed background refresh SHALL keep the previous models, multiplier, and discovery time.
 
 #### Scenario: Expired startup
 
@@ -64,4 +64,4 @@ A matching cache that is 12 hours old or older, or that has no discovery time, S
 #### Scenario: Failed background refresh
 
 - **WHEN** the background refresh of an expired cache fails
-- **THEN** the previously cached models and discovery time remain
+- **THEN** the previously cached models, price multiplier, and discovery time remain

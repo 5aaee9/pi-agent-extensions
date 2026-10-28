@@ -1484,11 +1484,17 @@ describe("sub2api provider extension", () => {
 
     const registrations: Registration[] = [];
     const handlers = new Map<string, (event: any, context: any) => unknown>();
+    const commands = new Map<string, (args: string, ctx: any) => Promise<void>>();
     await extension({
       registerProvider(name: string, config: ProviderConfig) {
         registrations.push({ name, config });
       },
-      registerCommand() {},
+      registerCommand(
+        name: string,
+        options: { handler: (args: string, ctx: any) => Promise<void> },
+      ) {
+        commands.set(name, options.handler);
+      },
       on(name: string, handler: (event: any, context: any) => unknown) {
         handlers.set(name, handler);
       },
@@ -1519,22 +1525,33 @@ describe("sub2api provider extension", () => {
       expect(footer.render().at(-1)).toBe("subscription-relay · d 30% · w 30% · m 30%"),
     );
 
+    const billingCalls = () =>
+      fetchCalls.filter((call) => call.url === "https://subscription.example/v1/sub2api/billing");
+    expect(billingCalls()).toHaveLength(1);
     billingMultiplier = 0.5;
     handlers.get("model_select")!({ model: context.model }, context);
-    await vi.waitFor(() => expect(registrations).toHaveLength(2));
+    await Promise.resolve();
+    expect(billingCalls()).toHaveLength(1);
+    expect(registrations).toHaveLength(1);
+    expect.soft(modelConfigs(registrations[0]!)[0]!.cost.input).toBe(3.75);
+
+    const notify = () => undefined;
+    billingMultiplier = 0.5;
+    await commands.get("sub2api-refresh")!("", { ui: { notify } });
+    expect(registrations).toHaveLength(2);
     expect.soft(modelConfigs(registrations.at(-1)!)[0]!.cost.input).toBe(2.5);
     expect.soft(footer.render().at(-1)).toBe("subscription-relay · d 30% · w 30% · m 30%");
 
     usageAvailable = false;
     billingMultiplier = 0.25;
-    handlers.get("model_select")!({ model: context.model }, context);
-    await vi.waitFor(() => expect(registrations).toHaveLength(3));
+    await commands.get("sub2api-refresh")!("", { ui: { notify } });
+    expect(registrations).toHaveLength(3);
     expect.soft(modelConfigs(registrations.at(-1)!)[0]!.cost.input).toBe(1.25);
     expect.soft(footer.render().at(-1)).toBe("subscription-relay · d 30% · w 30% · m 30%");
 
     billingAvailable = false;
-    handlers.get("turn_end")!({}, context);
-    await vi.waitFor(() => expect(registrations).toHaveLength(4));
+    await commands.get("sub2api-refresh")!("", { ui: { notify } });
+    expect(registrations).toHaveLength(4);
     expect.soft(modelConfigs(registrations.at(-1)!)[0]!.cost.input).toBe(5);
     expect.soft(footer.render().at(-1)).not.toContain("×");
 

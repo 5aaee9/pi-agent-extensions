@@ -32,7 +32,10 @@ function cachePath() {
 function readCache() {
   return JSON.parse(readFileSync(cachePath(), "utf8")) as {
     version: number;
-    providers: Record<string, { fetchedAt?: number; models: Record<string, unknown>[] }>;
+    providers: Record<
+      string,
+      { fetchedAt?: number; priceMultiplier?: number; models: Record<string, unknown>[] }
+    >;
   };
 }
 
@@ -115,6 +118,7 @@ describe("discovered model cache", () => {
     const cached = readCache();
     expect(cached.version).toBe(1);
     expect(cached.providers.codex?.fetchedAt).toBeGreaterThan(Date.now() - 60_000);
+    expect(cached.providers.codex?.priceMultiplier).toBe(1);
     expect(cached.providers.codex?.models[0]).toMatchObject({
       id: "astra-preview",
       contextWindow: 262144,
@@ -131,7 +135,7 @@ describe("discovered model cache", () => {
       return new Response(null, { status: 404 });
     });
     expect(second.calls.filter(discoveryUrl)).toEqual([]);
-    expect(second.calls.some(billing)).toBe(true);
+    expect(second.calls.some(billing)).toBe(false);
     expect(second.providers.get("codex")?.models?.[0]).toMatchObject({
       id: "astra-preview",
       contextWindow: 262144,
@@ -355,6 +359,9 @@ describe("discovered model cache", () => {
     });
     expect(loaded.providers.get("codex")?.models?.[0]?.id).toBe("cached-old");
     expect(loaded.calls.filter(discoveryUrl)).toEqual([]);
+    await vi.waitFor(() => {
+      expect(readCache().providers.codex?.priceMultiplier).toBe(1);
+    });
   });
 
   it.each([
@@ -429,5 +436,155 @@ describe("discovered model cache", () => {
     expect(loaded.calls.filter(discoveryUrl)).toHaveLength(2);
     expect(loaded.providers.get("codex")?.models?.[0]?.id).toBe("forced-preview");
     expect(notify).toHaveBeenCalledWith(expect.stringContaining("codex (1)"), "info");
+  });
+
+  function writePriceCache(priceMultiplier?: number, fetchedAt = Date.now()) {
+    writeFileSync(
+      cachePath(),
+      JSON.stringify({
+        version: 1,
+        providers: {
+          relay: {
+            baseUrl: "https://cache.example/v1",
+            xai: false,
+            fetchedAt,
+            ...(priceMultiplier === undefined ? {} : { priceMultiplier }),
+            models: [
+              {
+                id: "gpt-5.5",
+                name: "GPT-5.5",
+                contextWindow: 1000,
+                maxTokens: 100,
+                reasoning: true,
+                input: ["text"],
+                supportedThinkingLevels: ["high"],
+              },
+            ],
+          },
+        },
+      }),
+    );
+  }
+
+  function billingContract(multiplier: number) {
+    return {
+      object: "sub2api.key_billing",
+      schema_version: 1,
+      billing_scope: "token",
+      group_rate_multiplier: multiplier,
+      resolved_rate_multiplier: multiplier,
+      peak_rate_enabled: false,
+      effective_rate_multiplier: multiplier,
+    };
+  }
+
+  it("stores the billing multiplier with the model cache and skips it while fresh", async () => {
+    writeConfig({ relay: { baseURL: "https://cache.example/v1", token: "sk-cache-secret" } });
+    const first = await load((url) => {
+      if (url === "https://cache.example/v1/models") {
+        return Response.json({ data: [{ id: "gpt-5.5", display_name: "GPT-5.5" }] });
+      }
+      if (url === "https://cache.example/v1/sub2api/billing") {
+        return Response.json(billingContract(0.5));
+      }
+      return new Response(null, { status: 404 });
+    });
+    expect(first.providers.get("relay")?.models?.[0]?.cost.input).toBe(2.5);
+    expect(readCache().providers.relay?.priceMultiplier).toBe(0.5);
+
+    const second = await load((url) => {
+      if (discoveryUrl(url) || billing(url)) throw new Error(`unexpected remote request ${url}`);
+      return new Response(null, { status: 404 });
+    });
+    expect(second.calls.filter((url) => discoveryUrl(url) || billing(url))).toEqual([]);
+    expect(second.providers.get("relay")?.models?.[0]?.cost.input).toBe(2.5);
+  });
+
+  it("does not request billing while the cached multiplier is fresh", async () => {
+    writeConfig({ relay: { baseURL: "https://cache.example/v1", token: "sk-cache-secret" } });
+    writePriceCache(0.4, Date.now() - DISCOVERY_CACHE_TTL_MS + 60_000);
+    let releaseBilling: (() => void) | undefined;
+    const billingGate = new Promise<void>((resolve) => {
+      releaseBilling = resolve;
+    });
+    const loaded = await load(async (url) => {
+      if (billing(url)) await billingGate;
+      if (discoveryUrl(url)) throw new Error(`unexpected discovery request ${url}`);
+      return new Response(null, { status: 404 });
+    });
+    expect(loaded.providers.get("relay")?.models?.[0]?.cost.input).toBe(2);
+    expect(loaded.calls.some(billing)).toBe(false);
+    releaseBilling?.();
+  });
+
+  it("loads a cached model list immediately and applies billing when the multiplier is missing", async () => {
+    writeConfig({ relay: { baseURL: "https://cache.example/v1", token: "sk-cache-secret" } });
+    writePriceCache(undefined, Date.now());
+    let releaseBilling: (() => void) | undefined;
+    const billingGate = new Promise<void>((resolve) => {
+      releaseBilling = resolve;
+    });
+    const loaded = await load(async (url) => {
+      if (billing(url)) {
+        await billingGate;
+        return Response.json(billingContract(0.25));
+      }
+      if (discoveryUrl(url)) throw new Error(`unexpected discovery request ${url}`);
+      return new Response(null, { status: 404 });
+    });
+    expect(loaded.providers.get("relay")?.models?.[0]?.cost.input).toBe(5);
+    expect(loaded.calls.filter(billing)).toEqual(["https://cache.example/v1/sub2api/billing"]);
+    releaseBilling?.();
+    await vi.waitFor(() => {
+      expect(loaded.providers.get("relay")?.models?.[0]?.cost.input).toBe(1.25);
+    });
+    expect(readCache().providers.relay?.priceMultiplier).toBe(0.25);
+    expect(readCache().providers.relay?.models[0]?.id).toBe("gpt-5.5");
+  });
+
+  it("keeps the cached multiplier when a background billing refresh fails", async () => {
+    writeConfig({ relay: { baseURL: "https://cache.example/v1", token: "sk-cache-secret" } });
+    const fetchedAt = Date.now() - DISCOVERY_CACHE_TTL_MS;
+    writePriceCache(0.4, fetchedAt);
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const loaded = await load((url) => {
+      if (url === "https://cache.example/v1/models") {
+        return Response.json({
+          data: [{ id: "gpt-5.5", display_name: "GPT-5.5", context_window: 1111 }],
+        });
+      }
+      if (billing(url)) return new Response(null, { status: 503 });
+      return new Response(null, { status: 404 });
+    });
+    await vi.waitFor(() => {
+      expect(loaded.providers.get("relay")?.models?.[0]).toMatchObject({ contextWindow: 1111 });
+    });
+    expect(loaded.providers.get("relay")?.models?.[0]).toMatchObject({ cost: { input: 2 } });
+    expect(readCache().providers.relay?.priceMultiplier).toBe(0.4);
+    await vi.waitFor(() => {
+      expect(consoleError).toHaveBeenCalledWith(
+        expect.stringContaining("Kept the last cached price multiplier"),
+      );
+    });
+  });
+
+  it("forces a billing refresh from /sub2api-refresh while the multiplier is fresh", async () => {
+    writeConfig({ relay: { baseURL: "https://cache.example/v1", token: "sk-cache-secret" } });
+    let multiplier = 0.5;
+    const loaded = await load((url) => {
+      if (url === "https://cache.example/v1/models") {
+        return Response.json({ data: [{ id: "gpt-5.5", display_name: "GPT-5.5" }] });
+      }
+      if (billing(url)) return Response.json(billingContract(multiplier));
+      return new Response(null, { status: 404 });
+    });
+    expect(loaded.calls.filter(billing)).toHaveLength(1);
+    multiplier = 0.25;
+    const notify = vi.fn<(message: string, level?: string) => void>();
+    await loaded.commands.get("sub2api-refresh")!("", { ui: { notify } });
+    expect(loaded.calls.filter(billing)).toHaveLength(2);
+    expect(loaded.providers.get("relay")?.models?.[0]?.cost.input).toBe(1.25);
+    expect(readCache().providers.relay?.priceMultiplier).toBe(0.25);
+    expect(notify).toHaveBeenCalledWith(expect.stringContaining("relay (1)"), "info");
   });
 });
