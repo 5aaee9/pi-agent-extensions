@@ -1,8 +1,12 @@
-/** Verify the installed tarball with Node built-ins and no host peers or API calls. */
+/** Verify the installed tarball offline with the repo dev tooling, no host peers, and no API calls. */
 import assert from "node:assert/strict";
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
-import { runInNewContext } from "node:vm";
+import { pathToFileURL } from "node:url";
+
+import { JSDOM } from "jsdom";
+import * as jsxRuntime from "react/jsx-runtime";
+import * as React from "react";
 
 const PACKAGE_ID = "@indexyz/dsh-prompt-suggestions";
 const NAMESPACE = "prompt-suggestions";
@@ -57,54 +61,68 @@ function exportTargets(value: unknown, field = "exports"): string[] {
   );
 }
 
-function checkClient(clientPath: string): void {
-  const registrations: unknown[] = [];
-  // A separate browser-like context prevents accidental Node imports or access
-  // to real host services while executing the installed artifact.
-  runInNewContext(
-    readFileSync(clientPath, "utf8"),
-    {
-      window: {
-        __ModuleLoader__: {
-          load(registration: unknown): void {
-            registrations.push(registration);
-          },
-        },
+interface ModuleRegistration {
+  readonly id: string;
+  readonly factory: (require: (id: string) => unknown) => unknown;
+}
+
+interface ClientPlugin {
+  readonly inject: readonly string[];
+  apply(ctx: unknown): void;
+}
+
+interface RegisteredRow {
+  readonly options: Record<string, unknown>;
+  readonly render: UnknownFunction;
+}
+
+/**
+ * Execute the installed browser artifact the way the page's module loader does:
+ * a real jsdom window, the real module-loader registration, and the real React
+ * modules the page supplies. The primitives module is present as an empty
+ * module because the pinned primitives package cannot be evaluated standalone
+ * (its shipped lib imports runtime modules the workspace does not install);
+ * this smoke only inspects registration and disposal, never renders the row.
+ * @param clientPath - the installed `client.js`.
+ */
+async function checkClient(clientPath: string): Promise<void> {
+  const registrations: ModuleRegistration[] = [];
+  const dom = new JSDOM("<!doctype html><html><body></body></html>", {
+    url: "http://localhost/",
+    pretendToBeVisual: true,
+  });
+  Object.assign(dom.window, {
+    __ModuleLoader__: {
+      load(registration: ModuleRegistration): void {
+        registrations.push(registration);
       },
     },
-    { filename: clientPath, timeout: 5_000 },
-  );
+  });
+  Object.defineProperty(globalThis, "window", { value: dom.window, configurable: true });
+  // A real module evaluation of the installed artifact, not a shim: the file is
+  // ESM-valid and calls the loader contract captured above.
+  await import(pathToFileURL(clientPath).href);
   assert.equal(registrations.length, 1, "client.js must register exactly one module");
-  const registration = object(registrations[0], "client module registration");
-  assert.equal(registration["id"], PACKAGE_ID, "client module id");
+  const registration = registrations[0];
+  assert.ok(registration !== undefined, "client module registration is missing");
+  assert.equal(registration.id, PACKAGE_ID, "client module id");
 
-  class ComponentStub {}
-  const element = (type: unknown, props: unknown): unknown => ({ type, props });
-  const fragment = Symbol("Fragment");
-  const modules = new Map<string, unknown>([
-    ["react", { Component: ComponentStub, createElement: element, Fragment: fragment }],
-    ["react/jsx-runtime", { jsx: element, jsxs: element, Fragment: fragment }],
-    ["@deepseek-ai/dsh-client-ui-primitives", { Switch: element }],
-  ]);
-  const factory = callable(registration["factory"], "client module factory");
+  const factory = callable(registration.factory, "client module factory");
   const plugin = object(
     factory((id: unknown): unknown => {
-      assert.ok(
-        typeof id === "string" && modules.has(id),
-        `client requested a module outside the page module table: ${String(id)}`,
-      );
-      return modules.get(id);
+      if (id === "react") return React;
+      if (id === "react/jsx-runtime") return jsxRuntime;
+      if (id === "@deepseek-ai/dsh-client-ui-primitives") return {};
+      throw new Error(`client requested a module outside the page module table: ${String(id)}`);
     }),
     "client factory result",
-  );
-  const inject: unknown = plugin["inject"];
-  assert.ok(Array.isArray(inject), "client must export an inject service list");
-  assert.deepEqual(Array.from(inject), INJECT, "client injected services");
-  const apply = callable(plugin["apply"], "client apply export");
+  ) as unknown as ClientPlugin;
+  assert.deepEqual(Array.from(plugin.inject), INJECT, "client injected services");
+  const apply = callable(plugin.apply, "client apply export");
 
   const dictionaries = new Map<string, Record<string, unknown>>();
   const injectedSlots: string[] = [];
-  const rows: { options: Record<string, unknown>; render: UnknownFunction }[] = [];
+  const rows: RegisteredRow[] = [];
   const cleanups: UnknownFunction[] = [];
   const services = new Map<string, unknown>([
     ["connection", { rpc: { call: () => Promise.reject(new Error("no remote calls")) } }],
@@ -167,7 +185,7 @@ function checkClient(clientPath: string): void {
   assert.equal(overlay.options["name"], OVERLAY_SLOT, "overlay slot");
   assert.equal(overlay.options["id"], NAMESPACE, "overlay id");
   assert.equal(overlay.options["order"], 50, "overlay order");
-  assert.ok(overlay.render({}) !== undefined, "overlay renderer must return an element");
+  assert.ok(React.isValidElement(overlay.render({})), "overlay renderer must return an element");
   assert.equal(settings.options["name"], SETTINGS_SLOT, "settings row slot");
   assert.equal(settings.options["id"], NAMESPACE, "settings row id");
   assert.equal(settings.options["order"], 45, "settings row order");
@@ -175,7 +193,10 @@ function checkClient(clientPath: string): void {
     callable(settings.options["label"], "settings row label")(),
     "Next-message suggestions",
   );
-  assert.ok(settings.render() !== undefined, "settings row renderer must return an element");
+  assert.ok(
+    React.isValidElement(settings.render()),
+    "settings row renderer must return an element",
+  );
   const dictionary = object(dictionaries.get(NAMESPACE), "registered locale dictionary");
   assert.equal(object(dictionary["zh"], "Chinese locale")["label"], "下一句建议");
   for (const cleanup of cleanups.reverse()) cleanup();
@@ -183,7 +204,7 @@ function checkClient(clientPath: string): void {
   assert.equal(dictionaries.size, 0, "locale must unregister on disposal");
 }
 
-function main(): void {
+async function main(): Promise<void> {
   const argument = process.argv[2];
   assert.ok(
     process.argv.length === 3 && argument !== undefined && argument.trim() !== "",
@@ -205,14 +226,14 @@ function main(): void {
   packagedPath(installed, "lib/index.js", "built host entry");
   const patch = readFileSync(packagedPath(installed, bundle["patch"], "dsh.bundle.patch"), "utf8");
   assert.match(patch, /id:\s*prompt-suggestions/u, "bundle patch must insert the plugin row");
-  checkClient(packagedPath(installed, "client.js", "built client entry"));
+  await checkClient(packagedPath(installed, "client.js", "built client entry"));
   console.log(
     `smoke-release: ${PACKAGE_ID} passed (main/types/exports/patch, client module/inject/apply, overlay/settings/locale/disposal)`,
   );
 }
 
 try {
-  main();
+  await main();
 } catch (error: unknown) {
   console.error(`smoke-release: ${error instanceof Error ? error.message : String(error)}`);
   process.exitCode = 1;

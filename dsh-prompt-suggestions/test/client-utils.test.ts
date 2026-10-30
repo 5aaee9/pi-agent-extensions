@@ -1,7 +1,7 @@
 /**
  * @vitest-environment jsdom
  */
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import type { ShortcutsFace } from "../src/client/contracts.ts";
 import { createGhost, findComposer, placeGhost } from "../src/client/ghost.ts";
@@ -132,15 +132,17 @@ describe("shared enabled store", () => {
     const { enabledSnapshot, setEnabled, subscribeEnabled } =
       await import("../src/client/enabled.ts");
     setEnabled(true);
-    const listener = vi.fn<() => void>();
-    const unsubscribe = subscribeEnabled(listener);
+    let notifications = 0;
+    const unsubscribe = subscribeEnabled(() => {
+      notifications += 1;
+    });
     setEnabled(true);
-    expect(listener).not.toHaveBeenCalled();
+    expect(notifications).toBe(0);
     setEnabled(false);
-    expect(listener).toHaveBeenCalledTimes(1);
+    expect(notifications).toBe(1);
     expect(enabledSnapshot()).toBe(false);
     unsubscribe();
     setEnabled(true);
-    expect(listener).toHaveBeenCalledTimes(1);
+    expect(notifications).toBe(1);
   });
 });
