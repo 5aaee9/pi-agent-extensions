@@ -1,201 +1,257 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { SettingsManager } from "@earendil-works/pi-coding-agent";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { createRealPlane, type RealPlane, type RealSession } from "./real-plane.ts";
 
-vi.mock("@earendil-works/pi-coding-agent", () => ({
-  CONFIG_DIR_NAME: ".pi",
-  getAgentDir: () => "/agent",
-  VERSION: "0.87.1",
-}));
-vi.mock("../compaction.ts", () => ({
-  summarizeBoundary: vi.fn<typeof import("../compaction.ts").summarizeBoundary>(),
-}));
-vi.mock("../settings.ts", async (original) => ({
-  ...(await original<typeof import("../settings.ts")>()),
-  readSettings: vi.fn<typeof readSettings>(),
-  saveModelLimit: vi.fn<typeof saveModelLimit>(async () => {}),
-}));
+const MODEL = "probe/compact-model";
 
-import plugin from "../index.ts";
-import { readSettings, saveModelLimit } from "../settings.ts";
-import { summarizeBoundary } from "../compaction.ts";
+let plane: RealPlane;
 
-function harness() {
-  const handlers = new Map<string, (...args: any[]) => any>();
-  let command: (...args: any[]) => any = () => {};
-  plugin({
-    on: (event: string, handler: (...args: any[]) => any) => handlers.set(event, handler),
-    registerCommand: (_name: string, options: { handler: (...args: any[]) => any }) => {
-      command = options.handler;
-    },
-  } as unknown as ExtensionAPI);
-  const model = { provider: "provider", id: "model", contextWindow: 1000000 };
-  const ctx = {
-    model,
-    cwd: "/project",
-    isProjectTrusted: () => true,
-    isIdle: () => true,
-    waitForIdle: vi.fn<() => Promise<void>>(async () => {}),
-    getContextUsage: vi.fn<() => { tokens: number }>(() => ({ tokens: 350000 })),
-    sessionManager: { getLeafId: () => "leaf" },
-    ui: {
-      notify: vi.fn<ExtensionCommandContext["ui"]["notify"]>(),
-      setStatus: vi.fn<ExtensionCommandContext["ui"]["setStatus"]>(),
-    },
-    compact: vi.fn<ExtensionCommandContext["compact"]>(),
-  } as unknown as ExtensionCommandContext;
-  return { handlers, command, ctx, model };
+beforeEach(async () => {
+  plane = await createRealPlane();
+});
+
+afterEach(async () => {
+  await plane.close();
+});
+
+function compactions(real: RealSession): number {
+  return real.session.sessionManager.getBranch().filter((entry) => entry.type === "compaction")
+    .length;
 }
 
-beforeEach(() => {
-  vi.mocked(readSettings).mockResolvedValue({});
-  vi.mocked(summarizeBoundary).mockResolvedValue({
-    type: "compaction",
-    summary: "summary",
-    firstKeptEntryId: "keep",
+function lastNotification(real: RealSession): RealSession["notifications"][number] | undefined {
+  return real.notifications.at(-1);
+}
+
+async function waitFor(predicate: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt++) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error("The session never reached the expected state");
+}
+
+describe("Pi extension loading", () => {
+  it("registers its command and boundary handlers through Pi's real loader", async () => {
+    const real = await plane.startSession();
+    const command = real.session.extensionRunner.getCommand("autocompact");
+    expect(command?.description).toBe(
+      "Compaction threshold: /autocompact [300k | off | default] [--save]",
+    );
+    const missing = [
+      "session_start",
+      "session_shutdown",
+      "turn_end",
+      "agent_before_settle",
+      "input",
+    ].filter((event) => !real.session.hasExtensionHandlers(event));
+    expect(missing).toEqual([]);
   });
 });
 
 describe("session-only commands", () => {
   it("sets model-local overrides, clears them on session start, and never changes model metadata", async () => {
-    const { handlers, command, ctx, model } = harness();
-    await handlers.get("session_start")!({}, ctx);
-    await command("300k", ctx);
-    expect(model.contextWindow).toBe(1000000);
-    const event = { context: {} };
-    expect(await handlers.get("turn_end")!(event, ctx)).toMatchObject({
-      entries: [{ type: "compaction" }],
-    });
-    // Deduplicate the same boundary and do not force a continuation.
-    expect(await handlers.get("agent_before_settle")!(event, ctx)).toBeUndefined();
-    ctx.model = { ...ctx.model!, id: "other-model" };
-    expect(await handlers.get("turn_end")!(event, ctx)).toBeUndefined();
-    ctx.model = model as ExtensionCommandContext["model"];
-    await handlers.get("session_start")!({}, ctx);
-    expect(await handlers.get("turn_end")!(event, ctx)).toBeUndefined();
+    const real = await plane.startSession({ tokens: 350_000 });
+    const model = real.session.model;
+    if (!model) throw new Error("The test session has no model");
+    expect(model.contextWindow).toBe(1_000_000);
+
+    await real.command("300k");
+    expect(real.session.model).toBe(model);
+
+    const entries = await real.boundary("turn_end");
+    expect(entries).toHaveLength(1);
+    const entry = entries[0];
+    expect(entry?.type).toBe("compaction");
+    if (entry?.type !== "compaction") throw new Error("Expected a compaction draft");
+    expect(entry.details).toEqual({ source: "pi-autocompact" });
+    expect(entry.firstKeptEntryId).not.toBeNull();
+    const firstKeptEntryId = entry.firstKeptEntryId;
+    if (firstKeptEntryId === null) throw new Error("Expected a kept entry id");
+    expect(real.session.sessionManager.getEntry(firstKeptEntryId)).toBeDefined();
+
+    // The same boundary is deduplicated until another command or session start.
+    expect(await real.boundary("agent_before_settle")).toEqual([]);
+
+    const otherModel = real.session.modelRuntime.getModel("probe", "other-model");
+    if (!otherModel) throw new Error("The test models.json is missing probe/other-model");
+    await real.session.setModel(otherModel);
+    expect(await real.boundary("turn_end")).toEqual([]);
+
+    await real.session.setModel(model);
+    await real.session.extensionRunner.emit({ type: "session_start", reason: "reload" });
+    expect(real.session.model?.contextWindow).toBe(1_000_000);
+    expect(await real.boundary("turn_end")).toEqual([]);
   });
+
   it("off masks the global default, default restores inheritance", async () => {
-    vi.mocked(readSettings).mockImplementation(async (path) =>
-      path === "/agent/settings.json"
-        ? { piAutocompact: { modelLimits: { "provider/model": 300000 } } }
-        : {},
-    );
-    const { handlers, command, ctx } = harness();
-    await handlers.get("session_start")!({}, ctx);
-    await command("off", ctx);
-    expect(await handlers.get("turn_end")!({ context: {} }, ctx)).toBeUndefined();
-    await command("default", ctx);
-    expect(await handlers.get("turn_end")!({ context: {} }, ctx)).toMatchObject({
-      entries: [{ type: "compaction" }],
-    });
+    await plane.writeGlobalSettings({ piAutocompact: { modelLimits: { [MODEL]: 300_000 } } });
+    const real = await plane.startSession({ tokens: 350_000 });
+
+    // session_start loaded the real settings file.
+    expect(await real.boundary("turn_end")).toHaveLength(1);
+    expect(plane.server.requests).toHaveLength(1);
+
+    await real.command("off");
+    expect(await real.boundary("turn_end")).toEqual([]);
+    expect(plane.server.requests).toHaveLength(1);
+
+    await real.command("default");
+    expect(await real.boundary("turn_end")).toHaveLength(1);
+    expect(plane.server.requests).toHaveLength(2);
   });
+
   it("writes the user model limit only when --save is present", async () => {
-    const { handlers, command, ctx } = harness();
-    await handlers.get("session_start")!({}, ctx);
-    await command("300k", ctx);
-    expect(saveModelLimit).not.toHaveBeenCalled();
-    expect(ctx.ui.notify).toHaveBeenLastCalledWith(
-      expect.stringContaining("No settings written."),
-      "info",
-    );
-    await command("--save 300k", ctx);
-    expect(saveModelLimit).toHaveBeenCalledExactlyOnceWith(
-      "/agent/settings.json",
-      "provider/model",
-      300000,
-    );
-    expect(ctx.ui.notify).toHaveBeenLastCalledWith(
-      expect.stringContaining("Saved as the global default for this model."),
-      "info",
-    );
-    expect(ctx.ui.notify).toHaveBeenLastCalledWith(
-      expect.not.stringContaining("No settings written."),
-      "info",
-    );
-    await command("default", ctx);
-    expect(await handlers.get("turn_end")!({ context: {} }, ctx)).toMatchObject({
-      entries: [{ type: "compaction" }],
+    await plane.writeProjectSettings({ theme: "dark" });
+    const projectSettings = await plane.readProjectSettings();
+    const real = await plane.startSession({ tokens: 350_000 });
+    const untouched = await plane.readGlobalSettings();
+
+    await real.command("300k");
+    expect(await plane.readGlobalSettings()).toBe(untouched);
+    expect(lastNotification(real)).toMatchObject({
+      message: expect.stringContaining("No settings written."),
+      type: "info",
     });
-    expect(ctx.ui.notify).toHaveBeenLastCalledWith(
-      expect.stringContaining("global default"),
-      "info",
-    );
+
+    await real.command("--save 300k");
+    const saved = JSON.parse(await plane.readGlobalSettings()) as {
+      piAutocompact?: { modelLimits?: Record<string, number> };
+    };
+    expect(saved.piAutocompact?.modelLimits).toEqual({ [MODEL]: 300_000 });
+    // The command writes the user settings file only.
+    expect(await plane.readProjectSettings()).toBe(projectSettings);
+    // Pi's own settings reader sees what the command wrote.
+    expect(
+      SettingsManager.create(plane.projectDir, plane.agentDir).getGlobalSettings(),
+    ).toMatchObject({ piAutocompact: { modelLimits: { [MODEL]: 300_000 } } });
+    expect(lastNotification(real)).toMatchObject({
+      message: expect.stringContaining("Saved as the global default for this model."),
+      type: "info",
+    });
+    expect(lastNotification(real)?.message).not.toContain("No settings written.");
+
+    expect(await real.boundary("turn_end")).toHaveLength(1);
+
+    await real.command("default");
+    expect(lastNotification(real)?.message).toContain("global default");
+    expect(await real.boundary("turn_end")).toHaveLength(1);
   });
+
   it("rejects --save without a usable threshold and keeps the previous override", async () => {
-    const { handlers, command, ctx } = harness();
-    await handlers.get("session_start")!({}, ctx);
-    await command("300k", ctx);
+    const real = await plane.startSession({ tokens: 280_000 });
+    const untouched = await plane.readGlobalSettings();
+    await real.command("300k");
+
     for (const args of ["off --save", "--save", "default --save", "2m --save"]) {
-      await command(args, ctx);
-      expect(ctx.ui.notify).toHaveBeenLastCalledWith(
-        expect.stringMatching(/--save|Threshold|context window/),
-        "error",
-      );
+      await real.command(args);
+      expect(lastNotification(real)?.type).toBe("error");
+      expect(lastNotification(real)?.message).toMatch(/--save|Threshold|context window/);
+      expect(await plane.readGlobalSettings()).toBe(untouched);
     }
-    expect(saveModelLimit).not.toHaveBeenCalled();
-    expect(await handlers.get("turn_end")!({ context: {} }, ctx)).toMatchObject({
-      entries: [{ type: "compaction" }],
+
+    const disabled = { compaction: { enabled: false } };
+    await plane.writeGlobalSettings(disabled);
+    await real.command("250k --save");
+    expect(lastNotification(real)).toMatchObject({
+      message: expect.stringContaining("disabled"),
+      type: "error",
     });
-    await command("300k", ctx);
-    vi.mocked(ctx.getContextUsage).mockReturnValue({ tokens: 280000 } as ReturnType<
-      typeof ctx.getContextUsage
-    >);
-    vi.mocked(readSettings).mockResolvedValue({ compaction: { enabled: false } });
-    await command("250k --save", ctx);
-    expect(saveModelLimit).not.toHaveBeenCalled();
-    expect(ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("disabled"), "error");
-    vi.mocked(readSettings).mockResolvedValue({});
-    expect(await handlers.get("turn_end")!({ context: {} }, ctx)).toBeUndefined();
+    expect(JSON.parse(await plane.readGlobalSettings())).toEqual(disabled);
+
+    await plane.writeGlobalSettings({});
+    // 280k is below the original 300k override, so the rejected 250k never took effect.
+    expect(await real.boundary("turn_end")).toEqual([]);
   });
+
   it("loads a saved model limit on the next session without another command", async () => {
-    vi.mocked(readSettings).mockImplementation(async (path) =>
-      path === "/agent/settings.json"
-        ? { piAutocompact: { modelLimits: { "provider/model": 300000 } } }
-        : {},
-    );
-    const { handlers, ctx } = harness();
-    await handlers.get("session_start")!({}, ctx);
-    expect(await handlers.get("turn_end")!({ context: {} }, ctx)).toMatchObject({
-      entries: [{ type: "compaction" }],
-    });
-    expect(saveModelLimit).not.toHaveBeenCalled();
+    const first = await plane.startSession({ tokens: 350_000 });
+    await first.command("300k --save");
+    const saved = await plane.readGlobalSettings();
+    // The saving session does not need a reload.
+    expect(await first.boundary("turn_end")).toHaveLength(1);
+
+    const second = await plane.startSession({ tokens: 350_000 });
+    expect(await plane.readGlobalSettings()).toBe(saved);
+    expect(await second.boundary("turn_end")).toHaveLength(1);
   });
+
   it("does not compact below the threshold or when native auto-compaction is disabled", async () => {
-    const { handlers, command, ctx } = harness();
-    await handlers.get("session_start")!({}, ctx);
-    await command("400k", ctx);
-    expect(await handlers.get("turn_end")!({ context: {} }, ctx)).toBeUndefined();
-    vi.mocked(readSettings).mockResolvedValue({ compaction: { enabled: false } });
-    await handlers.get("session_start")!({}, ctx);
-    await command("300k", ctx);
-    expect(ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("disabled"), "error");
+    const real = await plane.startSession({ tokens: 350_000 });
+    await real.command("400k");
+    expect(await real.boundary("turn_end")).toEqual([]);
+    expect(plane.server.requests).toHaveLength(0);
+
+    const disabled = { compaction: { enabled: false } };
+    await plane.writeGlobalSettings(disabled);
+    await real.session.extensionRunner.emit({ type: "session_start", reason: "reload" });
+    await real.command("300k");
+    expect(lastNotification(real)).toMatchObject({
+      message: expect.stringContaining("disabled"),
+      type: "error",
+    });
+    expect(await real.boundary("turn_end")).toEqual([]);
+    expect(JSON.parse(await plane.readGlobalSettings())).toEqual(disabled);
+    expect(plane.server.requests).toHaveLength(0);
   });
-  it("skips unknown usage and uses native compaction only for idle input", async () => {
-    const { handlers, command, ctx } = harness();
-    await handlers.get("session_start")!({}, ctx);
-    await command("300k", ctx);
-    vi.mocked(ctx.getContextUsage).mockReturnValue(undefined);
-    expect(await handlers.get("turn_end")!({ context: {} }, ctx)).toBeUndefined();
-    vi.mocked(ctx.getContextUsage).mockReturnValue({ tokens: 350000 } as ReturnType<
-      typeof ctx.getContextUsage
-    >);
-    vi.mocked(ctx.compact).mockImplementation((options) =>
-      options?.onComplete?.({ summary: "native", firstKeptEntryId: "keep", tokensBefore: 350000 }),
-    );
-    await handlers.get("input")!({}, ctx);
-    expect(ctx.compact).toHaveBeenCalledOnce();
-    ctx.isIdle = () => false;
-    await handlers.get("input")!({}, ctx);
-    expect(ctx.compact).toHaveBeenCalledOnce();
+
+  it("skips unknown usage after a real native compaction", async () => {
+    const real = await plane.startSession({ tokens: 350_000 });
+    await real.command("300k");
+    await real.session.compact();
+    expect(real.session.getContextUsage()?.tokens).toBeNull();
+    const afterCompaction = compactions(real);
+    expect(afterCompaction).toBe(1);
+
+    expect(await real.boundary("turn_end")).toEqual([]);
+    await real.session.extensionRunner.emitInput("hello", undefined, "interactive");
+    expect(compactions(real)).toBe(afterCompaction);
   });
+
+  it("uses native compaction for input while the session is idle", async () => {
+    const real = await plane.startSession({ tokens: 350_000 });
+    await real.command("300k");
+    const before = compactions(real);
+
+    await real.session.extensionRunner.emitInput("hello", undefined, "interactive");
+
+    expect(compactions(real)).toBe(before + 1);
+  });
+
+  it("does not start native compaction for input while the session is busy", async () => {
+    const real = await plane.startSession({ tokens: 350_000 });
+    await real.command("300k");
+    plane.server.delayMs = 120;
+
+    const running = real.session.compact();
+    await waitFor(() => !real.session.isIdle);
+    await real.session.extensionRunner.emitInput("hello", undefined, "interactive");
+    expect(compactions(real)).toBe(0);
+
+    await running;
+    expect(compactions(real)).toBe(1);
+  });
+
+  it("applies project compaction settings over the global default", async () => {
+    await plane.writeGlobalSettings({ piAutocompact: { modelLimits: { [MODEL]: 300_000 } } });
+    await plane.writeProjectSettings({ compaction: { keepRecentTokens: 50_000 } });
+    const real = await plane.startSession({ tokens: 350_000 });
+    expect(await real.boundary("turn_end")).toHaveLength(1);
+
+    await plane.writeProjectSettings({ compaction: { enabled: false } });
+    await real.session.extensionRunner.emit({ type: "session_start", reason: "reload" });
+    expect(await real.boundary("turn_end")).toEqual([]);
+  });
+
   it("leaves the boundary unchanged on a summarizer error", async () => {
-    vi.mocked(summarizeBoundary).mockRejectedValue(new Error("transport error"));
-    const { handlers, command, ctx } = harness();
-    await handlers.get("session_start")!({}, ctx);
-    await command("300k", ctx);
-    expect(await handlers.get("turn_end")!({ context: {} }, ctx)).toBeUndefined();
-    expect(ctx.ui.notify).toHaveBeenLastCalledWith(
-      expect.stringContaining("transport error"),
-      "warning",
-    );
+    const real = await plane.startSession({ tokens: 350_000 });
+    await real.command("300k");
+    plane.server.failNextRequest = true;
+
+    expect(await real.boundary("turn_end")).toEqual([]);
+    expect(plane.server.requests.length).toBeGreaterThan(0);
+    expect(lastNotification(real)?.type).toBe("warning");
+    expect(lastNotification(real)?.message).toMatch(/^Autocompact failed: /);
+    expect(real.statuses.get("autocompact")).toBeUndefined();
   });
 });
