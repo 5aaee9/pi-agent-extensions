@@ -35,6 +35,9 @@ jobs:
       - name: Check repository
         run: npm run check
 
+      - name: Load every plugin through its host
+        run: npm run test:e2e
+
       - name: Check release impact
         if: github.event_name == 'pull_request'
         env:

@@ -28,6 +28,7 @@
   "scripts": {
     "test": "npm test --workspaces --if-present",
     "test:scripts": "node --test \"scripts/release/test/*.test.ts\"",
+    "test:e2e": "node scripts/e2e/plugins.ts",
     "typecheck": "tsc -p tsconfig.json && npm run typecheck --workspaces --if-present",
     "build": "npm run build --workspaces --if-present",
     "lint": "oxlint --deny-warnings . && npm run lint:tooling",

@@ -249,6 +249,14 @@ Every change ends with all of these, run from the repository root:
 
    Replace `pi-skill` with the package you changed. When the package pins a Pi version different from the root's (today `pi-autocompact` and `pi-provider-sub2api`), use its own binary: `pi-autocompact/node_modules/.bin/pi`. Exit code 0 and a `"success":true` response listing the package's commands mean the extension loaded. A load failure prints `Failed to load extension` and exits non-zero.
 
+   The repository-wide host-loading check runs every supported package discovered from the workspace manifests:
+
+   ```bash
+   npm run test:e2e
+   ```
+
+   It runs Pi packages through RPC with `PI_OFFLINE=1` and isolated config/session directories. DSH packages are built, packed, installed into a temporary directory without peer resolution, and checked with their declared `release.smoke` script. The run makes no model or business API calls, applies a 120-second per-package timeout by default, continues after an individual failure, and exits non-zero after printing the full summary. Use `npm run test:e2e -- --package @indexyz/pi-skill` to focus on one package or `--timeout-ms <milliseconds>` to adjust the local timeout. Failure sections include the command, exit status, stdout, and stderr.
+
    A `dsh-<topic>/` package has no Pi load to run. Its equivalent is the script its manifest declares, which the release engine also runs against the packed and installed tarball:
 
    ```bash
