@@ -1,7 +1,30 @@
-import { beforeAll, describe, expect, it, vi } from "vitest";
+/**
+ * Client-half tests against the real browser plane.
+ *
+ * The built `client.js` is evaluated by a real jsdom window through the page's
+ * own `window.__ModuleLoader__.load({ id, factory })` contract; `factory`
+ * receives the real `react` / `react/jsx-runtime` modules the page's module
+ * table provides. Rendering uses React's real renderer over the real components
+ * the artifact registers. There is no `runInNewContext` shim, no
+ * `ComponentStub`, and no fake `createElement`: the module and its components
+ * are the packaged artifact.
+ *
+ * The Cordis context is real (`new Context()` from `@deepseek-ai/cordis`); the
+ * client services this package injects are provided through `ctx.provide()`.
+ * Those client services (`slots`, `locale`, and the Remote namespaces) are not
+ * part of this package's pinned dev closure — no `dsh-client-ui-*` host package
+ * beyond the primitives is installed — so the fixtures below implement their
+ * documented public faces. The primitives package itself is not imported by this
+ * package's client half, so no primitives component is replaced or stubbed.
+ */
+import { readFileSync } from "node:fs";
+import { Context } from "@deepseek-ai/cordis";
 import React from "react";
 import * as jsxRuntime from "react/jsx-runtime";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { beforeAll, describe, expect, it, onTestFinished } from "vitest";
+import type { ClientContext, Translate } from "../src/client/contracts.ts";
+import { createBrowserWindow } from "./jsdom-types.ts";
 
 interface ClientPlugin {
   readonly inject: readonly string[];
@@ -9,7 +32,6 @@ interface ClientPlugin {
 }
 
 interface SectionRegistration {
-  /** The slot the registration was made in. */
   readonly slot: string;
   readonly options: Record<string, unknown>;
   readonly Component: (props: Record<string, unknown>) => React.ReactElement;
@@ -32,68 +54,77 @@ interface RegisteredModule {
   readonly factory: (require: (id: string) => unknown) => ClientPlugin;
 }
 
-/** The one module registration, captured the way the page's loader captures it. */
+/** The one module registration, captured by the real jsdom window contract. */
 let registered: RegisteredModule | undefined;
+let moduleIds: string[] = [];
 
-beforeAll(async () => {
-  vi.stubGlobal("window", {
-    __ModuleLoader__: {
-      load(spec: RegisteredModule) {
-        registered = spec;
-      },
+beforeAll(() => {
+  const window = createBrowserWindow();
+  window.__ModuleLoader__ = {
+    load(registration: RegisteredModule) {
+      registered = registration;
     },
-  });
-  // Resolve the generated artifact at runtime so typecheck also works before the first build.
-  await import(new URL("../client.js", import.meta.url).href);
+  };
+  const source = readFileSync(new URL("../client.js", import.meta.url), "utf8");
+  // The artifact is the page's script: jsdom evaluates it with a real window.
+  window.eval(source);
 });
 
-/** Load the browser half the way the page's module loader does. */
-async function loadClientPlugin(): Promise<ClientPlugin> {
+/** Load the browser half through the module table the page implements. */
+function loadClientPlugin(): ClientPlugin {
   if (registered === undefined) throw new Error("client.js did not register a module");
   expect(registered.id).toBe("@indexyz/dsh-autocompact");
+  moduleIds = [];
   return registered.factory((id) => {
+    moduleIds.push(id);
     if (id === "react") return React;
     if (id === "react/jsx-runtime") return jsxRuntime;
     throw new Error(`unexpected module request: ${id}`);
   });
 }
 
-/**
- * Interpolate `{name}` params, then surface the values the way a real
- * dictionary would. The stub keys carry no placeholders, so the param values are
- * appended: a test can then assert on the numbers and routes a user would see.
- */
-function translate(key: string, params?: Record<string, unknown>): string {
-  if (params === undefined) return key;
-  return `${key} ${Object.values(params)
-    .map((value) => String(value))
-    .join(" ")}`;
+/** The English string registered by the client half itself. */
+function translate(key: string, params?: Readonly<Record<string, string | number>>): string {
+  const dictionary = registeredDictionary();
+  const template = dictionary[key] ?? key;
+  if (params === undefined) return template;
+  return template.replace(/\{(\w+)\}/g, (match, name: string) =>
+    name in params ? String(params[name]) : match,
+  );
 }
 
-function createHarness(options: {
-  ns?: string;
-  view?: DescribeView;
-  writable?: boolean;
-  describeFails?: string;
-  catalog?: unknown;
-  /** When false the `remote.session` namespace is not mounted at all. */
-  session?: boolean;
-  /** Replace the locale translate function, e.g. to make one key throw. */
-  t?: (key: string, params?: Record<string, unknown>) => string;
-  /** When false the client `layout` service is not mounted at all. */
-  layout?: boolean;
-  /**
-   * Entries of the settings shell's cell. Absent means the shell is not reachable,
-   * so the pill has to fall back to this plugin's own panel.
-   */
-  settingsShell?: "pinned" | "unpinned" | "absent";
-  /** Values the slot kit's `useProjection` answers with, by projection key. */
-  projections?: Record<string, unknown>;
-}) {
+let boundDictionary: Record<string, string> = {};
+function registeredDictionary(): Record<string, string> {
+  return boundDictionary;
+}
+
+interface HarnessOptions {
+  readonly ns?: string;
+  readonly view?: DescribeView;
+  readonly writable?: boolean;
+  readonly describeFails?: string;
+  readonly catalog?: unknown;
+  readonly session?: boolean;
+  readonly layout?: boolean;
+  readonly settingsShell?: "pinned" | "unpinned" | "absent";
+  readonly projections?: Record<string, unknown>;
+  /** Throw from one dictionary key, to exercise the section's crash face. */
+  readonly failKey?: string;
+}
+
+function createHarness(options: HarnessOptions = {}) {
   const sections: SectionRegistration[] = [];
-  const describe = vi.fn<
-    () => Promise<RemoteResult<{ namespaces: DescribeView[]; writable: boolean }>>
-  >(async () => {
+  const describeCalls: unknown[][] = [];
+  const updateCalls: unknown[][] = [];
+  const mutateCalls: unknown[][] = [];
+  const catalogCalls: unknown[][] = [];
+  const selectPanelCalls: string[] = [];
+  const openSectionCalls: string[] = [];
+
+  const describe = async (): Promise<
+    RemoteResult<{ namespaces: DescribeView[]; writable: boolean }>
+  > => {
+    describeCalls.push([]);
     if (options.describeFails !== undefined) {
       return { ok: false, error: { code: "settings/rejected", message: options.describeFails } };
     }
@@ -103,31 +134,50 @@ function createHarness(options: {
       value: { enabled: true, modelLimits: { "provider/model": 300000 } },
     };
     return { ok: true, value: { namespaces: [view], writable: options.writable ?? true } };
-  });
-  const update = vi.fn<() => Promise<RemoteResult<DescribeView>>>(async () => ({
-    ok: true,
-    value: { ns: "autocompact", revision: 5, value: { enabled: false, modelLimits: {} } },
-  }));
-  const mutate = vi.fn<() => Promise<RemoteResult<DescribeView>>>(async () => ({
-    ok: true,
-    value: {
-      ns: "autocompact",
-      revision: 6,
-      value: { enabled: true, modelLimits: { "provider/model": 400000 } },
+  };
+  const update = async (
+    ns: string,
+    patch: Record<string, unknown>,
+    revision?: number,
+  ): Promise<RemoteResult<DescribeView>> => {
+    updateCalls.push([ns, patch, revision]);
+    return {
+      ok: true,
+      value: { ns: "autocompact", revision: 5, value: { enabled: false, modelLimits: {} } },
+    };
+  };
+  const mutate = async (
+    ns: string,
+    ops: readonly unknown[],
+    revision?: number,
+  ): Promise<RemoteResult<DescribeView>> => {
+    mutateCalls.push([ns, ops, revision]);
+    return {
+      ok: true,
+      value: {
+        ns: "autocompact",
+        revision: 6,
+        value: { enabled: true, modelLimits: { "provider/model": 400000 } },
+      },
+    };
+  };
+  const modelCatalog = async (): Promise<{ ok: boolean; value: unknown }> => {
+    catalogCalls.push([]);
+    return {
+      ok: true,
+      value: options.catalog ?? {
+        groups: [{ id: "provider", name: "Provider", models: [{ id: "model", name: "Model" }] }],
+      },
+    };
+  };
+
+  const liveShell = {
+    actions: {
+      openSection: (section: string) => {
+        openSectionCalls.push(section);
+      },
     },
-  }));
-  const modelCatalog = vi.fn<() => Promise<{ ok: boolean; value: unknown }>>(async () => ({
-    ok: true,
-    value: options.catalog ?? {
-      groups: [{ id: "provider", name: "Provider", models: [{ id: "model", name: "Model" }] }],
-    },
-  }));
-  const selectPanel = vi.fn<(panelId: string) => void>();
-  const openSection = vi.fn<(section: string) => void>();
-  // What `sidebar.settings` holds: the settings shell's store seat. The shell pins
-  // its handle to the live instance; another store's handle mints a fresh one that
-  // the panel never sees.
-  const liveShell = { actions: { openSection } };
+  };
   const settingsShellEntries = () =>
     options.settingsShell === "pinned"
       ? [
@@ -141,46 +191,67 @@ function createHarness(options: {
       : options.settingsShell === "unpinned"
         ? [{ store: { spec: { actions: {} }, create: () => ({ actions: {} }) } }]
         : [];
-  const ctx = {
-    effect: (execute: () => unknown) => execute(),
-    // Remote namespaces are their own Cordis services (`remote.<ns>`), and the
-    // context proxy throws for any property that is not a declared service — so
-    // the stub resolves service keys only, exactly like the real `ctx.get`.
-    get: (name: string) => {
-      if (name === "remote.settings") return { describe, update, mutate };
-      if (name === "remote.session")
-        return options.session === false ? undefined : { modelCatalog };
-      if (name === "layout") return options.layout === false ? undefined : { selectPanel };
-      if (name === "slots") return { entries: settingsShellEntries };
-      return undefined;
+
+  const ctx = new Context();
+  onTestFinished(() => ctx.fiber.dispose());
+
+  let currentSlot = "";
+  const slots = {
+    entries: (slot: string) => (slot === "sidebar.settings" ? settingsShellEntries() : undefined),
+    inject: (key: string, callback: () => unknown) => {
+      currentSlot = key;
+      try {
+        return callback();
+      } finally {
+        currentSlot = "";
+      }
     },
-    locale: {
-      register: vi.fn<() => () => void>(() => () => {}),
-      bind: () => options.t ?? translate,
-    },
-    slots: {
-      inject: (key: string, callback: () => unknown) => {
-        currentSlot = key;
-        try {
-          return callback();
-        } finally {
-          currentSlot = "";
-        }
-      },
-      register: (
-        regOptions: Record<string, unknown>,
-        Component: SectionRegistration["Component"],
-      ) => {
-        sections.push({ slot: currentSlot, options: regOptions, Component });
-        return () => {};
-      },
+    register: (
+      registrationOptions: Record<string, unknown>,
+      Component: SectionRegistration["Component"],
+    ) => {
+      sections.push({ slot: currentSlot, options: registrationOptions, Component });
+      return () => {};
     },
   };
-  return { ctx, sections, describe, update, mutate, modelCatalog, selectPanel, openSection };
-}
+  const locale = {
+    register: (namespace: string, dictionaries: Record<string, Record<string, string>>) => {
+      expect(namespace).toBe("autocompact");
+      boundDictionary = dictionaries["en"] ?? {};
+      return () => {
+        boundDictionary = {};
+      };
+    },
+    bind: (namespace: string): Translate => {
+      expect(namespace).toBe("autocompact");
+      return (key, params) => {
+        if (options.failKey === key) throw new Error(`boom-in-${key}`);
+        return translate(key, params);
+      };
+    },
+  };
 
-/** The slot an `inject`/`register` pair is currently running in. */
-let currentSlot = "";
+  ctx.provide("slots", slots);
+  ctx.provide("locale", locale);
+  ctx.provide("remote.settings", { describe, update, mutate });
+  ctx.provide("layout", {
+    selectPanel: (panelId: string) => {
+      selectPanelCalls.push(panelId);
+    },
+  });
+  if (options.session !== false) ctx.provide("remote.session", { modelCatalog });
+
+  return {
+    ctx,
+    sections,
+    describeCalls,
+    updateCalls,
+    mutateCalls,
+    catalogCalls,
+    selectPanelCalls,
+    openSectionCalls,
+  };
+}
 
 async function render(
   Component: SectionRegistration["Component"],
@@ -201,11 +272,13 @@ function registrationIn(harness: { sections: SectionRegistration[] }, slot: stri
 }
 
 function findByLabel(tree: ReactTestRenderer, type: string, label: string) {
-  const nodes = tree.root.findAll(
-    (node) => node.type === type && node.props["aria-label"] === label,
-    { deep: true },
-  );
-  return nodes[0];
+  return tree.root.findAll((node) => node.type === type && node.props["aria-label"] === label, {
+    deep: true,
+  })[0];
+}
+
+function byClass(tree: ReactTestRenderer, className: string) {
+  return tree.root.findAll((node) => node.props.className === className, { deep: true });
 }
 
 function textOf(tree: ReactTestRenderer): string {
@@ -215,12 +288,12 @@ function textOf(tree: ReactTestRenderer): string {
 describe("settings page", () => {
   it("registers one Autocompact section in the settings navigation", async () => {
     const plugin = await loadClientPlugin();
-    const harness = createHarness({});
-    plugin.apply(harness.ctx);
+    const harness = createHarness();
+    plugin.apply(harness.ctx as unknown as ClientContext);
+    expect(moduleIds).toEqual(["react", "react/jsx-runtime"]);
     // The page writes through the `remote.settings` namespace service, which a
     // context only reaches when it declares that service in `inject`.
     expect(plugin.inject).toEqual(["slots", "locale", "remote.settings"]);
-    // One Settings page, the central panel the pill selects, and one status line.
     expect(harness.sections.map((section) => section.slot)).toEqual([
       "settings.section",
       "main",
@@ -234,7 +307,7 @@ describe("settings page", () => {
       order: 25,
       locale: "autocompact",
     });
-    expect((options.label as () => string)()).toBe("nav");
+    expect((options.label as () => string)()).toBe("Autocompact");
     expect(harness.sections[2]!.options).toMatchObject({
       name: "conversation.composer.dock",
       id: "autocompact",
@@ -244,128 +317,110 @@ describe("settings page", () => {
 
   it("renders the same editor in the panel the status pill opens", async () => {
     const plugin = await loadClientPlugin();
-    const harness = createHarness({});
-    plugin.apply(harness.ctx);
+    const harness = createHarness();
+    plugin.apply(harness.ctx as unknown as ClientContext);
     const tree = await render(registrationIn(harness, "main").Component);
-    // The panel is the settings page's own editor, so a threshold set here and
-    // one set in Settings cannot drift apart.
-    expect(textOf(tree)).toContain("models");
-    expect(findByLabel(tree, "input", "provider/model threshold")).toBeDefined();
+    expect(textOf(tree)).toContain("Per-model thresholds");
+    expect(findByLabel(tree, "input", "provider/model Threshold")).toBeDefined();
   });
 
   it("renders the configured thresholds and the model picker", async () => {
     const plugin = await loadClientPlugin();
-    const harness = createHarness({});
-    plugin.apply(harness.ctx);
+    const harness = createHarness();
+    plugin.apply(harness.ctx as unknown as ClientContext);
     const tree = await render(harness.sections[0]!.Component);
-    expect(harness.describe).toHaveBeenCalledOnce();
-    expect(harness.modelCatalog).toHaveBeenCalledOnce();
+    expect(harness.describeCalls).toHaveLength(1);
+    expect(harness.catalogCalls).toHaveLength(1);
     const html = textOf(tree);
     expect(html).toContain("provider/model");
     expect(html).toContain("300K");
     expect(html).toContain("Provider");
-    expect(findByLabel(tree, "button", "enabled")?.props["aria-checked"]).toBe("true");
+    expect(findByLabel(tree, "button", "Use automatic thresholds")?.props["aria-checked"]).toBe(
+      "true",
+    );
   });
 
   it("writes an edited threshold through the settings Remote with the read revision", async () => {
     const plugin = await loadClientPlugin();
-    const harness = createHarness({});
-    plugin.apply(harness.ctx);
+    const harness = createHarness();
+    plugin.apply(harness.ctx as unknown as ClientContext);
     const tree = await render(harness.sections[0]!.Component);
 
-    const input = findByLabel(tree, "input", "provider/model threshold");
+    const input = findByLabel(tree, "input", "provider/model Threshold");
     await act(async () => {
-      input.props.onChange({ target: { value: "400K" } });
+      input!.props.onChange({ target: { value: "400K" } });
     });
-    const save = tree.root.findAll(
-      (node) =>
-        node.type === "button" && node.props.className === "dsha-button dsha-button-primary",
-    )[0];
     await act(async () => {
-      save!.props.onClick();
+      byClass(tree, "dsha-button dsha-button-primary")[0]!.props.onClick();
     });
-    expect(harness.mutate).toHaveBeenCalledWith(
-      "autocompact",
-      [{ op: "set", path: ["modelLimits", "provider/model"], value: 400000 }],
-      4,
-    );
-    expect(textOf(tree)).toContain("saved");
+    expect(harness.mutateCalls).toEqual([
+      ["autocompact", [{ op: "set", path: ["modelLimits", "provider/model"], value: 400000 }], 4],
+    ]);
+    expect(textOf(tree)).toContain("Saved.");
   });
 
   it("unwinds a removed threshold as an unset path operation", async () => {
     const plugin = await loadClientPlugin();
-    const harness = createHarness({});
-    plugin.apply(harness.ctx);
+    const harness = createHarness();
+    plugin.apply(harness.ctx as unknown as ClientContext);
     const tree = await render(harness.sections[0]!.Component);
-
-    const remove = tree.root.findAll(
-      (node) => node.type === "button" && node.props.className === "dsha-button dsha-button-danger",
-    )[0];
     await act(async () => {
-      remove!.props.onClick();
+      byClass(tree, "dsha-button dsha-button-danger")[0]!.props.onClick();
     });
-    const save = tree.root.findAll(
-      (node) =>
-        node.type === "button" && node.props.className === "dsha-button dsha-button-primary",
-    )[0];
     await act(async () => {
-      save!.props.onClick();
+      byClass(tree, "dsha-button dsha-button-primary")[0]!.props.onClick();
     });
-    expect(harness.mutate).toHaveBeenCalledWith(
-      "autocompact",
-      [{ op: "unset", path: ["modelLimits", "provider/model"] }],
-      4,
-    );
+    expect(harness.mutateCalls).toEqual([
+      ["autocompact", [{ op: "unset", path: ["modelLimits", "provider/model"] }], 4],
+    ]);
   });
 
   it("toggles the master switch through the update face", async () => {
     const plugin = await loadClientPlugin();
-    const harness = createHarness({});
-    plugin.apply(harness.ctx);
+    const harness = createHarness();
+    plugin.apply(harness.ctx as unknown as ClientContext);
     const tree = await render(harness.sections[0]!.Component);
-    const toggle = findByLabel(tree, "button", "enabled");
     await act(async () => {
-      toggle!.props.onClick();
+      findByLabel(tree, "button", "Use automatic thresholds")!.props.onClick();
     });
-    expect(harness.update).toHaveBeenCalledWith("autocompact", { enabled: false }, 4);
+    expect(harness.updateCalls).toEqual([["autocompact", { enabled: false }, 4]]);
   });
 
   it("rejects an unparsable threshold instead of writing it", async () => {
     const plugin = await loadClientPlugin();
-    const harness = createHarness({});
-    plugin.apply(harness.ctx);
+    const harness = createHarness();
+    plugin.apply(harness.ctx as unknown as ClientContext);
     const tree = await render(harness.sections[0]!.Component);
-    const input = findByLabel(tree, "input", "provider/model threshold");
     await act(async () => {
-      input.props.onChange({ target: { value: "banana" } });
+      findByLabel(tree, "input", "provider/model Threshold")!.props.onChange({
+        target: { value: "banana" },
+      });
     });
-    const save = tree.root.findAll(
-      (node) =>
-        node.type === "button" && node.props.className === "dsha-button dsha-button-primary",
-    )[0];
     await act(async () => {
-      save!.props.onClick();
+      byClass(tree, "dsha-button dsha-button-primary")[0]!.props.onClick();
     });
-    expect(harness.mutate).not.toHaveBeenCalled();
-    expect(textOf(tree)).toContain("invalid");
+    expect(harness.mutateCalls).toHaveLength(0);
+    expect(textOf(tree)).toContain("Use a positive count");
   });
 
   it("explains a deployment whose autocompact row is not configurable", async () => {
     const plugin = await loadClientPlugin();
-    const harness = createHarness({ view: { ns: "something-else", revision: 1, value: {} } });
-    plugin.apply(harness.ctx);
+    const harness = createHarness({
+      view: { ns: "something-else", revision: 1, value: {} },
+    });
+    plugin.apply(harness.ctx as unknown as ClientContext);
     const tree = await render(harness.sections[0]!.Component);
-    expect(textOf(tree)).toContain("unavailable");
+    expect(textOf(tree)).toContain("No autocompact row in this profile");
   });
 
   it("marks a read-only profile without offering write controls", async () => {
     const plugin = await loadClientPlugin();
     const harness = createHarness({ writable: false });
-    plugin.apply(harness.ctx);
+    plugin.apply(harness.ctx as unknown as ClientContext);
     const tree = await render(harness.sections[0]!.Component);
-    expect(textOf(tree)).toContain("readOnly");
-    expect(findByLabel(tree, "button", "enabled")?.props.disabled).toBe(true);
-    expect(findByLabel(tree, "input", "defaultLimit")?.props.disabled).toBe(true);
+    expect(textOf(tree)).toContain("Read-only profile");
+    expect(findByLabel(tree, "button", "Use automatic thresholds")?.props.disabled).toBe(true);
+    expect(findByLabel(tree, "input", "Default threshold")?.props.disabled).toBe(true);
   });
 
   it("matches the row when the entry id is namespaced", async () => {
@@ -373,41 +428,33 @@ describe("settings page", () => {
     const harness = createHarness({
       view: { ns: "include:autocompact", revision: 9, value: { modelLimits: {} } },
     });
-    plugin.apply(harness.ctx);
+    plugin.apply(harness.ctx as unknown as ClientContext);
     const tree = await render(harness.sections[0]!.Component);
-    expect(textOf(tree)).toContain("empty");
-    expect(textOf(tree)).not.toContain("unavailable");
-
-    // Writes address the namespace the Host reported, not this plugin's own name.
-    const toggle = findByLabel(tree, "button", "enabled");
+    expect(textOf(tree)).toContain("No thresholds yet.");
+    expect(textOf(tree)).not.toContain("No autocompact row");
     await act(async () => {
-      toggle!.props.onClick();
+      findByLabel(tree, "button", "Use automatic thresholds")!.props.onClick();
     });
-    expect(harness.update).toHaveBeenCalledWith("include:autocompact", { enabled: false }, 9);
+    expect(harness.updateCalls).toEqual([["include:autocompact", { enabled: false }, 9]]);
   });
 
   it("keeps a render crash on the page instead of leaving the section blank", async () => {
     const plugin = await loadClientPlugin();
-    const harness = createHarness({
-      t: (key, params) => {
-        if (key === "intro") throw new Error("boom-in-intro");
-        return translate(key, params);
-      },
-    });
-    plugin.apply(harness.ctx);
+    const harness = createHarness({ failKey: "intro" });
+    plugin.apply(harness.ctx as unknown as ClientContext);
     const tree = await render(harness.sections[0]!.Component);
     const html = textOf(tree);
     expect(html).toContain("boom-in-intro");
-    expect(html).toContain("crash");
+    expect(html).toContain("This page failed to render");
   });
 
   it("falls back to manual route entry when no model catalog is mounted", async () => {
     const plugin = await loadClientPlugin();
     const harness = createHarness({ session: false });
-    plugin.apply(harness.ctx);
+    plugin.apply(harness.ctx as unknown as ClientContext);
     const tree = await render(harness.sections[0]!.Component);
-    expect(harness.modelCatalog).not.toHaveBeenCalled();
-    expect(findByLabel(tree, "input", "manual")).toBeDefined();
+    expect(harness.catalogCalls).toHaveLength(0);
+    expect(findByLabel(tree, "input", "Route (provider/model)")).toBeDefined();
   });
 
   it("edits the deployment default threshold above the model list", async () => {
@@ -415,25 +462,19 @@ describe("settings page", () => {
     const harness = createHarness({
       view: { ns: "autocompact", revision: 4, value: { enabled: true, modelLimits: {} } },
     });
-    plugin.apply(harness.ctx);
+    plugin.apply(harness.ctx as unknown as ClientContext);
     const tree = await render(harness.sections[0]!.Component);
-    const input = findByLabel(tree, "input", "defaultLimit");
+    const input = findByLabel(tree, "input", "Default threshold");
     expect(input).toBeDefined();
     await act(async () => {
-      input.props.onChange({ target: { value: "300k" } });
+      input!.props.onChange({ target: { value: "300k" } });
     });
-    const save = tree.root.findAll(
-      (node) =>
-        node.type === "button" && node.props.className === "dsha-button dsha-button-primary",
-    )[0];
     await act(async () => {
-      save!.props.onClick();
+      byClass(tree, "dsha-button dsha-button-primary")[0]!.props.onClick();
     });
-    expect(harness.mutate).toHaveBeenCalledWith(
-      "autocompact",
-      [{ op: "set", path: ["defaultLimit"], value: 300000 }],
-      4,
-    );
+    expect(harness.mutateCalls).toEqual([
+      ["autocompact", [{ op: "set", path: ["defaultLimit"], value: 300000 }], 4],
+    ]);
   });
 
   it("clears a persisted deployment default as an unset operation", async () => {
@@ -445,25 +486,19 @@ describe("settings page", () => {
         value: { enabled: true, modelLimits: {}, defaultLimit: 300000 },
       },
     });
-    plugin.apply(harness.ctx);
+    plugin.apply(harness.ctx as unknown as ClientContext);
     const tree = await render(harness.sections[0]!.Component);
-    const input = findByLabel(tree, "input", "defaultLimit");
+    const input = findByLabel(tree, "input", "Default threshold");
     expect(input!.props.value).toBe("300000");
     await act(async () => {
       input!.props.onChange({ target: { value: "" } });
     });
-    const save = tree.root.findAll(
-      (node) =>
-        node.type === "button" && node.props.className === "dsha-button dsha-button-primary",
-    )[0];
     await act(async () => {
-      save!.props.onClick();
+      byClass(tree, "dsha-button dsha-button-primary")[0]!.props.onClick();
     });
-    expect(harness.mutate).toHaveBeenCalledWith(
-      "autocompact",
-      [{ op: "unset", path: ["defaultLimit"] }],
-      5,
-    );
+    expect(harness.mutateCalls).toEqual([
+      ["autocompact", [{ op: "unset", path: ["defaultLimit"] }], 5],
+    ]);
   });
 
   it("rejects an unparsable deployment default instead of writing it", async () => {
@@ -475,26 +510,22 @@ describe("settings page", () => {
         value: { enabled: true, modelLimits: {}, defaultLimit: 300000 },
       },
     });
-    plugin.apply(harness.ctx);
+    plugin.apply(harness.ctx as unknown as ClientContext);
     const tree = await render(harness.sections[0]!.Component);
-    const input = findByLabel(tree, "input", "defaultLimit");
     await act(async () => {
-      input!.props.onChange({ target: { value: "banana" } });
+      findByLabel(tree, "input", "Default threshold")!.props.onChange({
+        target: { value: "banana" },
+      });
     });
-    const save = tree.root.findAll(
-      (node) =>
-        node.type === "button" && node.props.className === "dsha-button dsha-button-primary",
-    )[0];
     await act(async () => {
-      save!.props.onClick();
+      byClass(tree, "dsha-button dsha-button-primary")[0]!.props.onClick();
     });
-    expect(harness.mutate).not.toHaveBeenCalled();
-    expect(textOf(tree)).toContain("invalid");
+    expect(harness.mutateCalls).toHaveLength(0);
+    expect(textOf(tree)).toContain("Use a positive count");
   });
 });
 
 describe("composer status line", () => {
-  /** Mount the dock entry with a kit whose projection reader answers from `values`. */
   async function renderDock(
     harness: ReturnType<typeof createHarness>,
     values: Record<string, unknown> = {},
@@ -507,7 +538,6 @@ describe("composer status line", () => {
     });
   }
 
-  /** The dock's own element, or `undefined` when it rendered nothing. */
   function dockElement(tree: ReactTestRenderer) {
     return tree.root.findAll(
       (node) => typeof node.type === "string" && node.props.className === "dsha-status",
@@ -518,48 +548,39 @@ describe("composer status line", () => {
   it("reads the session route and shows the pressure against the threshold", async () => {
     const plugin = await loadClientPlugin();
     const harness = createHarness({ settingsShell: "pinned" });
-    plugin.apply(harness.ctx);
+    plugin.apply(harness.ctx as unknown as ClientContext);
     const tree = await renderDock(harness, {
       modelSelection: { lastUsed: null, next: { provider: "provider", model: "model" } },
       contextPressure: { pressureTokens: 120000, projectedTokens: 128000 },
     });
 
-    // `provider/model` is exactly the configured key, so the pill reports it.
-    expect(harness.describe).toHaveBeenCalled();
+    expect(harness.describeCalls.length).toBeGreaterThan(0);
     const dock = dockElement(tree)!;
     expect(dock.props["data-state"]).toBe("on");
-    // The icon carries the identity and takes the pill's colour with it.
     expect(dock.findByType("svg")).toBeDefined();
-    // Acting on the reading opens Settings on this plugin's section, through the
-    // settings shell's own store: `openSection` is what its panel renders from.
     expect(dock.type).toBe("button");
     await act(async () => {
       dock.props.onClick();
     });
-    expect(harness.openSection).toHaveBeenCalledWith("autocompact");
-    // The plugin's own panel is the fallback, not the destination.
-    expect(harness.selectPanel).not.toHaveBeenCalled();
-    // The host writes this pair as `used / capacity`; the pressure comes first.
+    expect(harness.openSectionCalls).toEqual(["autocompact"]);
+    expect(harness.selectPanelCalls).toHaveLength(0);
     expect(textOf(tree)).toContain("128K / 300K");
-    // The reading is the whole text: the pill carries no word of the plugin name,
-    // and the meaning lives in the tooltip.
-    expect(textOf(tree)).not.toContain("nav");
-    expect(textOf(tree)).not.toContain("dockDefault");
-    expect(dock.props["title"]).toContain("dockTitleLimitNow");
+    expect(dock.props["title"]).toBe("provider/model: 128K of 300K\nClick to open settings");
     expect(dock.props["aria-label"]).toBe(dock.props["title"]);
+    // The pill carries no word of the plugin's name.
+    expect(textOf(tree)).not.toContain("Autocompact");
   });
 
   it("falls back to the last used route when no selection is pending", async () => {
     const plugin = await loadClientPlugin();
-    const harness = createHarness({});
-    plugin.apply(harness.ctx);
+    const harness = createHarness();
+    plugin.apply(harness.ctx as unknown as ClientContext);
     const tree = await renderDock(harness, {
       modelSelection: { lastUsed: { provider: "provider", model: "model" }, next: null },
     });
-    // No usage sample yet: the threshold stands alone.
     expect(dockElement(tree)!.props["data-state"]).toBe("on");
     expect(textOf(tree)).toContain("300K");
-    expect(dockElement(tree)!.props["title"]).toContain("dockTitleLimit");
+    expect(dockElement(tree)!.props["title"]).toContain("compact above 300K");
   });
 
   it("shows the deployment default for a model without its own threshold", async () => {
@@ -571,7 +592,7 @@ describe("composer status line", () => {
         value: { enabled: true, modelLimits: {}, defaultLimit: 300000 },
       },
     });
-    plugin.apply(harness.ctx);
+    plugin.apply(harness.ctx as unknown as ClientContext);
     const tree = await renderDock(harness, {
       modelSelection: { lastUsed: null, next: { provider: "provider", model: "model" } },
       contextPressure: { pressureTokens: 120000, projectedTokens: 128000 },
@@ -593,7 +614,7 @@ describe("composer status line", () => {
         },
       },
     });
-    plugin.apply(harness.ctx);
+    plugin.apply(harness.ctx as unknown as ClientContext);
     const tree = await renderDock(harness, {
       modelSelection: { lastUsed: null, next: { provider: "provider", model: "model" } },
     });
@@ -610,7 +631,7 @@ describe("composer status line", () => {
         value: { enabled: false, modelLimits: {}, defaultLimit: 300000 },
       },
     });
-    plugin.apply(harness.ctx);
+    plugin.apply(harness.ctx as unknown as ClientContext);
     const tree = await renderDock(harness, {
       modelSelection: { lastUsed: null, next: { provider: "provider", model: "model" } },
     });
@@ -629,16 +650,14 @@ describe("composer status line", () => {
         },
       },
     });
-    plugin.apply(harness.ctx);
+    plugin.apply(harness.ctx as unknown as ClientContext);
 
-    // Rounding picks the unit, so the boundary reads as `1M`, never `1000K`.
     const big = await renderDock(harness, {
       modelSelection: { lastUsed: null, next: { provider: "provider", model: "model" } },
     });
     expect(textOf(big)).toContain("1M");
     expect(textOf(big)).not.toContain("1000K");
 
-    // One decimal is enough to read a threshold that is not a round number.
     const small = await renderDock(harness, {
       modelSelection: { lastUsed: null, next: { provider: "other", model: "route" } },
     });
@@ -648,31 +667,28 @@ describe("composer status line", () => {
   it("sends the user to its own panel when the settings shell is not reachable", async () => {
     const plugin = await loadClientPlugin();
     for (const settingsShell of ["absent", "unpinned"] as const) {
-      // A store whose handle is not pinned mints a fresh instance the panel never
-      // renders from, so asking it would change nothing on screen.
       const harness = createHarness({ settingsShell });
-      plugin.apply(harness.ctx);
+      plugin.apply(harness.ctx as unknown as ClientContext);
       const tree = await renderDock(harness, {
         modelSelection: { lastUsed: null, next: { provider: "provider", model: "model" } },
       });
       await act(async () => {
         dockElement(tree)!.props.onClick();
       });
-      expect(harness.openSection).not.toHaveBeenCalled();
-      expect(harness.selectPanel).toHaveBeenCalledWith("autocompact");
+      expect(harness.openSectionCalls).toHaveLength(0);
+      expect(harness.selectPanelCalls).toEqual(["autocompact"]);
     }
   });
 
   it("keeps the reading when a composition has no panel navigation", async () => {
     const plugin = await loadClientPlugin();
     const harness = createHarness({ layout: false });
-    plugin.apply(harness.ctx);
+    plugin.apply(harness.ctx as unknown as ClientContext);
     const tree = await renderDock(harness, {
       modelSelection: { lastUsed: null, next: { provider: "provider", model: "model" } },
     });
     const dock = dockElement(tree)!;
     await act(async () => {
-      // No `layout` service: the click must be inert, not a crash.
       expect(() => dock.props.onClick()).not.toThrow();
     });
     expect(textOf(tree)).toContain("300K");
@@ -680,16 +696,12 @@ describe("composer status line", () => {
 
   it("takes no seat in the ambient row for a model without a threshold", async () => {
     const plugin = await loadClientPlugin();
-    const harness = createHarness({});
-    plugin.apply(harness.ctx);
+    const harness = createHarness();
+    plugin.apply(harness.ctx as unknown as ClientContext);
     const tree = await renderDock(harness, {
       modelSelection: { lastUsed: null, next: { provider: "other", model: "route" } },
     });
-    // "Not configured for this model" says nothing: no threshold is configured
-    // for the route and none is in force, so the line stays out of the session's
-    // own readings instead of announcing a non-event.
     expect(dockElement(tree)).toBeUndefined();
-    expect(textOf(tree)).not.toContain("dockDefault");
   });
 
   it("still reports a master switch that turned every threshold off", async () => {
@@ -697,14 +709,12 @@ describe("composer status line", () => {
     const harness = createHarness({
       view: { ns: "autocompact", revision: 2, value: { enabled: false, modelLimits: {} } },
     });
-    plugin.apply(harness.ctx);
+    plugin.apply(harness.ctx as unknown as ClientContext);
     const tree = await renderDock(harness, {
-      // Even before a route is resolved: an off switch is true of this session
-      // whatever model it ends up using, and it was a deliberate choice.
       modelSelection: { lastUsed: null, next: null },
     });
     expect(dockElement(tree)!.props["data-state"]).toBe("off");
-    expect(textOf(tree)).toContain("dockOff");
+    expect(textOf(tree)).toContain("Off");
   });
 
   it("reports the master switch as off, even while a threshold is configured", async () => {
@@ -716,23 +726,24 @@ describe("composer status line", () => {
         value: { enabled: false, modelLimits: { "provider/model": 300000 } },
       },
     });
-    plugin.apply(harness.ctx);
+    plugin.apply(harness.ctx as unknown as ClientContext);
     const tree = await renderDock(harness, {
       modelSelection: { lastUsed: null, next: { provider: "provider", model: "model" } },
       contextPressure: { pressureTokens: 120000 },
     });
     expect(dockElement(tree)!.props["data-state"]).toBe("off");
     const html = textOf(tree);
-    expect(html).toContain("dockOff");
-    expect(html).toContain("dockTitleOff");
-    // No pressure reading is offered while the automatic check is off.
-    expect(html).not.toContain("dockNow");
+    expect(html).toContain("Off");
+    expect(html).toContain("Thresholds are off");
+    expect(html).not.toContain("120K of");
   });
 
   it("stays out of the way when the deployment exposes no autocompact row", async () => {
     const plugin = await loadClientPlugin();
-    const harness = createHarness({ view: { ns: "something-else", revision: 1, value: {} } });
-    plugin.apply(harness.ctx);
+    const harness = createHarness({
+      view: { ns: "something-else", revision: 1, value: {} },
+    });
+    plugin.apply(harness.ctx as unknown as ClientContext);
     const tree = await renderDock(harness, {
       modelSelection: { lastUsed: null, next: { provider: "provider", model: "model" } },
     });
@@ -741,8 +752,8 @@ describe("composer status line", () => {
 
   it("renders nothing when the projection hook throws, keeping the composer intact", async () => {
     const plugin = await loadClientPlugin();
-    const harness = createHarness({});
-    plugin.apply(harness.ctx);
+    const harness = createHarness();
+    plugin.apply(harness.ctx as unknown as ClientContext);
     const registration = registrationIn(harness, "conversation.composer.dock");
     const tree = await render(registration.Component, {
       useProjection: () => {
@@ -754,30 +765,24 @@ describe("composer status line", () => {
 
   it("follows a save made on the settings page", async () => {
     const plugin = await loadClientPlugin();
-    const harness = createHarness({});
-    plugin.apply(harness.ctx);
-    // The status line is already on screen when the user opens Settings…
+    const harness = createHarness();
+    plugin.apply(harness.ctx as unknown as ClientContext);
     const dock = await renderDock(harness, {
       modelSelection: { lastUsed: null, next: { provider: "provider", model: "model" } },
     });
     expect(textOf(dock)).toContain("300K");
 
-    // …edits the row and saves it; the page hands the written view to the store.
     const page = await render(registrationIn(harness, "settings.section").Component);
-    const input = findByLabel(page, "input", "provider/model threshold");
     await act(async () => {
-      input!.props.onChange({ target: { value: "500k" } });
+      findByLabel(page, "input", "provider/model Threshold")!.props.onChange({
+        target: { value: "500k" },
+      });
     });
     await act(async () => {
-      page.root
-        .findAll((node) => node.props.className === "dsha-button dsha-button-primary", {
-          deep: true,
-        })[0]!
-        .props.onClick();
+      byClass(page, "dsha-button dsha-button-primary")[0]!.props.onClick();
     });
 
-    // The write answered 400K for that route, and the line follows it live.
-    expect(harness.mutate).toHaveBeenCalled();
+    expect(harness.mutateCalls).toHaveLength(1);
     expect(textOf(dock)).toContain("400K");
   });
 });

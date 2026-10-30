@@ -1,381 +1,308 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { Context } from "@deepseek-ai/cordis";
-import type { Agent } from "@deepseek-ai/dsh-agent";
-import type { CommandDefinition, CommandInvocation } from "@deepseek-ai/dsh-commands";
+/**
+ * Autocompact behaviour against the real dsh service graph.
+ *
+ * Each test mounts the pinned host services (`SessionStore`,
+ * `SessionProjectionRegistry`, `TokenMeter`, `LlmRuntime`, `CommandRuntime`,
+ * `AgentRegistry`) and a real compaction service through `ctx.plugin()`, then
+ * mounts the plugin itself as `{ apply, inject, Config }`. Commands run through
+ * the real command registry (so `command/run` and `command/done` land in the
+ * real session log) and the pressure check runs through the real
+ * `agent/pre-step` waterfall. Model resolution uses a real `LlmAdapter` that
+ * publishes route metadata only; model streaming is credential-gated and is
+ * not asserted anywhere (task 4.1).
+ */
+import { Context } from "@deepseek-ai/cordis";
+import { CompactionEngine } from "@deepseek-ai/dsh-compaction";
+import { onTestFinished, describe, expect, it } from "vitest";
+import { Config } from "../index.ts";
+import {
+  agentFor,
+  appendUserMessages,
+  mountRuntime,
+  runCommand,
+  step,
+  warnings,
+  writeLiveConfig,
+} from "./host-plane.ts";
 
-vi.mock("../compaction.ts", () => ({
-  needsCompaction: (measurement: { totalTokens: number }, limit: number) =>
-    measurement.totalTokens > limit,
-  selectCompactableRange:
-    vi.fn<(session: unknown, measurement: unknown, retain: number) => unknown>(),
-}));
+const PROVIDER = "provider";
+const MODEL = "model";
+const ROUTE = `${PROVIDER}/${MODEL}`;
 
-import { selectCompactableRange } from "../compaction.ts";
-import { apply, Config, type AutocompactConfig } from "../index.ts";
-
-function createAgent(sessionId = "session-1", model = "model", scope: object = {}) {
-  const session = {
-    id: sessionId,
-    requestHeader: () => ({ config: { provider: "provider", model, maxTokens: 8000 } }),
-  };
-  return {
-    id: sessionId,
-    session,
-    // A preset-free fake scope: the registry finds no standing mount for it
-    // and the plugin falls back to the Host-plane lookup.
-    ctx: scope,
-    options: { provider: "provider", model },
-  } as unknown as Agent;
+interface HarnessOptions {
+  readonly pluginConfig?: Record<string, unknown>;
+  readonly contextWindow?: number | undefined;
+  readonly backend?: boolean;
+  readonly backendConfig?: { auto: boolean; retainRatio?: number; retainTokens?: number };
 }
 
-function createHarness(
-  options: {
-    pluginConfig?: AutocompactConfig;
-    tokens?: number;
-    noCapacity?: boolean;
-    engine?: Record<string, unknown>;
-    noBackend?: boolean;
-    presetBackend?: Record<string, unknown>;
-    /** How the `agentPresets` service answers. Default: `serviceFor` returns `presetBackend`. */
-    presetLookup?: "absent" | "throw";
-  } = {},
-) {
-  const listeners = new Map<string, (payload: any, next: any) => any>();
-  const definitions: CommandDefinition[] = [];
-  const compactRegion = vi.fn<(start: unknown, end: unknown, agent: unknown) => Promise<unknown>>(
-    async () => ({}),
+async function harness(options: HarnessOptions = {}) {
+  const runtime = await mountRuntime(
+    {
+      provider: PROVIDER,
+      model: MODEL,
+      contextWindow: "contextWindow" in options ? options.contextWindow : 1_000_000,
+      ...(options.backend === undefined ? {} : { backend: options.backend }),
+      ...(options.backendConfig === undefined ? {} : { backendConfig: options.backendConfig }),
+    },
+    options.pluginConfig ?? {},
   );
-  const engine =
-    options.engine ??
-    ({
-      compactRegion,
-      config: { auto: true, retainRatio: 0.16, retainTokens: 20000 },
-    } as Record<string, unknown>);
-  const serviceFor = vi.fn<(agent: unknown, service: string) => unknown>(
-    () => options.presetBackend,
-  );
-  if (options.presetLookup === "throw") {
-    serviceFor.mockImplementation(() => {
-      throw new Error("preset scope torn down");
-    });
-  }
-  const ctx = {
-    logger: {
-      info: vi.fn<(message: string) => void>(),
-      warn: vi.fn<(message: string) => void>(),
-      error: vi.fn<(message: string) => void>(),
-    },
-    on: (event: string, listener: (payload: any, next: any) => any) => {
-      listeners.set(event, listener);
-    },
-    effect: (execute: () => unknown) => execute(),
-    get: (service: string) => {
-      if (service === "agentPresets") {
-        if (options.presetLookup === "absent") return undefined;
-        return { serviceFor };
-      }
-      return service === "compaction" && options.noBackend !== true ? engine : undefined;
-    },
-    commands: {
-      register: (definition: CommandDefinition) => {
-        definitions.push(definition);
-        return () => {};
-      },
-    },
-    tokenMeter: { measure: () => ({ totalTokens: options.tokens ?? 350000 }) },
-    llm: {
-      resolveModelInfo: async () =>
-        options.noCapacity === true
-          ? {}
-          : { context: { contextWindow: 1_000_000 }, defaultMaxTokens: 8000 },
-    },
-  };
-  apply(ctx as unknown as Context, options.pluginConfig ?? {});
-  return { ctx, listeners, definitions, compactRegion, engine, serviceFor };
+  onTestFinished(() => runtime.ctx.fiber.dispose());
+  const agent = agentFor(runtime.ctx, runtime.session, PROVIDER, MODEL);
+  return { ...runtime, agent };
 }
-
-function invocation(agent: Agent, rawInput: string): CommandInvocation {
-  return {
-    commandId: "command-1" as never,
-    agent,
-    rawInput,
-    attachments: [],
-    signal: new AbortController().signal,
-  };
-}
-
-async function step(h: ReturnType<typeof createHarness>, agent: Agent) {
-  const next = vi.fn<() => { kind: string; messages: never[] }>(() => ({
-    kind: "enter",
-    messages: [],
-  }));
-  const result = await h.listeners.get("agent/pre-step")!(
-    { agent, messages: [], turn: 1, step: 1, signal: new AbortController().signal },
-    next,
-  );
-  return { next, result };
-}
-
-beforeEach(() => {
-  vi.mocked(selectCompactableRange).mockReturnValue({ start: 10, end: 20 } as never);
-});
 
 describe("session-only thresholds", () => {
   it("registers /autocompact and compacts above the session threshold at a step boundary", async () => {
-    const h = createHarness();
-    expect(h.definitions[0]?.name).toBe("autocompact");
-    expect(h.definitions[0]?.input?.hint).toBe("300k | off | default");
+    const h = await harness();
+    const definition = h.ctx.commands.find(h.agent, "autocompact");
+    expect(definition?.name).toBe("autocompact");
+    expect(definition?.input?.hint).toBe("300k | off | default");
 
-    const agent = createAgent();
-    expect(await h.definitions[0]!.handler(invocation(agent, "300k"))).toMatchObject({
+    expect(await runCommand(h.ctx, h.agent, "/autocompact 300k")).toMatchObject({
       kind: "success",
       text: expect.stringContaining("300,000 tokens (session)"),
     });
+    // The command is logged by the real command registry; it writes no config.
+    expect(h.session.snapshotEvents().map((event) => event.type)).toContain("command/run");
 
-    const { next } = await step(h, agent);
-    expect(next).toHaveBeenCalledOnce();
-    expect(h.compactRegion).toHaveBeenCalledOnce();
-    expect(h.compactRegion).toHaveBeenCalledWith(10, 20, agent, expect.anything());
+    appendUserMessages(h.session, 8);
+    expect(await runCommand(h.ctx, h.agent, "/autocompact 100")).toMatchObject({
+      kind: "success",
+      text: expect.stringContaining("100 tokens (session)"),
+    });
+
+    const result = await step(h.ctx, h.agent);
+    expect(result).toEqual({ kind: "enter", messages: [] });
+    expect(h.backend?.calls).toHaveLength(1);
+    const call = h.backend?.calls[0];
+    expect(call?.start).toBe(h.session.surface.nodes[0]);
+    expect(call?.end).toBe(h.session.surface.nodes[h.session.surface.nodes.length - 2]);
+    expect(call?.agent).toBe(h.agent);
+    expect(call?.signal).toBeInstanceOf(AbortSignal);
+    // No compaction record was fabricated into the log by the plugin.
+    expect(h.session.snapshotEvents().map((event) => event.type)).not.toContain("compaction/start");
   });
 
   it("does not compact below the threshold or without a threshold", async () => {
-    const h = createHarness();
-    const agent = createAgent();
-    await step(h, agent);
-    expect(h.compactRegion).not.toHaveBeenCalled();
+    const h = await harness();
+    await step(h.ctx, h.agent);
+    expect(h.backend?.calls).toHaveLength(0);
 
-    await h.definitions[0]!.handler(invocation(agent, "400k"));
-    await step(h, agent);
-    expect(h.compactRegion).not.toHaveBeenCalled();
+    appendUserMessages(h.session, 4);
+    await runCommand(h.ctx, h.agent, "/autocompact 400k");
+    await step(h.ctx, h.agent);
+    expect(h.backend?.calls).toHaveLength(0);
   });
 
-  it("prefers the Agent's preset-mounted backend over the Host plane", async () => {
-    const presetCompactRegion = vi.fn<
-      (start: unknown, end: unknown, agent: unknown) => Promise<unknown>
-    >(async () => ({}));
-    const h = createHarness({
-      presetBackend: {
-        compactRegion: presetCompactRegion,
-        config: { auto: true, retainRatio: 0.16, retainTokens: 20000 },
-      },
-    });
-    const agent = createAgent();
-    await h.definitions[0]!.handler(invocation(agent, "300k"));
-    await step(h, agent);
-    expect(h.serviceFor).toHaveBeenCalledWith(agent, "compaction");
-    expect(presetCompactRegion).toHaveBeenCalledOnce();
-    expect(h.compactRegion).not.toHaveBeenCalled();
-  });
-
-  it("uses the host backend when agentPresets is not mounted", async () => {
-    const h = createHarness({ presetLookup: "absent" });
-    const agent = createAgent();
-    await h.definitions[0]!.handler(invocation(agent, "300k"));
-    await step(h, agent);
-    expect(h.serviceFor).not.toHaveBeenCalled();
-    expect(h.compactRegion).toHaveBeenCalledOnce();
-  });
-
-  it("uses the host backend when the preset lookup throws", async () => {
-    const h = createHarness({ presetLookup: "throw" });
-    const agent = createAgent();
-    await h.definitions[0]!.handler(invocation(agent, "300k"));
-    await step(h, agent);
-    expect(h.serviceFor).toHaveBeenCalledWith(agent, "compaction");
-    expect(h.compactRegion).toHaveBeenCalledOnce();
+  it("uses the host-plane backend when this composition mounts no preset registry", async () => {
+    const h = await harness();
+    expect(h.ctx.get("agentPresets")).toBeUndefined();
+    appendUserMessages(h.session, 8);
+    await runCommand(h.ctx, h.agent, "/autocompact 100");
+    await step(h.ctx, h.agent);
+    expect(h.backend?.calls).toHaveLength(1);
   });
 
   it("reports a composition that mounts no compaction backend", async () => {
-    const h = createHarness({ noBackend: true });
-    const agent = createAgent();
-    expect(await h.definitions[0]!.handler(invocation(agent, "300k"))).toMatchObject({
+    const h = await harness({ backend: false });
+    expect(await runCommand(h.ctx, h.agent, "/autocompact 300k")).toMatchObject({
       kind: "error",
       text: expect.stringContaining("No compaction backend is mounted"),
     });
-    await step(h, agent);
-    expect(h.compactRegion).not.toHaveBeenCalled();
+    appendUserMessages(h.session, 8);
+    await runCommand(h.ctx, h.agent, "/autocompact 100");
+    await step(h.ctx, h.agent);
+    expect(h.backend).toBeUndefined();
   });
 
   it("keeps overrides per model and per session", async () => {
-    const h = createHarness();
-    const agent = createAgent();
-    await h.definitions[0]!.handler(invocation(agent, "300k"));
-    await step(h, agent);
-    expect(h.compactRegion).toHaveBeenCalledOnce();
+    const h = await harness();
+    await runCommand(h.ctx, h.agent, "/autocompact 100");
+    appendUserMessages(h.session, 8);
+    await step(h.ctx, h.agent);
+    expect(h.backend?.calls).toHaveLength(1);
 
     // Another model on the same session has no override.
-    await step(h, createAgent("session-1", "other-model"));
-    expect(h.compactRegion).toHaveBeenCalledOnce();
+    const other = agentFor(h.ctx, h.session, PROVIDER, "other-model");
+    await step(h.ctx, other);
+    expect(h.backend?.calls).toHaveLength(1);
 
     // A new session starts clean.
-    await step(h, createAgent("session-2"));
-    expect(h.compactRegion).toHaveBeenCalledOnce();
+    const fresh = h.ctx.sessions.create();
+    appendUserMessages(fresh, 8);
+    const freshAgent = agentFor(h.ctx, fresh, PROVIDER, MODEL);
+    await step(h.ctx, freshAgent);
+    expect(h.backend?.calls).toHaveLength(1);
   });
 
   it("lets off mask the global default and default restore inheritance", async () => {
-    const h = createHarness({
-      pluginConfig: { modelLimits: { "provider/model": 300000 } },
-    });
-    const agent = createAgent();
-    expect(await h.definitions[0]!.handler(invocation(agent, "off"))).toMatchObject({
+    const h = await harness({ pluginConfig: { modelLimits: { [ROUTE]: 100 } } });
+    appendUserMessages(h.session, 8);
+
+    expect(await runCommand(h.ctx, h.agent, "/autocompact off")).toMatchObject({
       kind: "success",
       text: expect.stringContaining("backend default compaction"),
     });
-    await step(h, agent);
-    expect(h.compactRegion).not.toHaveBeenCalled();
+    await step(h.ctx, h.agent);
+    expect(h.backend?.calls).toHaveLength(0);
 
-    expect(await h.definitions[0]!.handler(invocation(agent, "default"))).toMatchObject({
+    expect(await runCommand(h.ctx, h.agent, "/autocompact default")).toMatchObject({
       kind: "success",
-      text: expect.stringContaining("300,000 tokens (global default)"),
+      text: expect.stringContaining("100 tokens (global default)"),
     });
-    await step(h, agent);
-    expect(h.compactRegion).toHaveBeenCalledOnce();
+    await step(h.ctx, h.agent);
+    expect(h.backend?.calls).toHaveLength(1);
   });
 
   it("rejects a threshold when the mounted backend disables automatic compaction", async () => {
-    const h = createHarness({
-      engine: { compactRegion: vi.fn<(start: unknown) => void>(), config: { auto: false } },
+    const h = await harness({
+      backendConfig: { auto: false, retainRatio: 0.16, retainTokens: 1 },
     });
-    const agent = createAgent();
-    expect(await h.definitions[0]!.handler(invocation(agent, "300k"))).toMatchObject({
+    appendUserMessages(h.session, 8);
+    expect(await runCommand(h.ctx, h.agent, "/autocompact 100")).toMatchObject({
       kind: "error",
       text: expect.stringContaining("disabled by the compaction backend"),
     });
-    await step(h, agent);
-    expect(h.compactRegion).not.toHaveBeenCalled();
+    await step(h.ctx, h.agent);
+    expect(h.backend?.calls).toHaveLength(0);
   });
 
   it("reports a backend without explicit region compaction", async () => {
-    const h = createHarness({ engine: { config: { auto: true } } });
-    const agent = createAgent();
-    expect(await h.definitions[0]!.handler(invocation(agent, "300k"))).toMatchObject({
+    const h = await harness({ backend: false, pluginConfig: { defaultLimit: 100 } });
+    // The real abstract seam publishes the `compaction` service without a
+    // `compactRegion` implementation, exactly like a backend that predates it.
+    await h.ctx
+      .plugin(CompactionEngine as unknown as new (ctx: Context) => CompactionEngine)
+      .await();
+    expect(await runCommand(h.ctx, h.agent, "/autocompact 300k")).toMatchObject({
       kind: "error",
       text: expect.stringContaining("compactRegion"),
     });
-    await step(h, agent);
+    appendUserMessages(h.session, 8);
+    await step(h.ctx, h.agent);
+    expect(warnings(h.ctx).some((line) => line.includes("compactRegion"))).toBe(true);
   });
 
   it("validates the threshold against the retained budget and the real window", async () => {
-    const h = createHarness();
-    const agent = createAgent();
-    expect(await h.definitions[0]!.handler(invocation(agent, "10k"))).toMatchObject({
+    const h = await harness({
+      backendConfig: { auto: true, retainRatio: 0.16, retainTokens: 20000 },
+    });
+    expect(await runCommand(h.ctx, h.agent, "/autocompact 10k")).toMatchObject({
       kind: "error",
       text: expect.stringContaining("retained token budget"),
     });
-    expect(await h.definitions[0]!.handler(invocation(agent, "2m"))).toMatchObject({
+    expect(await runCommand(h.ctx, h.agent, "/autocompact 2m")).toMatchObject({
       kind: "error",
       text: expect.stringContaining("context window"),
     });
-    expect(await h.definitions[0]!.handler(invocation(agent, "300kb"))).toMatchObject({
+    expect(await runCommand(h.ctx, h.agent, "/autocompact 300kb")).toMatchObject({
       kind: "error",
       text: expect.stringContaining("Usage"),
     });
   });
 
   it("reports missing model context capacity without compacting", async () => {
-    const h = createHarness({ noCapacity: true });
-    const agent = createAgent();
-    expect(await h.definitions[0]!.handler(invocation(agent, "300k"))).toMatchObject({
+    const h = await harness({ contextWindow: undefined, pluginConfig: { defaultLimit: 100 } });
+    appendUserMessages(h.session, 8);
+    expect(await runCommand(h.ctx, h.agent, "/autocompact 100")).toMatchObject({
       kind: "error",
       text: expect.stringContaining("No context capacity"),
     });
-    await step(h, agent);
-    expect(h.compactRegion).not.toHaveBeenCalled();
+    await step(h.ctx, h.agent);
+    expect(h.backend?.calls).toHaveLength(0);
+    expect(warnings(h.ctx).some((line) => line.includes("no context capacity"))).toBe(true);
   });
 
   it("contains a backend failure, warns once, and still reaches the next step", async () => {
-    const h = createHarness();
-    h.compactRegion.mockRejectedValueOnce(new Error("transport error"));
-    const agent = createAgent();
-    await h.definitions[0]!.handler(invocation(agent, "300k"));
+    const h = await harness();
+    appendUserMessages(h.session, 8);
+    await runCommand(h.ctx, h.agent, "/autocompact 100");
+    if (h.backend === undefined) throw new Error("the harness mounted no backend");
+    h.backend.failNext = true;
 
-    const { next, result } = await step(h, agent);
-    expect(next).toHaveBeenCalledOnce();
+    const result = await step(h.ctx, h.agent);
     expect(result).toEqual({ kind: "enter", messages: [] });
-    expect(h.ctx.logger.warn).toHaveBeenCalledWith(expect.stringContaining("transport error"));
+    expect(warnings(h.ctx)).toContainEqual(expect.stringContaining("transport error"));
 
-    await step(h, agent);
-    expect(h.ctx.logger.warn).toHaveBeenCalledTimes(1);
+    await step(h.ctx, h.agent);
+    expect(warnings(h.ctx).filter((line) => line.includes("transport error"))).toHaveLength(1);
+    expect(h.backend.calls).toHaveLength(1);
   });
 
   it("applies the deployment default to a model without its own threshold", async () => {
-    const h = createHarness({ pluginConfig: { defaultLimit: 300000 } });
-    const agent = createAgent();
-    expect(await h.definitions[0]!.handler(invocation(agent, ""))).toMatchObject({
+    const h = await harness({ pluginConfig: { defaultLimit: 100 } });
+    appendUserMessages(h.session, 8);
+    expect(await runCommand(h.ctx, h.agent, "/autocompact")).toMatchObject({
       kind: "success",
-      text: expect.stringContaining("300,000 tokens (deployment default)"),
+      text: expect.stringContaining("100 tokens (deployment default)"),
     });
-    await step(h, agent);
-    expect(h.compactRegion).toHaveBeenCalledOnce();
+    await step(h.ctx, h.agent);
+    expect(h.backend?.calls).toHaveLength(1);
   });
 
   it("lets a per-model default win over the deployment default", async () => {
-    const h = createHarness({
-      pluginConfig: {
-        defaultLimit: 300000,
-        modelLimits: { "provider/model": 400000 },
-      },
+    const h = await harness({
+      pluginConfig: { defaultLimit: 50, modelLimits: { [ROUTE]: 100 } },
     });
-    const agent = createAgent();
-    expect(await h.definitions[0]!.handler(invocation(agent, ""))).toMatchObject({
+    appendUserMessages(h.session, 4);
+    expect(await runCommand(h.ctx, h.agent, "/autocompact")).toMatchObject({
       kind: "success",
-      text: expect.stringContaining("400,000 tokens (global default)"),
+      text: expect.stringContaining("100 tokens (global default)"),
     });
-    // 350,000 measured tokens stay below the 400,000 per-model threshold.
-    await step(h, agent);
-    expect(h.compactRegion).not.toHaveBeenCalled();
+    // Real pressure is above the deployment default but below the per-model one.
+    await step(h.ctx, h.agent);
+    expect(h.backend?.calls).toHaveLength(0);
   });
 
   it("lets a session override and off win over the deployment default", async () => {
-    const h = createHarness({ pluginConfig: { defaultLimit: 300000 } });
-    const agent = createAgent();
-    await h.definitions[0]!.handler(invocation(agent, "400k"));
-    await step(h, agent);
-    expect(h.compactRegion).not.toHaveBeenCalled();
+    const h = await harness({ pluginConfig: { defaultLimit: 10 } });
+    appendUserMessages(h.session, 4);
+    await runCommand(h.ctx, h.agent, "/autocompact 100");
+    await step(h.ctx, h.agent);
+    expect(h.backend?.calls).toHaveLength(0);
 
-    expect(await h.definitions[0]!.handler(invocation(agent, "off"))).toMatchObject({
+    expect(await runCommand(h.ctx, h.agent, "/autocompact off")).toMatchObject({
       kind: "success",
       text: expect.stringContaining("backend default compaction"),
     });
-    await step(h, agent);
-    expect(h.compactRegion).not.toHaveBeenCalled();
+    await step(h.ctx, h.agent);
+    expect(h.backend?.calls).toHaveLength(0);
   });
 
   it("sees a live Settings write to the deployment default", async () => {
-    let defaultLimit: number | undefined;
-    const h = createHarness({ pluginConfig: { defaultLimit: { get: () => defaultLimit } } });
-    const agent = createAgent();
-    await step(h, agent);
-    expect(h.compactRegion).not.toHaveBeenCalled();
+    const h = await harness();
+    appendUserMessages(h.session, 4);
+    await step(h.ctx, h.agent);
+    expect(h.backend?.calls).toHaveLength(0);
 
-    defaultLimit = 300000;
-    await step(h, agent);
-    expect(h.compactRegion).toHaveBeenCalledOnce();
+    // The Settings service writes the same volatile reference the Loader handed
+    // `apply`; the plugin re-reads it on every step.
+    writeLiveConfig(h.config.defaultLimit, 10);
+    await step(h.ctx, h.agent);
+    expect(h.backend?.calls).toHaveLength(1);
   });
 
   it("does not compact a route whose window the deployment default exceeds", async () => {
-    const h = createHarness({
-      pluginConfig: { defaultLimit: 1_000_000 },
-      tokens: 1_500_000,
-    });
-    const agent = createAgent();
-    await step(h, agent);
-    expect(h.compactRegion).not.toHaveBeenCalled();
-    expect(h.ctx.logger.warn).toHaveBeenCalledWith(expect.stringContaining("context window"));
+    const h = await harness({ contextWindow: 100, pluginConfig: { defaultLimit: 1000 } });
+    appendUserMessages(h.session, 60);
+    await step(h.ctx, h.agent);
+    expect(h.backend?.calls).toHaveLength(0);
+    expect(warnings(h.ctx).some((line) => line.includes("context window"))).toBe(true);
 
     // The warning is once per session, like every other contained failure.
-    await step(h, agent);
-    expect(h.ctx.logger.warn).toHaveBeenCalledTimes(1);
+    await step(h.ctx, h.agent);
+    expect(warnings(h.ctx).filter((line) => line.includes("context window"))).toHaveLength(1);
   });
 
-  it("fails plugin load on an invalid deployment default", () => {
-    expect(() => apply({} as unknown as Context, { defaultLimit: 0 })).toThrow(/defaultLimit/);
+  it("fails plugin load on an invalid deployment default", async () => {
+    await expect(harness({ pluginConfig: { defaultLimit: 0 } })).rejects.toThrow(/defaultLimit/);
   });
 
-  it("fails plugin load on an invalid global default", () => {
-    expect(() => apply({} as unknown as Context, { modelLimits: { "no-route": 300000 } })).toThrow(
-      /Invalid/,
-    );
+  it("fails plugin load on an invalid global default", async () => {
+    await expect(
+      harness({ pluginConfig: { modelLimits: { "no-route": 300000 } } }),
+    ).rejects.toThrow(/Invalid/);
   });
 
   it("declares the Settings-editable fields volatile", () => {
@@ -389,32 +316,27 @@ describe("session-only thresholds", () => {
   });
 
   it("sees a live Settings write through the volatile references", async () => {
-    let limits: Record<string, number> = {};
-    const h = createHarness({ pluginConfig: { modelLimits: { get: () => limits } } });
-    const agent = createAgent();
-    await step(h, agent);
-    expect(h.compactRegion).not.toHaveBeenCalled();
+    const h = await harness();
+    appendUserMessages(h.session, 4);
+    await step(h.ctx, h.agent);
+    expect(h.backend?.calls).toHaveLength(0);
 
     // The Settings page writes the same reference the Loader handed `apply`.
-    limits = { "provider/model": 300000 };
-    await step(h, agent);
-    expect(h.compactRegion).toHaveBeenCalledOnce();
+    writeLiveConfig(h.config.modelLimits, { [ROUTE]: 10 });
+    await step(h.ctx, h.agent);
+    expect(h.backend?.calls).toHaveLength(1);
   });
 
   it("honours a master switch flipped through a volatile reference", async () => {
-    let enabled = false;
-    const h = createHarness({
-      pluginConfig: {
-        modelLimits: { "provider/model": 300000 },
-        enabled: { get: () => enabled },
-      },
+    const h = await harness({
+      pluginConfig: { modelLimits: { [ROUTE]: 10 }, enabled: false },
     });
-    const agent = createAgent();
-    await step(h, agent);
-    expect(h.compactRegion).not.toHaveBeenCalled();
+    appendUserMessages(h.session, 4);
+    await step(h.ctx, h.agent);
+    expect(h.backend?.calls).toHaveLength(0);
 
-    enabled = true;
-    await step(h, agent);
-    expect(h.compactRegion).toHaveBeenCalledOnce();
+    writeLiveConfig(h.config.enabled, true);
+    await step(h.ctx, h.agent);
+    expect(h.backend?.calls).toHaveLength(1);
   });
 });

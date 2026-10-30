@@ -1,111 +1,157 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+/**
+ * Surface-range selection over a real dsh session.
+ *
+ * The previous version replaced `toolPairingBalancedBefore` with a module
+ * mock and built a plain object shaped like a Session. This version mounts the
+ * real `SessionStore`/`TokenMeter` services, creates a real session, and lets
+ * `selectCompactableRange` read the real surface and the real tool-pairing
+ * implementation from `@deepseek-ai/dsh-compaction`. The token prices are the
+ * token meter's own heuristic prices, not numbers supplied by the test.
+ */
+import { Context } from "@deepseek-ai/cordis";
+import {
+  ToolCallId,
+  createAssistantMessage,
+  createSystemMessage,
+  createToolResultMessage,
+  createUserMessage,
+} from "@deepseek-ai/dsh-llm";
+import { SessionStore } from "@deepseek-ai/dsh-session";
 import type { Session, SessionSeq } from "@deepseek-ai/dsh-session";
-
-vi.mock("@deepseek-ai/dsh-compaction", () => ({
-  toolPairingBalancedBefore: vi.fn<(session: unknown, seq: unknown) => boolean>(),
-}));
-
-import { toolPairingBalancedBefore } from "@deepseek-ai/dsh-compaction";
+import { SessionProjectionRegistry } from "@deepseek-ai/dsh-session-projection";
+import { TokenMeter } from "@deepseek-ai/dsh-token-meter";
+import type { TokenMeasurement } from "@deepseek-ai/dsh-token-meter";
+import { onTestFinished, describe, expect, it } from "vitest";
 import { needsCompaction, selectCompactableRange, systemHead } from "../compaction.ts";
 
-function session(seqs: number[], head: "system" | "message" = "message") {
-  return {
-    surface: { nodes: seqs as SessionSeq[] },
-    eventAt: (seq: SessionSeq) =>
-      seq === (seqs[0] as SessionSeq)
-        ? { type: head === "system" ? "system/message" : "user/message" }
-        : { type: "user/message" },
-  } as unknown as Session;
+async function createSession(): Promise<{ ctx: Context; session: Session }> {
+  const ctx = new Context();
+  onTestFinished(() => ctx.fiber.dispose());
+  await ctx.plugin(SessionStore).await();
+  await ctx.plugin(SessionProjectionRegistry).await();
+  await ctx.plugin(TokenMeter).await();
+  return { ctx, session: ctx.sessions.create() };
 }
 
-function measurement(entries: Array<[number, number]>) {
-  return {
-    nodes: entries.map(([seq, tokens]) => ({ seq: seq as SessionSeq, tokens })),
-  } as never;
+function appendText(session: Session, text: string): void {
+  session.append(
+    "user/message",
+    createUserMessage({ content: [{ type: "text", text }], source: { kind: "user" } }),
+    { surfaceOp: "append" },
+  );
 }
 
-beforeEach(() => {
-  vi.mocked(toolPairingBalancedBefore).mockReturnValue(true);
-});
+function measure(ctx: Context, session: Session): TokenMeasurement {
+  return ctx.tokenMeter.measure(session);
+}
+
+/** The price sum of a measurement suffix, used to pick a real retain boundary. */
+function tailTokens(measurement: TokenMeasurement, count: number): number {
+  return measurement.nodes
+    .slice(Math.max(0, measurement.nodes.length - count))
+    .reduce((sum, node) => sum + node.tokens, 0);
+}
 
 describe("surface range selection", () => {
-  it("retains the priced recent tail and summarizes only the prefix", () => {
-    const target = session([0, 1, 2, 3]);
-    const range = selectCompactableRange(
-      target,
-      measurement([
-        [0, 10],
-        [1, 10],
-        [2, 100],
-        [3, 100],
-      ]),
-      150,
-    );
-    // Walking back from node 3 accumulates 100, then 200 >= 150 at node 2.
-    expect(range).toEqual({ start: 0, end: 1 });
+  it("retains the priced recent tail and summarizes only the prefix", async () => {
+    const { ctx, session } = await createSession();
+    for (const text of ["a".repeat(40), "b".repeat(40), "c".repeat(40), "d".repeat(40)]) {
+      appendText(session, text);
+    }
+    const measurement = measure(ctx, session);
+    // Keeping the last two real prices leaves the first two messages in range.
+    const range = selectCompactableRange(session, measurement, tailTokens(measurement, 2));
+    expect(range).toEqual({
+      start: session.surface.nodes[0],
+      end: session.surface.nodes[1],
+    });
   });
 
-  it("never includes a leading system message in the range", () => {
-    const target = session([0, 1, 2, 3], "system");
-    const range = selectCompactableRange(
-      target,
-      measurement([
-        [0, 10],
-        [1, 10],
-        [2, 100],
-        [3, 100],
-      ]),
-      150,
+  it("never includes a leading system message in the range", async () => {
+    const { ctx, session } = await createSession();
+    session.append(
+      "system/message",
+      { turn: 1, step: 1, message: createSystemMessage("system prompt") },
+      { surfaceOp: "append" },
     );
-    expect(range).toEqual({ start: 1, end: 1 });
+    for (const text of ["a".repeat(40), "b".repeat(40), "c".repeat(40)]) appendText(session, text);
+    const measurement = measure(ctx, session);
+    // The last real price keeps one message; the system head still stays out.
+    const range = selectCompactableRange(session, measurement, tailTokens(measurement, 1));
+    expect(range).toEqual({
+      start: session.surface.nodes[1],
+      end: session.surface.nodes[2],
+    });
   });
 
-  it("retains more history until the kept edge is a balanced tool-call boundary", () => {
-    vi.mocked(toolPairingBalancedBefore).mockImplementation((_target, seq) => seq !== 3);
-    const target = session([0, 1, 2, 3, 4]);
-    const range = selectCompactableRange(
-      target,
-      measurement([
-        [0, 10],
-        [1, 10],
-        [2, 10],
-        [3, 100],
-        [4, 100],
-      ]),
-      150,
+  it("retains more history until the kept edge is a balanced tool-call boundary", async () => {
+    const { ctx, session } = await createSession();
+    session.append("turn/start", { turn: 1 });
+    session.append("step/start", { turn: 1, step: 1 });
+    appendText(session, "a".repeat(40));
+    const call = ToolCallId("call-1");
+    session.append(
+      "assistant/message",
+      {
+        turn: 1,
+        step: 1,
+        message: createAssistantMessage({
+          content: [{ type: "tool-call", id: call, name: "read", arguments: "{}" }],
+          source: { provider: "provider", model: "model" },
+        }),
+        stream: [],
+      },
+      { surfaceOp: "append" },
     );
-    expect(range).toEqual({ start: 0, end: 1 });
+    session.append(
+      "tool/result",
+      {
+        turn: 1,
+        step: 1,
+        message: createToolResultMessage({
+          callId: call,
+          content: [{ type: "text", text: "b".repeat(40) }],
+          isError: false,
+        }),
+      },
+      { surfaceOp: "append" },
+    );
+    session.append("step/end", { turn: 1, step: 1 });
+    appendText(session, "c".repeat(40));
+
+    const measurement = measure(ctx, session);
+    // A cut before the tool result would split the assistant call from its
+    // result, so the real pairing helper moves the kept edge past the pair.
+    const range = selectCompactableRange(session, measurement, tailTokens(measurement, 2));
+    expect(range).toEqual({
+      start: session.surface.nodes[0],
+      end: session.surface.nodes[0],
+    });
   });
 
-  it("does not generate a no-op compaction for indivisible or small contexts", () => {
-    expect(selectCompactableRange(session([0]), measurement([[0, 10]]), 100)).toBeUndefined();
-    expect(
-      selectCompactableRange(
-        session([0, 1]),
-        measurement([
-          [0, 10],
-          [1, 10],
-        ]),
-        100,
-      ),
-    ).toBeUndefined();
-    expect(selectCompactableRange(session([]), measurement([]), 100)).toBeUndefined();
+  it("does not generate a no-op compaction for indivisible or small contexts", async () => {
+    const { ctx, session } = await createSession();
+    appendText(session, "a".repeat(40));
+    const single = measure(ctx, session);
+    expect(selectCompactableRange(session, single, single.totalTokens)).toBeUndefined();
+
+    appendText(session, "b".repeat(40));
+    const pair = measure(ctx, session);
+    expect(selectCompactableRange(session, pair, pair.totalTokens)).toBeUndefined();
+
+    const empty = ctx.sessions.create();
+    expect(selectCompactableRange(empty, measure(ctx, empty), 100)).toBeUndefined();
   });
 
-  it("refuses a measurement that does not describe the current surface", () => {
-    expect(() => selectCompactableRange(session([0, 1]), measurement([[0, 10]]), 5)).toThrow(
-      /does not match/,
-    );
-    expect(() =>
-      selectCompactableRange(
-        session([0, 1]),
-        measurement([
-          [1, 10],
-          [0, 10],
-        ]),
-        5,
-      ),
-    ).toThrow(/does not match/);
+  it("refuses a measurement that does not describe the current surface", async () => {
+    const { ctx, session } = await createSession();
+    appendText(session, "a".repeat(40));
+    appendText(session, "b".repeat(40));
+    const other = ctx.sessions.create();
+    appendText(other, "c".repeat(40));
+    const foreign = measure(ctx, other);
+
+    expect(() => selectCompactableRange(session, foreign, 5)).toThrow(/does not match/);
   });
 
   it("detects only present usage above the threshold", () => {
@@ -114,9 +160,16 @@ describe("surface range selection", () => {
     expect(needsCompaction({ totalTokens: undefined as unknown as number }, 300000)).toBe(false);
   });
 
-  it("reads the surface head type", () => {
-    const target = session([7, 8], "system");
-    expect(systemHead(target, 7 as SessionSeq)).toBeDefined();
-    expect(systemHead(target, 8 as SessionSeq)).toBeUndefined();
+  it("reads the surface head type from the real session event", async () => {
+    const { session } = await createSession();
+    session.append(
+      "system/message",
+      { turn: 1, step: 1, message: createSystemMessage("system prompt") },
+      { surfaceOp: "append" },
+    );
+    appendText(session, "a".repeat(40));
+    const [head, next] = session.surface.nodes as [SessionSeq, SessionSeq];
+    expect(systemHead(session, head)).toBeDefined();
+    expect(systemHead(session, next)).toBeUndefined();
   });
 });

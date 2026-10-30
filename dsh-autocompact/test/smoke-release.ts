@@ -5,19 +5,24 @@
  * directory, and runs `node test/smoke-release.ts <installed-package-dir>`. So
  * this checks the *installed* copy only: the files `main` and `exports` promise,
  * the Host half's built entry, and the packaged client artifact, which it
- * evaluates exactly the way the Harness page does — a stub
- * `window.__ModuleLoader__` captures the one registration, and `factory` is
- * called with only the page's module table (`react`, `react/jsx-runtime`)
- * available.
+ * evaluates exactly the way the Harness page does — a real jsdom window
+ * provides the page's `window.__ModuleLoader__.load({ id, factory })` contract,
+ * and `factory` receives the real `react` / `react/jsx-runtime` modules the
+ * page's module table provides. No `ComponentStub`, fake `createElement`, or
+ * `runInNewContext` shim stands in for the browser plane.
  *
- * It uses Node built-ins only and erasable syntax, so Node runs it directly
- * from TypeScript. A missing file, a foreign module request, or a broken
- * registration exits non-zero with one line saying what broke.
+ * It uses Node built-ins and the repository's jsdom/React dev dependencies, so
+ * the release engine runs it directly from TypeScript against the packed
+ * tarball without credentials or network access. A missing file, a foreign
+ * module request, or a broken registration exits non-zero with one line saying
+ * what broke.
  */
 
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import React from "react";
+import * as jsxRuntime from "react/jsx-runtime";
+import { createBrowserWindow } from "./jsdom-types.ts";
 
 /** The module id the client artifact must register. */
 const PACKAGE_ID = "@indexyz/dsh-autocompact";
@@ -80,35 +85,21 @@ async function loadClientPlugin(
   if (!existsSync(clientPath)) fail(`the packaged client artifact is missing: ${clientPath}`);
 
   let registration: Registration | undefined;
-  Object.defineProperty(globalThis, "window", {
-    configurable: true,
-    value: {
-      __ModuleLoader__: {
-        load(spec: Registration): void {
-          registration = spec;
-        },
-      },
+  const window = createBrowserWindow();
+  window.__ModuleLoader__ = {
+    load(spec: Registration): void {
+      registration = spec;
     },
-  });
+  };
+  window.eval(readFileSync(clientPath, "utf8"));
 
   const requested: string[] = [];
-  // The page's module table, as far as a smoke install can provide it: the
-  // tarball is installed without peers, so `react` comes from the repo's dev
-  // dependencies at best — the check must not depend on that. Only
-  // `React.Component` is read while the artifact's module body runs (the two
-  // crash boundaries extend it); the hooks are called from render functions.
-  class ComponentStub {}
+  // The page's module table provides the real React modules. The artifact is
+  // evaluated in a real jsdom window, so a bundle that reached for anything
+  // outside that table fails here exactly as it would in the page.
   const modules: Record<string, unknown> = {
-    react: {
-      Component: ComponentStub,
-      createElement: (): unknown => ({}),
-      Fragment: Symbol("Fragment"),
-    },
-    "react/jsx-runtime": {
-      jsx: (): unknown => ({}),
-      jsxs: (): unknown => ({}),
-      Fragment: Symbol("Fragment"),
-    },
+    react: React,
+    "react/jsx-runtime": jsxRuntime,
   };
   const requireFromPage = (id: string): unknown => {
     requested.push(id);
@@ -117,8 +108,6 @@ async function loadClientPlugin(
     }
     return modules[id];
   };
-
-  await import(pathToFileURL(clientPath).href);
 
   if (registration === undefined) {
     fail("client.js did not register a module through window.__ModuleLoader__.load");
