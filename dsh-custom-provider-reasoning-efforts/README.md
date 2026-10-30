@@ -8,9 +8,11 @@ offers.
 dsh plugin --profile web add @indexyz/dsh-custom-provider-reasoning-efforts
 ```
 
-It is built and tested against dsh `0.2.0-rc.2` and declares that range as
+It is built and tested against dsh `0.2.2-alpha.2` and declares that range as
 `engines.dsh` (`>=0.2.0-rc.2 <0.3.0-0`), which the plugin market reads before it
-installs. Node `22.19.0` or newer is required as well.
+installs: on a harness outside it the market refuses the install instead of
+installing something that breaks. That range covers the whole `0.2.x` line through
+the `0.2.2-alpha` prereleases. Node `22.19.0` or newer is required as well.
 
 To try a repository checkout instead (after `npm install` at the repository root):
 

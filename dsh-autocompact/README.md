@@ -19,7 +19,7 @@ dsh plugin --profile web add ./dsh-autocompact
 Build output is Git-ignored. Local `link:` installs read that output directly;
 `npm pack` builds it automatically before creating a published package.
 
-It is built and tested against dsh `0.2.0-rc.2` and declares that range as
+It is built and tested against dsh `0.2.2-alpha.2` and declares that range as
 `engines.dsh` (`>=0.2.0-rc.2 <0.3.0-0`), which the plugin market reads before it
 installs: on a harness outside it the market refuses the install instead of
 installing something that breaks. That range includes `0.2.1-rc.2`. Preset

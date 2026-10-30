@@ -1,6 +1,6 @@
 # @indexyz/dsh-thread-summary
 
-Generates a concise session title from the first user prompt with a configurable summary model. Requires DSH `0.2.0-rc.2` or later in the `0.2.x` line; builds and tests pin `0.2.0-rc.2`.
+Generates a concise session title from the first user prompt with a configurable summary model. Requires DSH `0.2.0-rc.2` or later in the `0.2.x` line; builds and tests pin `0.2.2-alpha.2`.
 
 ## Install
 

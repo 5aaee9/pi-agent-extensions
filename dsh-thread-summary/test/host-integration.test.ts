@@ -1,5 +1,6 @@
 import { setImmediate } from "node:timers/promises";
 import { Context } from "@deepseek-ai/cordis";
+import { AgentRegistry } from "@deepseek-ai/dsh-agent";
 import { createUserMessage, LlmRuntime } from "@deepseek-ai/dsh-llm";
 import type { StreamChunk } from "@deepseek-ai/dsh-llm";
 import { Session, SessionStore } from "@deepseek-ai/dsh-session";
@@ -13,6 +14,7 @@ async function createHost(stream: Context["llm"]["stream"]) {
   onTestFinished(() => ctx.fiber.dispose());
   await ctx.plugin(SessionStore).await();
   await ctx.plugin(SessionProjectionRegistry).await();
+  await ctx.plugin(AgentRegistry).await();
   await ctx
     .plugin(SessionTitleService, {
       fallbackMaxWords: 5,
