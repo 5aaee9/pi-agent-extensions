@@ -50,7 +50,9 @@ These follow from Pi's extension contract; `docs/pi-reference.md` says where it 
 ## Tests
 
 - Vitest, files under `<name>/test/*.test.ts`, configured by the package's `vitest.config.ts`. `npm test` runs every package's tests; `npm run test --workspace @indexyz/<name>` runs one.
-- Test implementation modules directly; keep `index.ts` thin so most logic is testable without a running Pi.
+- Test implementation modules directly through their running host plane. A `pi-<topic>/` package test drives the package through Pi's real extension loader (the pinned `@earendil-works/pi-coding-agent`, an isolated `PI_CODING_AGENT_DIR`) and its real settings/filesystem surface; a `dsh-<topic>/` package test mounts the pinned dsh runtime and the real services its plugin injects. Replace nothing: no `vi.mock` of a host package, no hand-rolled fake settings/engine/LLM stream, no stub React or `__ModuleLoader__` harness, no `runInNewContext` browser shim. Where code performs a network call, exercise it with the real HTTP client against a real server (a locally started one when credentials are not needed). Where code streams or resolves models, drive the real LLM stack with the model the package's own settings surface selects — never an injected stream.
+- Keep `index.ts` thin for clarity and composition, not so that logic can run without its host.
+- If a path needs a credential the environment cannot hold (a live model endpoint), the test names the credential route it needs and fails; it never stubs the response and never skips silently. `docs/workflow.md` names the packages whose live-endpoint tests are deferred by owner decision; do not convert those to stand-ins.
 - Every bug fix adds a test that failed before the fix.
 - The root release tooling is tested with Node's built-in runner on its `.ts` test files (`npm run test:scripts`), not Vitest. Test helpers live next to the tests (`scripts/release/test/`).
 
