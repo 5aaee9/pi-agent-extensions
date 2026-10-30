@@ -1,43 +1,67 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ExtensionAPI, ProviderConfig } from "@earendil-works/pi-coding-agent";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import extension, { parseDiscoveredModel } from "../index.ts";
 
-interface Registration {
-  name: string;
-  config: ProviderConfig;
-}
+import type { AgentSession } from "@earendil-works/pi-coding-agent";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import { parseDiscoveredModel } from "../index.ts";
+import {
+  jsonResponse,
+  notFound,
+  startLocalServer,
+  unavailable,
+  type LocalResponse,
+  type LocalServer,
+  type RecordedRequest,
+} from "./local-server.ts";
+import {
+  loadExtensionHost,
+  recordNotifications,
+  runExtensionCommand,
+  startHostSession,
+  type ExtensionHost,
+} from "./pi-host.ts";
 
 let agentDir: string;
+let servers: LocalServer[];
+let sessions: AgentSession[];
 
 beforeEach(async () => {
   agentDir = await mkdtemp(join(tmpdir(), "pi-custom-provider-test-"));
   vi.stubEnv("PI_CODING_AGENT_DIR", agentDir);
   vi.stubEnv("CUSTOM_PROVIDER_KEY", "env-key");
+  servers = [];
+  sessions = [];
 });
 
 afterEach(async () => {
+  for (const session of sessions) session.dispose();
+  sessions = [];
+  for (const server of servers) await server.close();
+  servers = [];
   vi.unstubAllEnvs();
-  vi.unstubAllGlobals();
-  vi.restoreAllMocks();
   await rm(agentDir, { recursive: true, force: true });
 });
 
-function registerProviders() {
-  const registrations: Registration[] = [];
-  const commands: string[] = [];
-  const pi = {
-    registerProvider(name: string, config: ProviderConfig) {
-      registrations.push({ name, config });
-    },
-    registerCommand(name: string) {
-      commands.push(name);
-    },
-    on() {},
-  } as unknown as ExtensionAPI;
-  return { registrations, commands, pi };
+async function startServer(handle: (request: RecordedRequest) => LocalResponse) {
+  const server = await startLocalServer(handle);
+  servers.push(server);
+  return server;
+}
+
+async function writeProviderConfig(config: unknown): Promise<void> {
+  await writeFile(join(agentDir, "custom-provider.json"), JSON.stringify(config));
+}
+
+function loadHost(): Promise<ExtensionHost> {
+  return loadExtensionHost(agentDir, agentDir);
+}
+
+async function startSession(host: ExtensionHost): Promise<AgentSession> {
+  const session = await startHostSession(host, agentDir, agentDir);
+  sessions.push(session);
+  return session;
 }
 
 describe("upstream model metadata", () => {
@@ -114,101 +138,77 @@ describe("custom provider extension", () => {
   it.each(["openai-completions", "anthropic-messages", "openai-responses", "ollama-chat"])(
     "uses command credentials for %s discovery while preserving runtime expressions",
     async (api) => {
-      const keyCommand = "!printf '%s\\n' 'command-key'";
-      await writeFile(
-        join(agentDir, "custom-provider.json"),
-        JSON.stringify({
-          modelsDev: false,
-          providers: {
-            command: {
-              baseURL: "https://command.example",
-              api,
-              apiKey: keyCommand,
-              headers: { "x-extra": "!printf extra-value" },
-              cache: false,
-            },
-          },
-        }),
-      );
-      const calls: RequestInit[] = [];
-      vi.stubGlobal("fetch", async (_input: URL | RequestInfo, init?: RequestInit) => {
-        calls.push(init ?? {});
-        return Response.json({ data: [{ id: "test-model" }] });
+      const server = await startServer((request) => {
+        if (request.path.endsWith("/api/tags")) {
+          return jsonResponse({ models: [{ model: "test-model" }] });
+        }
+        if (request.path.endsWith("/api/show"))
+          return jsonResponse({ capabilities: ["completion"] });
+        return jsonResponse({ data: [{ id: "test-model" }] });
       });
-      const harness = registerProviders();
-      await extension(harness.pi);
-      const provider = harness.registrations[0]!.config;
+      const keyCommand = "!printf '%s\\n' 'command-key'";
+      await writeProviderConfig({
+        modelsDev: false,
+        providers: {
+          command: {
+            baseURL: server.url,
+            api,
+            apiKey: keyCommand,
+            headers: { "x-extra": "!printf extra-value" },
+            cache: false,
+          },
+        },
+      });
+      const host = await loadHost();
+      const provider = host.registrations[0]!.config;
       expect(provider.apiKey).toBe(keyCommand);
       expect(provider.headers?.["x-extra"]).toBe("!printf extra-value");
       expect(provider.models).toHaveLength(1);
-      expect(calls.length).toBeGreaterThan(0);
-      for (const call of calls) {
-        const headers = new Headers(call.headers);
-        expect(headers.get(api === "anthropic-messages" ? "x-api-key" : "authorization")).toBe(
+      expect(server.requests.length).toBeGreaterThan(0);
+      for (const request of server.requests) {
+        const authHeader = api === "anthropic-messages" ? "x-api-key" : "authorization";
+        expect(request.headers[authHeader]).toBe(
           api === "anthropic-messages" ? "command-key" : "Bearer command-key",
         );
-        expect(headers.get("x-extra")).toBe("extra-value");
+        expect(request.headers["x-extra"]).toBe("extra-value");
       }
     },
   );
 
   it("does not make an unauthenticated discovery request when a command fails", async () => {
-    await writeFile(
-      join(agentDir, "custom-provider.json"),
-      JSON.stringify({
-        modelsDev: false,
-        providers: {
-          command: {
-            baseURL: "https://command.example",
-            apiKey: "!printf secret >&2; exit 1",
-            fallbackModels: [{ id: "fallback" }],
-          },
+    const server = await startServer(() => jsonResponse({ data: [{ id: "unexpected" }] }));
+    await writeProviderConfig({
+      modelsDev: false,
+      providers: {
+        command: {
+          baseURL: server.url,
+          apiKey: "!printf secret >&2; exit 1",
+          fallbackModels: [{ id: "fallback" }],
         },
-      }),
-    );
-    const fetch = vi.fn<typeof globalThis.fetch>();
-    vi.stubGlobal("fetch", fetch);
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    const harness = registerProviders();
-    await extension(harness.pi);
-    expect(fetch).not.toHaveBeenCalled();
-    expect(harness.registrations[0]!.config.models![0]!.id).toBe("fallback");
+      },
+    });
+    const warn = vi.spyOn(console, "warn");
+    const host = await loadHost();
+
+    expect(server.requests).toHaveLength(0);
+    expect(host.registrations[0]!.config.models![0]!.id).toBe("fallback");
     expect(warn).toHaveBeenCalled();
     expect(JSON.stringify(warn.mock.calls)).not.toContain("secret");
+
+    const session = await startSession(host);
+    const notifications = recordNotifications(session);
+    await runExtensionCommand(session, "refresh-custom-provider-models");
+
+    expect(notifications).toEqual([{ message: "Custom provider models refreshed", type: "info" }]);
+    expect(JSON.stringify(notifications)).not.toContain("secret");
+    expect(server.requests).toHaveLength(0);
+    expect(session.extensionRunner.getModelRegistry().find("command", "fallback")).toBeDefined();
   });
 
   it("registers all three APIs and reads models from their configured upstream endpoints", async () => {
-    await writeFile(
-      join(agentDir, "custom-provider.json"),
-      JSON.stringify({
-        modelsDev: false,
-        providers: {
-          chat: {
-            baseURL: "https://chat.example/v1",
-            apiKey: "$CUSTOM_PROVIDER_KEY",
-            api: "openai-chat-compatible",
-          },
-          anthropic: {
-            baseURL: "https://anthropic.example",
-            apiKey: "anthropic-key",
-            api: "anthropic",
-            modelsURL: "https://anthropic.example/models",
-          },
-          responses: {
-            baseURL: "https://responses.example/v1",
-            apiKey: "responses-key",
-            api: "openai-responses",
-          },
-        },
-      }),
-    );
-
-    const calls: Array<{ url: string; init?: RequestInit }> = [];
-    vi.stubGlobal("fetch", async (input: URL | RequestInfo, init?: RequestInit) => {
-      const url = input instanceof Request ? input.url : String(input);
-      calls.push({ url, init });
-      if (url === "https://chat.example/v1/models") {
-        return Response.json({
+    const server = await startServer((request) => {
+      if (request.path === "/chat/v1/models") {
+        return jsonResponse({
           data: [
             {
               id: "chat-reasoning",
@@ -219,39 +219,52 @@ describe("custom provider extension", () => {
           ],
         });
       }
-      if (url === "https://anthropic.example/models") {
-        return Response.json({
+      if (request.path === "/anthropic/models") {
+        return jsonResponse({
           models: [
             { id: "claude-compatible", thinking: { type: "adaptive", levels: ["low", "high"] } },
           ],
         });
       }
-      if (url === "https://responses.example/v1/models") {
-        return Response.json({ data: [{ id: "plain-response" }] });
+      if (request.path === "/responses/v1/models") {
+        return jsonResponse({ data: [{ id: "plain-response" }] });
       }
-      throw new Error(`unexpected URL: ${url}`);
+      return notFound();
     });
 
-    const harness = registerProviders();
-    await extension(harness.pi);
+    await writeProviderConfig({
+      modelsDev: false,
+      providers: {
+        chat: {
+          baseURL: `${server.url}/chat/v1`,
+          apiKey: "$CUSTOM_PROVIDER_KEY",
+          api: "openai-chat-compatible",
+        },
+        anthropic: {
+          baseURL: `${server.url}/anthropic`,
+          apiKey: "anthropic-key",
+          api: "anthropic",
+          modelsURL: `${server.url}/anthropic/models`,
+        },
+        responses: {
+          baseURL: `${server.url}/responses/v1`,
+          apiKey: "responses-key",
+          api: "openai-responses",
+        },
+      },
+    });
 
-    expect(harness.registrations.map(({ name }) => name)).toEqual([
-      "chat",
-      "anthropic",
-      "responses",
-    ]);
-    expect(harness.commands).toContain("refresh-custom-provider-models");
-    expect(calls.map(({ url }) => url).sort()).toEqual(
-      [
-        "https://chat.example/v1/models",
-        "https://anthropic.example/models",
-        "https://responses.example/v1/models",
-      ].sort(),
+    const host = await loadHost();
+
+    expect(host.registrations.map(({ name }) => name)).toEqual(["chat", "anthropic", "responses"]);
+    expect(host.commands).toContain("refresh-custom-provider-models");
+    expect(server.requests.map(({ path }) => path).sort()).toEqual(
+      ["/chat/v1/models", "/anthropic/models", "/responses/v1/models"].sort(),
     );
 
-    const chat = harness.registrations[0]!;
+    const chat = host.registrations[0]!;
     expect(chat.config).toMatchObject({
-      baseUrl: "https://chat.example/v1",
+      baseUrl: `${server.url}/chat/v1`,
       api: "openai-completions",
       apiKey: "$CUSTOM_PROVIDER_KEY",
     });
@@ -262,50 +275,30 @@ describe("custom provider extension", () => {
       thinkingLevelMap: { off: null, minimal: "low", low: "low", high: "high", medium: null },
     });
 
-    const anthropic = harness.registrations[1]!;
+    const anthropic = host.registrations[1]!;
     expect(anthropic.config).toMatchObject({
-      baseUrl: "https://anthropic.example",
+      baseUrl: `${server.url}/anthropic`,
       api: "anthropic-messages",
     });
     expect(anthropic.config.models![0]).toMatchObject({
       id: "claude-compatible",
       reasoning: true,
-      baseUrl: "https://anthropic.example",
+      baseUrl: `${server.url}/anthropic`,
     });
     expect(
-      new Headers(calls.find(({ url }) => url.includes("anthropic"))!.init?.headers).get(
-        "x-api-key",
-      ),
+      server.requests.find(({ path }) => path === "/anthropic/models")!.headers["x-api-key"],
     ).toBe("anthropic-key");
   });
 
   it("enriches models from models.dev and caches the catalog separately", async () => {
-    await writeFile(
-      join(agentDir, "custom-provider.json"),
-      JSON.stringify({
-        modelsDev: {
-          apiURL: "https://metadata.example/api.json",
-          modelsURL: "https://metadata.example/models.json",
-        },
-        providers: {
-          gateway: {
-            baseURL: "https://gateway.example/v1",
-            api: "openai-responses",
-            modelsDevProvider: "deepseek",
-          },
-        },
-      }),
-    );
-
-    vi.stubGlobal("fetch", async (input: URL | RequestInfo) => {
-      const url = input instanceof Request ? input.url : String(input);
-      if (url === "https://gateway.example/v1/models") {
-        return Response.json({
+    const server = await startServer((request) => {
+      if (request.path === "/gateway/v1/models") {
+        return jsonResponse({
           data: [{ id: "deepseek/deepseek-flash-max", context_window: 8192, cost: { input: 9 } }],
         });
       }
-      if (url === "https://metadata.example/api.json") {
-        return Response.json({
+      if (request.path === "/metadata/api.json") {
+        return jsonResponse({
           deepseek: {
             models: {
               "deepseek-flash": {
@@ -318,16 +311,29 @@ describe("custom provider extension", () => {
           },
         });
       }
-      if (url === "https://metadata.example/models.json") {
-        return Response.json({
+      if (request.path === "/metadata/models.json") {
+        return jsonResponse({
           "deepseek/deepseek-flash": { modalities: { input: ["text", "image"] } },
         });
       }
-      throw new Error(`unexpected URL: ${url}`);
+      return notFound();
     });
 
-    const first = registerProviders();
-    await extension(first.pi);
+    await writeProviderConfig({
+      modelsDev: {
+        apiURL: `${server.url}/metadata/api.json`,
+        modelsURL: `${server.url}/metadata/models.json`,
+      },
+      providers: {
+        gateway: {
+          baseURL: `${server.url}/gateway/v1`,
+          api: "openai-responses",
+          modelsDevProvider: "deepseek",
+        },
+      },
+    });
+
+    const first = await loadHost();
     const model = first.registrations[0]!.config.models![0]!;
     expect(model).toMatchObject({
       id: "deepseek/deepseek-flash-max",
@@ -341,106 +347,105 @@ describe("custom provider extension", () => {
     const cache = JSON.parse(await readFile(join(agentDir, "custom-provider-models.json"), "utf8"));
     expect(cache.modelsDev.providers.deepseek.models["deepseek-flash"]).toBeDefined();
 
-    let requestCount = 0;
-    vi.stubGlobal("fetch", async () => {
-      requestCount += 1;
-      throw new Error("network unavailable");
-    });
-    const second = registerProviders();
-    await extension(second.pi);
-    expect(requestCount).toBe(0);
+    // With the upstream unreachable, the fresh on-disk cache answers on its own.
+    await server.close();
+    const second = await loadHost();
     expect(second.registrations[0]!.config.models![0]!.cost.output).toBe(0.4);
+    expect(server.requests).toHaveLength(3);
   });
 
-  it("uses a fresh cache without a network request and falls back to stale cache", async () => {
-    await writeFile(
-      join(agentDir, "custom-provider.json"),
-      JSON.stringify({
-        modelsDev: false,
-        providers: {
-          cached: {
-            baseURL: "https://cached.example/v1",
-            apiKey: "key",
-            api: "openai-responses",
-            cache: { ttlSeconds: 3600 },
-          },
-        },
-      }),
+  it("uses a fresh cache without a network request and falls back to the stale cache on an error status", async () => {
+    let upstream: "ok" | "unavailable" = "ok";
+    const server = await startServer(() =>
+      upstream === "ok" ? jsonResponse({ data: [{ id: "cached-model" }] }) : unavailable(),
     );
-
-    let requestCount = 0;
-    vi.stubGlobal("fetch", async () => {
-      requestCount += 1;
-      return Response.json({ data: [{ id: "cached-model" }] });
+    await writeProviderConfig({
+      modelsDev: false,
+      providers: {
+        cached: {
+          baseURL: `${server.url}/cached/v1`,
+          apiKey: "key",
+          api: "openai-responses",
+          cache: { ttlSeconds: 3600 },
+        },
+      },
     });
-    const first = registerProviders();
-    await extension(first.pi);
-    expect(requestCount).toBe(1);
+
+    const first = await loadHost();
+    expect(server.requests).toHaveLength(1);
     expect(first.registrations[0]!.config.models![0]!.id).toBe("cached-model");
 
-    const cache = JSON.parse(await readFile(join(agentDir, "custom-provider-models.json"), "utf8"));
+    const cacheFile = join(agentDir, "custom-provider-models.json");
+    const cache = JSON.parse(await readFile(cacheFile, "utf8"));
     expect(cache.providers.cached.models[0].id).toBe("cached-model");
 
-    vi.stubGlobal("fetch", async () => {
-      throw new Error("network unavailable");
-    });
-    const second = registerProviders();
-    await extension(second.pi);
+    // A fresh cache answers without touching the network.
+    const second = await loadHost();
     expect(second.registrations[0]!.config.models![0]!.id).toBe("cached-model");
+    expect(server.requests).toHaveLength(1);
+
+    // Expire the cache and let the real client see HTTP 503: discovery fails and
+    // the stale cached models are used instead.
+    cache.providers.cached.fetchedAt = Date.now() - 7_200_000;
+    await writeFile(cacheFile, JSON.stringify(cache));
+    upstream = "unavailable";
+    const third = await loadHost();
+    expect(third.registrations[0]!.config.models![0]!.id).toBe("cached-model");
+    expect(server.requests.map(({ path }) => path)).toEqual([
+      "/cached/v1/models",
+      "/cached/v1/models",
+    ]);
   });
 
   it("applies reasoningPattern, modelDefaults, and fallbackModels", async () => {
-    await writeFile(
-      join(agentDir, "custom-provider.json"),
-      JSON.stringify({
-        modelsDev: false,
-        providers: {
-          gateway: {
-            baseURL: "https://gateway.example",
-            api: "anthropic",
-            apiKey: "key",
-            reasoningPattern: "glm-5",
-            modelDefaults: {
-              input: ["text", "image"],
-              thinkingLevelMap: { xhigh: "max", max: "max" },
-            },
-          },
-          offline: {
-            baseURL: "https://offline.example",
-            api: "anthropic",
-            fallbackModels: [
-              {
-                id: "fallback-model",
-                display_name: "Fallback",
-                max_input_tokens: 500_000,
-                max_tokens: 32_000,
-                reasoning: true,
-                input: ["text", "image"],
-              },
-            ],
-          },
-        },
-      }),
-    );
-
-    vi.stubGlobal("fetch", async (input: URL | RequestInfo) => {
-      const url = input instanceof Request ? input.url : String(input);
-      if (url === "https://gateway.example/v1/models") {
-        return Response.json({
+    const server = await startServer((request) => {
+      if (request.path === "/gateway/v1/models") {
+        return jsonResponse({
           data: [
             { id: "glm-5.3", max_input_tokens: 1_000_000, max_tokens: 128_000 },
             { id: "plain-model" },
           ],
         });
       }
-      throw new Error(`unexpected URL: ${url}`);
+      // The "offline" provider's endpoint rejects the request, so the real
+      // client observes an error status and discovery falls back.
+      return unavailable();
     });
 
-    const harness = registerProviders();
-    await extension(harness.pi);
+    await writeProviderConfig({
+      modelsDev: false,
+      providers: {
+        gateway: {
+          baseURL: `${server.url}/gateway`,
+          api: "anthropic",
+          apiKey: "key",
+          reasoningPattern: "glm-5",
+          modelDefaults: {
+            input: ["text", "image"],
+            thinkingLevelMap: { xhigh: "max", max: "max" },
+          },
+        },
+        offline: {
+          baseURL: `${server.url}/offline`,
+          api: "anthropic",
+          fallbackModels: [
+            {
+              id: "fallback-model",
+              display_name: "Fallback",
+              max_input_tokens: 500_000,
+              max_tokens: 32_000,
+              reasoning: true,
+              input: ["text", "image"],
+            },
+          ],
+        },
+      },
+    });
 
-    const gateway = harness.registrations.find((r) => r.name === "gateway")!;
-    const glm = gateway.config.models!.find((m) => m.id === "glm-5.3")!;
+    const host = await loadHost();
+
+    const gateway = host.registrations.find((entry) => entry.name === "gateway")!;
+    const glm = gateway.config.models!.find((model) => model.id === "glm-5.3")!;
     expect(glm).toMatchObject({
       reasoning: true,
       input: ["text", "image"],
@@ -448,11 +453,11 @@ describe("custom provider extension", () => {
       maxTokens: 128_000,
       thinkingLevelMap: { xhigh: "max", max: "max" },
     });
-    const plain = gateway.config.models!.find((m) => m.id === "plain-model")!;
+    const plain = gateway.config.models!.find((model) => model.id === "plain-model")!;
     expect(plain.reasoning).toBe(false);
     expect(plain.thinkingLevelMap).toBeUndefined();
 
-    const offline = harness.registrations.find((r) => r.name === "offline")!;
+    const offline = host.registrations.find((entry) => entry.name === "offline")!;
     expect(offline.config.models![0]).toMatchObject({
       id: "fallback-model",
       reasoning: true,
@@ -460,92 +465,71 @@ describe("custom provider extension", () => {
       contextWindow: 500_000,
       maxTokens: 32_000,
     });
+    expect(server.requests.map(({ path }) => path).sort()).toEqual(
+      ["/gateway/v1/models", "/offline/v1/models"].sort(),
+    );
   });
 
   it("injects the configured session affinity header with the pi session id", async () => {
-    await writeFile(
-      join(agentDir, "custom-provider.json"),
-      JSON.stringify({
-        modelsDev: false,
-        providers: {
-          zcode: {
-            baseURL: "https://zcode.example",
-            api: "anthropic",
-            apiKey: "key",
-            sessionAffinityHeader: "x-session-id",
-          },
-          other: { baseURL: "https://other.example", api: "openai-completions", apiKey: "key" },
-        },
-      }),
+    const server = await startServer((request) =>
+      request.path.endsWith("/models") ? jsonResponse({ data: [{ id: "m1" }] }) : notFound(),
     );
-
-    vi.stubGlobal("fetch", async () => Response.json({ data: [{ id: "m1" }] }));
-
-    const handlers: Array<(event: any, ctx: any) => void> = [];
-    const registrations: Registration[] = [];
-    const pi = {
-      registerProvider(name: string, config: ProviderConfig) {
-        registrations.push({ name, config });
+    await writeProviderConfig({
+      modelsDev: false,
+      providers: {
+        zcode: {
+          baseURL: `${server.url}/zcode`,
+          api: "anthropic",
+          apiKey: "key",
+          sessionAffinityHeader: "x-session-id",
+        },
+        other: {
+          baseURL: `${server.url}/other`,
+          api: "openai-completions",
+          apiKey: "key",
+        },
       },
-      registerCommand() {},
-      on(event: string, handler: (event: any, ctx: any) => void) {
-        if (event === "before_provider_headers") handlers.push(handler);
-      },
-    } as unknown as ExtensionAPI;
+    });
 
-    await extension(pi);
-    expect(handlers.length).toBe(1);
+    const host = await loadHost();
+    expect(host.loaded.extensions[0]!.handlers.get("before_provider_headers")).toHaveLength(1);
+    const session = await startSession(host);
+    const registry = session.extensionRunner.getModelRegistry();
 
-    const event = { headers: {} as Record<string, string> };
-    const ctx = {
-      model: { provider: "zcode" },
-      sessionManager: { getSessionId: () => "session-uuid-1" },
-    };
-    handlers[0]!(event, ctx);
-    expect(event.headers["x-session-id"]).toBe("session-uuid-1");
+    const zcode = registry.find("zcode", "m1");
+    if (!zcode) throw new Error("zcode/m1 was not registered by the extension");
+    await session.setModel(zcode);
+    const headers = await session.extensionRunner.emitBeforeProviderHeaders({});
+    expect(headers["x-session-id"]).toBe(session.sessionManager.getSessionId());
 
-    const otherEvent = { headers: {} as Record<string, string> };
-    handlers[0]!(otherEvent, { ...ctx, model: { provider: "other" } });
-    expect(otherEvent.headers["x-session-id"]).toBeUndefined();
+    const other = registry.find("other", "m1");
+    if (!other) throw new Error("other/m1 was not registered by the extension");
+    await session.setModel(other);
+    const otherHeaders = await session.extensionRunner.emitBeforeProviderHeaders({});
+    expect(otherHeaders["x-session-id"]).toBeUndefined();
   });
 
   it("discovers Ollama models via /api/tags + /api/show and streams /api/chat", async () => {
-    await writeFile(
-      join(agentDir, "custom-provider.json"),
-      JSON.stringify({
-        modelsDev: false,
-        providers: {
-          ollama: {
-            baseURL: "http://localhost:11434",
-            api: "ollama",
-          },
-        },
-      }),
-    );
-
-    const calls: Array<{ url: string; init?: RequestInit }> = [];
-    vi.stubGlobal("fetch", async (input: URL | RequestInfo, init?: RequestInit) => {
-      const url = input instanceof Request ? input.url : String(input);
-      calls.push({ url, init });
-      if (url === "http://localhost:11434/api/tags") {
-        return Response.json({
+    const server = await startServer((request) => {
+      if (request.path === "/api/tags") {
+        return jsonResponse({
           models: [{ model: "qwen3:8b", name: "qwen3:8b" }, { model: "llama3.2" }],
         });
       }
-      if (url === "http://localhost:11434/api/show") {
-        const body = JSON.parse(String(init?.body));
+      if (request.path === "/api/show") {
+        const body = JSON.parse(request.body) as { model?: string };
         if (body.model === "qwen3:8b") {
-          return Response.json({
+          return jsonResponse({
             capabilities: ["completion", "tools", "thinking"],
             model_info: { "qwen3.context_length": 40960 },
           });
         }
-        return Response.json({
+        return jsonResponse({
           capabilities: ["completion", "vision"],
           model_info: { "llama.context_length": 131072 },
         });
       }
-      if (url === "http://localhost:11434/api/chat") {
+      if (request.path === "/api/chat") {
         const chunks = [
           { model: "qwen3:8b", message: { role: "assistant", thinking: "thinking " }, done: false },
           { model: "qwen3:8b", message: { role: "assistant", thinking: "hard" }, done: false },
@@ -561,31 +545,40 @@ describe("custom provider extension", () => {
             eval_count: 2,
           },
         ];
-        return new Response(chunks.map((chunk) => JSON.stringify(chunk)).join("\n") + "\n", {
+        return {
           status: 200,
           headers: { "content-type": "application/x-ndjson" },
-        });
+          body: `${chunks.map((chunk) => JSON.stringify(chunk)).join("\n")}\n`,
+        };
       }
-      throw new Error(`unexpected URL: ${url}`);
+      return notFound();
     });
 
-    const harness = registerProviders();
-    await extension(harness.pi);
+    await writeProviderConfig({
+      modelsDev: false,
+      providers: {
+        ollama: {
+          baseURL: server.url,
+          api: "ollama",
+        },
+      },
+    });
 
-    const ollama = harness.registrations[0]!;
+    const host = await loadHost();
+    const ollama = host.registrations[0]!;
     expect(ollama.config).toMatchObject({
-      baseUrl: "http://localhost:11434",
+      baseUrl: server.url,
       api: "ollama-chat",
     });
     expect(ollama.config.streamSimple).toBeTypeOf("function");
 
-    const qwen = ollama.config.models!.find((m) => m.id === "qwen3:8b")!;
+    const qwen = ollama.config.models!.find((model) => model.id === "qwen3:8b")!;
     expect(qwen).toMatchObject({
       reasoning: true,
       contextWindow: 40960,
-      baseUrl: "http://localhost:11434",
+      baseUrl: server.url,
     });
-    const llama = ollama.config.models!.find((m) => m.id === "llama3.2")!;
+    const llama = ollama.config.models!.find((model) => model.id === "llama3.2")!;
     expect(llama).toMatchObject({
       reasoning: false,
       input: ["text", "image"],
@@ -616,8 +609,8 @@ describe("custom provider extension", () => {
     );
     for await (const event of stream) events.push(event);
 
-    const chatCall = calls.find(({ url }) => url.endsWith("/api/chat"))!;
-    const chatBody = JSON.parse(String(chatCall.init?.body));
+    const chatCall = server.requests.find(({ path }) => path === "/api/chat")!;
+    const chatBody = JSON.parse(chatCall.body);
     expect(chatBody).toMatchObject({
       model: "qwen3:8b",
       stream: true,
@@ -647,32 +640,24 @@ describe("custom provider extension", () => {
   });
 
   it("registers refreshModels that rediscovers with the auth credential", async () => {
-    await writeFile(
-      join(agentDir, "custom-provider.json"),
-      JSON.stringify({
-        modelsDev: false,
-        providers: {
-          refreshable: {
-            baseURL: "https://refresh.example",
-            api: "anthropic",
-            apiKey: "config-key",
-            authHeader: "authorization",
-          },
+    const server = await startServer(() => jsonResponse({ data: [{ id: "model-v1" }] }));
+    await writeProviderConfig({
+      modelsDev: false,
+      providers: {
+        refreshable: {
+          baseURL: `${server.url}/refresh`,
+          api: "anthropic",
+          apiKey: "config-key",
+          authHeader: "authorization",
         },
-      }),
-    );
-
-    const seenAuth: Array<string | null> = [];
-    vi.stubGlobal("fetch", async (input: URL | RequestInfo, init?: RequestInit) => {
-      seenAuth.push(new Headers(init?.headers).get("authorization"));
-      return Response.json({ data: [{ id: "model-v1" }] });
+      },
     });
 
-    const harness = registerProviders();
-    await extension(harness.pi);
-    expect(seenAuth).toEqual(["Bearer config-key"]);
+    const host = await loadHost();
+    const seenAuth = () => server.requests.map((request) => request.headers.authorization ?? null);
+    expect(seenAuth()).toEqual(["Bearer config-key"]);
 
-    const provider = harness.registrations[0]!;
+    const provider = host.registrations[0]!;
     // The key must stay on apiKey (with authHeader asking pi to send it as a
     // Bearer token): hiding it inside headers leaves the provider
     // "unconfigured", so pi filters its models out of the model list.
@@ -688,7 +673,7 @@ describe("custom provider extension", () => {
       signal: new AbortController().signal,
       publish: async () => true,
     });
-    expect(seenAuth).toEqual(["Bearer config-key", "Bearer stored-key"]);
+    expect(seenAuth()).toEqual(["Bearer config-key", "Bearer stored-key"]);
     expect(refreshed[0]!.id).toBe("model-v1");
   });
 });
