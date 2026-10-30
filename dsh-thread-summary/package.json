@@ -1,6 +1,6 @@
 {
   "name": "@indexyz/dsh-thread-summary",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Generate concise session titles from the first user prompt",
   "license": "MIT",
   "author": "5aaee9",
