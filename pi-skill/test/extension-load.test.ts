@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 const extensionPath = fileURLToPath(new URL("../index.ts", import.meta.url));
 const codingAgentEntry = fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"));
@@ -13,14 +13,12 @@ const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
 afterEach(() => {
   if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
   else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
-  vi.restoreAllMocks();
 });
 
 describe("Pi extension loading", () => {
   it("loads through Pi's real extension loader and registers an input handler", async () => {
     const agentDir = await mkdtemp(join(tmpdir(), "pi-skill-load-"));
     process.env.PI_CODING_AGENT_DIR = agentDir;
-    vi.spyOn(console, "error").mockImplementation(() => undefined);
 
     try {
       const { loadExtensions } = await import(loaderUrl);
