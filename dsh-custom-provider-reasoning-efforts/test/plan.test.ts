@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { planProviders } from "../plan.ts";
 
-import { magpieProfile } from "./fixture.ts";
+import { createHost, magpieProfile } from "./fixture.ts";
 
 describe("planProviders", () => {
   it("adds the declared field without touching the rest of the entry", () => {
@@ -307,6 +307,24 @@ describe("planProviders", () => {
         after: "Kimi K3 Renamed",
       },
     ]);
+  });
+
+  it("plans against the live settings descriptor's user layer", async () => {
+    const host = await createHost();
+    const plan = planProviders(host.descriptor()?.user, [
+      { route: "magpie", model: "ollama-cloud/kimi-k3", value: { low: "low", high: "high" } },
+    ]);
+    expect(plan.changes).toEqual([
+      {
+        field: "reasoningEfforts",
+        route: "magpie",
+        model: "ollama-cloud/kimi-k3",
+        before: undefined,
+        after: { low: "low", high: "high" },
+      },
+    ]);
+    const providers = plan.providers as { magpie: { models: Array<Record<string, unknown>> } };
+    expect(providers.magpie.models[0]?.["reasoningEfforts"]).toEqual({ low: "low", high: "high" });
   });
 
   it("carries the field on a skip when the profile carries no providers table", () => {

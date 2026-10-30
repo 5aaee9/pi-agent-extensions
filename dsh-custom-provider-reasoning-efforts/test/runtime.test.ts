@@ -1,12 +1,11 @@
-import { describe, expect, it, vi } from "vitest";
+import { Context } from "@deepseek-ai/cordis";
+import { describe, expect, it, onTestFinished } from "vitest";
 
 import type { SettingsSeam } from "../apply.ts";
 import {
   createRuntime,
   describeResult,
   runUntilAvailable,
-  type CredentialSeam,
-  type LoggerSeam,
   type RunMode,
   type RunSummary,
   type Runtime,
@@ -17,42 +16,23 @@ import {
 import {
   codexInventory,
   codexManifest,
-  codexProfile,
-  fakeSettings,
+  codexProviders,
+  createHost,
   magpieListing,
-  magpieProfile,
+  magpieProviders,
+  modelField,
+  routeModels,
+  routeProviders,
+  setEnvironment,
+  startServer,
   visionListing,
 } from "./fixture.ts";
-
-function fakeFetch(
-  body: unknown,
-  ok = true,
-): { readonly fetchImpl: typeof fetch; readonly urls: string[] } {
-  const urls: string[] = [];
-  const fetchImpl = (async (input: unknown): Promise<Response> => {
-    urls.push(String(input));
-    return new Response(JSON.stringify(body), { status: ok ? 200 : 500 });
-  }) as unknown as typeof fetch;
-  return { fetchImpl, urls };
-}
-
-function logger(): LoggerSeam & { readonly warned: string[] } {
-  const warned: string[] = [];
-  return {
-    warned,
-    debug: vi.fn<(message: string) => void>(),
-    info: vi.fn<(message: string) => void>(),
-    warn: (message: string) => {
-      warned.push(message);
-    },
-  };
-}
 
 const declarations = {
   magpie: {
     "ollama-cloud/kimi-k3": { low: "low", high: "high", max: "max" },
   },
-} as const;
+};
 
 function options(overrides: Partial<RuntimeOptions> = {}): RuntimeOptions {
   return {
@@ -65,191 +45,181 @@ function options(overrides: Partial<RuntimeOptions> = {}): RuntimeOptions {
   };
 }
 
-function deps(overrides: Partial<RuntimeDeps> = {}): RuntimeDeps {
-  return { logger: logger(), env: {}, ...overrides };
+function deps(ctx: Context, overrides: Partial<RuntimeDeps> = {}): RuntimeDeps {
+  return { logger: ctx.logger, ...overrides };
 }
 
-describe("createRuntime", () => {
+describe("createRuntime on the real settings plane", () => {
   it("reports unavailable when no settings service is mounted", async () => {
-    const runtime = createRuntime(options(), deps());
+    const ctx = new Context();
+    onTestFinished(async () => {
+      await ctx.fiber.dispose();
+    });
+    const runtime = createRuntime(options(), deps(ctx));
     const summary = await runtime.run("apply");
+
     expect(summary.result.kind).toBe("unavailable");
     expect(summary.probed).toEqual([]);
   });
 
   it("applies the row's explicit declarations without touching the network", async () => {
-    const fake = fakeSettings(magpieProfile());
-    const fetchSpy = vi.fn<typeof fetch>();
-    const runtime = createRuntime(
-      options(),
-      deps({ settings: () => fake.seam, fetchImpl: fetchSpy }),
-    );
+    const server = await startServer({});
+    const host = await createHost({
+      providers: routeProviders(magpieProviders(), "magpie", { baseURL: `${server.url}/v1` }),
+    });
+    const runtime = createRuntime(options(), deps(host.ctx, { settings: () => host.ctx.settings }));
     const summary = await runtime.run("apply");
+
     expect(summary.result.kind).toBe("applied");
     expect(summary.result.changes).toHaveLength(1);
-    expect(fetchSpy).not.toHaveBeenCalled();
-    expect(fake.calls).toHaveLength(1);
+    expect(server.requests).toEqual([]);
+    expect(host.providers()?.["magpie"]).toBeDefined();
   });
 
   it("plans without writing in status mode", async () => {
-    const fake = fakeSettings(magpieProfile());
-    const runtime = createRuntime(options(), deps({ settings: () => fake.seam }));
+    const host = await createHost();
+    const runtime = createRuntime(options(), deps(host.ctx, { settings: () => host.ctx.settings }));
     const summary = await runtime.run("status");
+
     expect(summary.mode).toBe("status");
     expect(summary.result.kind).toBe("pending");
-    expect(fake.calls).toEqual([]);
+    expect(await host.readPatch()).not.toContain("reasoningEfforts");
   });
 
   it("removes the declared fields in clear mode", async () => {
-    const fake = fakeSettings(magpieProfile());
-    await createRuntime(options(), deps({ settings: () => fake.seam })).run("apply");
-    const summary = await createRuntime(options(), deps({ settings: () => fake.seam })).run(
-      "clear",
+    const host = await createHost();
+    await createRuntime(options(), deps(host.ctx, { settings: () => host.ctx.settings })).run(
+      "apply",
     );
+    const summary = await createRuntime(
+      options(),
+      deps(host.ctx, { settings: () => host.ctx.settings }),
+    ).run("clear");
+
     expect(summary.result.kind).toBe("applied");
-    const providers = fake.state.user["providers"] as {
-      magpie: { models: Array<Record<string, unknown>> };
-    };
-    expect(providers.magpie.models[0]).not.toHaveProperty("reasoningEfforts");
+    expect(
+      modelField(host.providers(), "magpie", "ollama-cloud/kimi-k3", "reasoningEfforts"),
+    ).toBeUndefined();
   });
 
   it("discovers the endpoint's levels for the models the route declares", async () => {
-    const fake = fakeSettings(magpieProfile());
-    const { fetchImpl, urls } = fakeFetch(magpieListing());
-    const runtime = createRuntime(
-      options(),
-      deps({
-        settings: () => fake.seam,
-        fetchImpl,
-        env: { MAGPIE_API_KEY: "secret" },
-      }),
-    );
+    const server = await startServer({ "/v1/models": { body: magpieListing() } });
+    setEnvironment("MAGPIE_API_KEY", "secret");
+    const host = await createHost({
+      providers: routeProviders(magpieProviders(), "magpie", { baseURL: `${server.url}/v1` }),
+    });
+    const runtime = createRuntime(options(), deps(host.ctx, { settings: () => host.ctx.settings }));
     const summary = await runtime.run("discover");
+
     expect(summary.probed).toEqual(["magpie"]);
     expect(summary.failures).toEqual([]);
-    expect(urls).toEqual(["https://magpie.indexyz.me/v1/models"]);
-    const providers = fake.state.user["providers"] as {
-      magpie: { models: Array<Record<string, unknown>> };
-    };
-    expect(providers.magpie.models[0]?.["reasoningEfforts"]).toEqual({
-      low: "low",
-      high: "high",
-      max: "max",
-    });
-    expect(providers.magpie.models[1]?.["reasoningEfforts"]).toEqual({
-      low: "low",
-      high: "high",
-      max: "max",
-    });
-    expect(providers.magpie.models).toHaveLength(2);
+    expect(server.requests.map((request) => request.url)).toEqual(["/v1/models"]);
+    expect(server.requests[0]?.headers["authorization"]).toBe("Bearer secret");
+    const models = routeModels(host.providers(), "magpie");
+    expect(models[0]?.["reasoningEfforts"]).toEqual({ low: "low", high: "high", max: "max" });
+    expect(models[1]?.["reasoningEfforts"]).toEqual({ low: "low", high: "high", max: "max" });
+    expect(models).toHaveLength(2);
   });
 
   it("keeps the row's declaration when the endpoint disagrees", async () => {
-    const fake = fakeSettings(magpieProfile());
-    const { fetchImpl } = fakeFetch(magpieListing());
+    const server = await startServer({ "/v1/models": { body: magpieListing() } });
+    const host = await createHost({
+      providers: routeProviders(magpieProviders(), "magpie", { baseURL: `${server.url}/v1` }),
+    });
     const runtime = createRuntime(
-      options({
-        declarations: { magpie: { "ollama-cloud/kimi-k3": { low: "low" } } },
-      }),
-      deps({ settings: () => fake.seam, fetchImpl, env: { MAGPIE_API_KEY: "secret" } }),
+      options({ declarations: { magpie: { "ollama-cloud/kimi-k3": { low: "low" } } } }),
+      deps(host.ctx, { settings: () => host.ctx.settings }),
     );
     await runtime.run("discover");
-    const providers = fake.state.user["providers"] as {
-      magpie: { models: Array<Record<string, unknown>> };
-    };
-    expect(providers.magpie.models[0]?.["reasoningEfforts"]).toEqual({ low: "low" });
-    expect(providers.magpie.models[1]?.["reasoningEfforts"]).toEqual({
-      low: "low",
-      high: "high",
-      max: "max",
-    });
+
+    const models = routeModels(host.providers(), "magpie");
+    expect(models[0]?.["reasoningEfforts"]).toEqual({ low: "low" });
+    expect(models[1]?.["reasoningEfforts"]).toEqual({ low: "low", high: "high", max: "max" });
   });
 
   it("discovers the modalities a listing publishes for a declared vision model", async () => {
-    const fake = fakeSettings(magpieProfile());
-    const { fetchImpl } = fakeFetch(visionListing());
+    const server = await startServer({ "/v1/models": { body: visionListing() } });
+    const host = await createHost({
+      providers: routeProviders(magpieProviders(), "magpie", { baseURL: `${server.url}/v1` }),
+    });
     const runtime = createRuntime(
       options({ declarations: {} }),
-      deps({ settings: () => fake.seam, fetchImpl, env: { MAGPIE_API_KEY: "secret" } }),
+      deps(host.ctx, { settings: () => host.ctx.settings }),
     );
     const summary = await runtime.run("discover");
+
     expect(summary.result.kind).toBe("applied");
     expect(summary.result.changes.map((change) => change.field)).toEqual(["input"]);
-    const providers = fake.state.user["providers"] as {
-      magpie: { models: Array<Record<string, unknown>> };
-    };
-    expect(providers.magpie.models[0]?.["input"]).toEqual(["text", "image"]);
-    expect(providers.magpie.models[1]?.["input"]).toBeUndefined();
+    const models = routeModels(host.providers(), "magpie");
+    expect(models[0]?.["input"]).toEqual(["text", "image"]);
+    expect(models[1]?.["input"]).toBeUndefined();
     expect(summary.result.skipped).toEqual([]);
   });
 
   it("writes nothing for a listing that publishes text only", async () => {
-    const fake = fakeSettings(magpieProfile());
-    const { fetchImpl } = fakeFetch({
-      data: [{ id: "ollama-cloud/kimi-k3", input_modalities: ["text"] }],
+    const server = await startServer({
+      "/v1/models": {
+        body: { data: [{ id: "ollama-cloud/kimi-k3", input_modalities: ["text"] }] },
+      },
+    });
+    const host = await createHost({
+      providers: routeProviders(magpieProviders(), "magpie", { baseURL: `${server.url}/v1` }),
     });
     const runtime = createRuntime(
       options({ declarations: {} }),
-      deps({ settings: () => fake.seam, fetchImpl, env: { MAGPIE_API_KEY: "secret" } }),
+      deps(host.ctx, { settings: () => host.ctx.settings }),
     );
     const summary = await runtime.run("discover");
+
     expect(summary.result.kind).toBe("unchanged");
-    const providers = fake.state.user["providers"] as {
-      magpie: { models: Array<Record<string, unknown>> };
-    };
-    expect(providers.magpie.models[0]?.["input"]).toEqual(["text"]);
+    const models = routeModels(host.providers(), "magpie");
+    expect(models[0]?.["input"]).toEqual(["text"]);
   });
 
   it("prefers an explicit vision declaration over a discovered one", async () => {
-    const fake = fakeSettings(magpieProfile());
-    const { fetchImpl } = fakeFetch(visionListing());
+    const server = await startServer({ "/v1/models": { body: visionListing() } });
+    const host = await createHost({
+      providers: routeProviders(magpieProviders(), "magpie", { baseURL: `${server.url}/v1` }),
+    });
     const runtime = createRuntime(
       options({ declarations: {}, inputs: { magpie: { "ollama-cloud/kimi-k3": ["text"] } } }),
-      deps({ settings: () => fake.seam, fetchImpl, env: { MAGPIE_API_KEY: "secret" } }),
+      deps(host.ctx, { settings: () => host.ctx.settings }),
     );
     const summary = await runtime.run("discover");
+
     expect(summary.result.kind).toBe("unchanged");
-    const providers = fake.state.user["providers"] as {
-      magpie: { models: Array<Record<string, unknown>> };
-    };
-    expect(providers.magpie.models[0]?.["input"]).toEqual(["text"]);
+    const models = routeModels(host.providers(), "magpie");
+    expect(models[0]?.["input"]).toEqual(["text"]);
   });
 
   it("removes the vision table's input field in clear mode", async () => {
-    const fake = fakeSettings(magpieProfile());
-    const runtime = createRuntime(
-      options({
-        declarations: {},
-        inputs: { magpie: { "ollama-cloud/kimi-k3": ["text", "image"] } },
-      }),
-      deps({ settings: () => fake.seam }),
-    );
-    await runtime.run("apply");
+    const host = await createHost();
+    const inputs = { magpie: { "ollama-cloud/kimi-k3": ["text", "image"] as const } };
+    await createRuntime(
+      options({ declarations: {}, inputs }),
+      deps(host.ctx, { settings: () => host.ctx.settings }),
+    ).run("apply");
     const summary = await createRuntime(
-      options({
-        declarations: {},
-        inputs: { magpie: { "ollama-cloud/kimi-k3": ["text", "image"] } },
-      }),
-      deps({ settings: () => fake.seam }),
+      options({ declarations: {}, inputs }),
+      deps(host.ctx, { settings: () => host.ctx.settings }),
     ).run("clear");
+
     expect(summary.result.kind).toBe("applied");
     expect(summary.result.changes.map((change) => change.field)).toEqual(["input"]);
-    const providers = fake.state.user["providers"] as {
-      magpie: { models: Array<Record<string, unknown>> };
-    };
-    expect(providers.magpie.models[0]).not.toHaveProperty("input");
+    const models = routeModels(host.providers(), "magpie");
+    expect(models[0]).not.toHaveProperty("input");
   });
 
   it("contains a probe failure and still applies the declarations", async () => {
-    const fake = fakeSettings(magpieProfile());
-    const fetchImpl = (async (): Promise<Response> => {
-      throw new Error("dial tcp: connection refused");
-    }) as unknown as typeof fetch;
-    const runtime = createRuntime(
-      options(),
-      deps({ settings: () => fake.seam, fetchImpl, env: { MAGPIE_API_KEY: "secret" } }),
-    );
+    const server = await startServer({});
+    const unreachable = `${server.url}/v1`;
+    await server.close();
+    const host = await createHost({
+      providers: routeProviders(magpieProviders(), "magpie", { baseURL: unreachable }),
+    });
+    const runtime = createRuntime(options(), deps(host.ctx, { settings: () => host.ctx.settings }));
     const summary = await runtime.run("discover");
+
     expect(summary.failures).toHaveLength(1);
     expect(summary.failures[0]).toMatch(/magpie: could not reach/);
     expect(summary.result.kind).toBe("applied");
@@ -257,87 +227,64 @@ describe("createRuntime", () => {
   });
 
   it("reports a route whose protocol has no readable listing", async () => {
-    const profile = magpieProfile();
-    const providers = profile["providers"] as Record<string, Record<string, unknown>>;
-    providers["magpie"] = { ...providers["magpie"], api: "google-generative-ai" };
-    const fake = fakeSettings(profile);
-    const runtime = createRuntime(options(), deps({ settings: () => fake.seam }));
+    const host = await createHost({
+      providers: routeProviders(magpieProviders(), "magpie", { api: "google-generative-ai" }),
+    });
+    const runtime = createRuntime(options(), deps(host.ctx, { settings: () => host.ctx.settings }));
     const summary = await runtime.run("discover");
+
     expect(summary.failures[0]).toMatch(/no model listing this build can read/);
   });
 
   it("interrogates the routes discoverRoutes names instead of the heuristic's", async () => {
-    const profile = magpieProfile();
-    const providers = profile["providers"] as Record<string, Record<string, unknown>>;
-    providers["zero-aicoding-codex"] = {
-      api: "openai-responses",
-      baseURL: "https://aicoding.example/v1",
-      apiKeyEnv: "ZERO_KEY",
-      models: [{ id: "gpt-6-sol", name: "GPT-6-Sol" }],
-    };
-    const fake = fakeSettings(profile);
-    const { fetchImpl, urls } = fakeFetch({
-      data: [{ id: "gpt-6-sol", reasoning: true, reasoning_levels: ["high"] }],
+    const server = await startServer({
+      "/v1/models": {
+        body: { data: [{ id: "gpt-6-sol", reasoning: true, reasoning_levels: ["high"] }] },
+      },
     });
+    const providers = routeProviders(codexProviders(), "zero-aicoding-codex", {
+      baseURL: `${server.url}/v1`,
+      models: [{ id: "gpt-6-sol", name: "GPT-6-Sol" }],
+    });
+    setEnvironment("ZERO_AICODING_CODEX_API_KEY", "k");
+    const host = await createHost({ providers });
     const runtime = createRuntime(
       options({ declarations: {}, discoverRoutes: ["zero-aicoding-codex"] }),
-      deps({ settings: () => fake.seam, fetchImpl, env: { ZERO_KEY: "k" } }),
+      deps(host.ctx, { settings: () => host.ctx.settings }),
     );
     const summary = await runtime.run("discover");
+
     expect(summary.probed).toEqual(["zero-aicoding-codex"]);
-    expect(urls).toEqual(["https://aicoding.example/v1/models"]);
-    const next = fake.state.user["providers"] as {
-      "zero-aicoding-codex": { models: Array<Record<string, unknown>> };
-    };
-    expect(next["zero-aicoding-codex"].models[0]?.["reasoningEfforts"]).toEqual({ high: "high" });
+    expect(server.requests.map((request) => request.url)).toEqual(["/v1/models"]);
+    expect(server.requests[0]?.headers["authorization"]).toBe("Bearer k");
+    const models = routeModels(host.providers(), "zero-aicoding-codex");
+    expect(models[0]?.["reasoningEfforts"]).toEqual({ high: "high" });
   });
 
-  it("prefers the credential store and falls back to the environment", async () => {
-    const fake = fakeSettings(magpieProfile());
-    const { fetchImpl, urls } = fakeFetch(magpieListing());
-    const resolve = vi.fn<CredentialSeam["resolve"]>(async () => ({ value: "from-store" }));
-    const runtime = createRuntime(
-      options(),
-      deps({ settings: () => fake.seam, fetchImpl, credentials: () => ({ resolve }), env: {} }),
-    );
-    await runtime.run("discover");
-    expect(resolve).toHaveBeenCalledWith("MAGPIE_API_KEY");
-    expect(urls).toHaveLength(1);
-  });
-
-  it("reports a credential-store failure and probes unauthenticated", async () => {
-    const fake = fakeSettings(magpieProfile());
-    const { fetchImpl, urls } = fakeFetch(magpieListing());
-    const failure = logger();
-    const resolve = vi.fn<CredentialSeam["resolve"]>(async () => {
-      throw new Error("credential store unavailable");
+  it("probes unauthenticated when the environment resolves no credential", async () => {
+    const server = await startServer({ "/v1/models": { body: magpieListing() } });
+    setEnvironment("MAGPIE_API_KEY", undefined);
+    const host = await createHost({
+      providers: routeProviders(magpieProviders(), "magpie", { baseURL: `${server.url}/v1` }),
     });
-    const runtime = createRuntime(
-      options(),
-      deps({
-        settings: () => fake.seam,
-        fetchImpl,
-        credentials: () => ({ resolve }),
-        env: {},
-        logger: failure,
-      }),
-    );
-    const summary = await runtime.run("discover");
-    expect(failure.warned[0]).toMatch(/could not resolve the credential MAGPIE_API_KEY/);
-    expect(urls).toHaveLength(1);
-    expect(summary.result.kind).toBe("applied");
+    const runtime = createRuntime(options(), deps(host.ctx, { settings: () => host.ctx.settings }));
+    await runtime.run("discover");
+
+    expect(server.requests).toHaveLength(1);
+    expect(server.requests[0]?.headers["authorization"]).toBeUndefined();
   });
 
   it("does not probe a route the profile does not declare", async () => {
-    const fake = fakeSettings({ providers: {} });
-    const fetchSpy = vi.fn<typeof fetch>();
+    const server = await startServer({});
+    const host = await createHost({ providers: {} });
     const runtime = createRuntime(
       options({ declarations: { magpie: { x: { low: "low" } } } }),
-      deps({ settings: () => fake.seam, fetchImpl: fetchSpy }),
+      deps(host.ctx, { settings: () => host.ctx.settings }),
     );
     const summary = await runtime.run("discover");
+
     expect(summary.probed).toEqual([]);
-    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(server.requests).toEqual([]);
     expect(summary.result.skipped[0]?.reason).toMatch(/does not declare route "magpie"/);
   });
 });
@@ -355,52 +302,74 @@ describe("runUntilAvailable", () => {
   }
 
   it("stops at the first reachable pass", async () => {
-    const run = vi.fn<Runtime["run"]>(async () => summaryOf("applied"));
-    const outcome = await runUntilAvailable({ run }, "apply", { sleep: async () => {} });
+    let calls = 0;
+    const run: Runtime = {
+      run: async () => {
+        calls += 1;
+        return summaryOf("applied");
+      },
+    };
+    const outcome = await runUntilAvailable(run, "apply", { sleep: async () => {} });
+
     expect(outcome.summary?.result.kind).toBe("applied");
-    expect(run).toHaveBeenCalledTimes(1);
+    expect(calls).toBe(1);
   });
 
   it("retries while the namespace is not reachable", async () => {
-    let attempts = 0;
-    const run = vi.fn<Runtime["run"]>(async () => {
-      attempts += 1;
-      return attempts < 3 ? summaryOf("unavailable") : summaryOf("applied");
-    });
+    let calls = 0;
+    const run: Runtime = {
+      run: async () => {
+        calls += 1;
+        return calls < 3 ? summaryOf("unavailable") : summaryOf("applied");
+      },
+    };
     const slept: number[] = [];
-    const outcome = await runUntilAvailable({ run }, "apply", {
+    const outcome = await runUntilAvailable(run, "apply", {
       attempts: 5,
       delayMs: 7,
       sleep: async (ms) => {
         slept.push(ms);
       },
     });
+
     expect(outcome.summary?.result.kind).toBe("applied");
-    expect(run).toHaveBeenCalledTimes(3);
+    expect(calls).toBe(3);
     expect(slept).toEqual([7, 7]);
   });
 
   it("returns the last error when every attempt fails", async () => {
-    const run = vi.fn<Runtime["run"]>(async () => {
-      throw new Error("entry is no longer available");
-    });
-    const outcome = await runUntilAvailable({ run }, "apply", {
+    let calls = 0;
+    const run: Runtime = {
+      run: async () => {
+        calls += 1;
+        throw new Error("entry is no longer available");
+      },
+    };
+    const outcome = await runUntilAvailable(run, "apply", {
       attempts: 3,
       sleep: async () => {},
     });
+
     expect(outcome.summary).toBeUndefined();
     expect(outcome.error).toBeInstanceOf(Error);
-    expect(run).toHaveBeenCalledTimes(3);
+    expect(calls).toBe(3);
   });
 
   it("gives up after the attempt budget", async () => {
-    const run = vi.fn<Runtime["run"]>(async () => summaryOf("unavailable"));
-    const outcome = await runUntilAvailable({ run }, "apply", {
+    let calls = 0;
+    const run: Runtime = {
+      run: async () => {
+        calls += 1;
+        return summaryOf("unavailable");
+      },
+    };
+    const outcome = await runUntilAvailable(run, "apply", {
       attempts: 2,
       sleep: async () => {},
     });
+
     expect(outcome.summary?.result.kind).toBe("unavailable");
-    expect(run).toHaveBeenCalledTimes(2);
+    expect(calls).toBe(2);
   });
 });
 
@@ -562,48 +531,36 @@ describe("describeResult", () => {
 });
 
 describe("SettingsSeam typing", () => {
-  it("keeps the fake usable as a seam", () => {
-    const fake: SettingsSeam = fakeSettings(magpieProfile()).seam;
-    expect(fake.describe()[0]?.ns).toBe("llm-pi-ai");
+  it("accepts the real settings service as the seam", async () => {
+    const host = await createHost();
+    const seam: SettingsSeam = host.ctx.settings;
+    expect(seam.describe()[0]?.ns).toBe("llm-pi-ai");
   });
 });
 
-describe("Codex manifest discovery", () => {
-  /** A transport that answers per URL, so both requests of one route are visible. */
-  function routingFetch(
-    answers: Record<string, { readonly status?: number; readonly body: string }>,
-  ): { readonly fetchImpl: typeof fetch; readonly urls: string[] } {
-    const urls: string[] = [];
-    const fetchImpl = (async (input: unknown): Promise<Response> => {
-      const url = String(input);
-      urls.push(url);
-      const answer = answers[url];
-      if (answer === undefined) return new Response("not found", { status: 404 });
-      return new Response(answer.body, { status: answer.status ?? 200 });
-    }) as unknown as typeof fetch;
-    return { fetchImpl, urls };
-  }
-
-  const INVENTORY = "https://aicoding.api.zeroclover.io/v1/models";
-  const MANIFEST = "https://aicoding.api.zeroclover.io/backend-api/codex/models";
+describe("Codex manifest discovery over real HTTP", () => {
+  const INVENTORY = "/v1/models";
+  const MANIFEST = "/backend-api/codex/models";
 
   it("fills a route whose inventory publishes no levels from its manifest", async () => {
-    const fake = fakeSettings(codexProfile());
-    const { fetchImpl, urls } = routingFetch({
-      [INVENTORY]: { body: JSON.stringify(codexInventory()) },
-      [MANIFEST]: { body: JSON.stringify(codexManifest()) },
+    const server = await startServer({
+      [INVENTORY]: { body: codexInventory() },
+      [MANIFEST]: { body: codexManifest() },
+    });
+    const host = await createHost({
+      providers: routeProviders(codexProviders(), "zero-aicoding-codex", {
+        baseURL: `${server.url}/v1`,
+      }),
     });
     const runtime = createRuntime(
       options({ declarations: {} }),
-      deps({ settings: () => fake.seam, fetchImpl, env: {} }),
+      deps(host.ctx, { settings: () => host.ctx.settings }),
     );
     const summary = await runtime.run("discover");
-    expect(urls).toEqual([INVENTORY, MANIFEST]);
+
+    expect(server.requests.map((request) => request.url)).toEqual([INVENTORY, MANIFEST]);
     expect(summary.failures).toEqual([]);
-    const providers = fake.state.user["providers"] as {
-      "zero-aicoding-codex": { models: Array<Record<string, unknown>> };
-    };
-    const models = providers["zero-aicoding-codex"].models;
+    const models = routeModels(host.providers(), "zero-aicoding-codex");
     expect(models[0]?.["reasoningEfforts"]).toEqual({
       low: "low",
       medium: "medium",
@@ -623,53 +580,53 @@ describe("Codex manifest discovery", () => {
   });
 
   it("fills a declared model's context window from the manifest", async () => {
-    const profile = codexProfile();
-    const providers = profile["providers"] as Record<string, Record<string, unknown>>;
-    providers["zero-aicoding-codex"] = {
-      ...providers["zero-aicoding-codex"],
-      models: [{ id: "gpt-6.1-sol", name: "GPT-6.1-Sol" }],
-    };
-    const fake = fakeSettings(profile);
-    const { fetchImpl } = routingFetch({
-      [INVENTORY]: { body: JSON.stringify(codexInventory()) },
-      [MANIFEST]: { body: JSON.stringify(codexManifest()) },
+    const server = await startServer({
+      [INVENTORY]: { body: codexInventory() },
+      [MANIFEST]: { body: codexManifest() },
+    });
+    const host = await createHost({
+      providers: routeProviders(codexProviders(), "zero-aicoding-codex", {
+        baseURL: `${server.url}/v1`,
+        models: [{ id: "gpt-6.1-sol", name: "GPT-6.1-Sol" }],
+      }),
     });
     const runtime = createRuntime(
       options({ declarations: {} }),
-      deps({ settings: () => fake.seam, fetchImpl, env: {} }),
+      deps(host.ctx, { settings: () => host.ctx.settings }),
     );
     const summary = await runtime.run("discover");
+
     expect(summary.failures).toEqual([]);
-    const next = fake.state.user["providers"] as {
-      "zero-aicoding-codex": { models: Array<Record<string, unknown>> };
-    };
-    expect(next["zero-aicoding-codex"].models[0]?.["contextWindow"]).toBe(500000);
+    const models = routeModels(host.providers(), "zero-aicoding-codex");
+    expect(models[0]?.["contextWindow"]).toBe(500000);
     expect(summary.result.changes.map((change) => change.field)).toContain("contextWindow");
   });
 
   it("does not overwrite the profile's own context window", async () => {
-    const fake = fakeSettings(codexProfile());
-    const { fetchImpl } = routingFetch({
-      [INVENTORY]: { body: JSON.stringify(codexInventory()) },
-      [MANIFEST]: { body: JSON.stringify(codexManifest()) },
+    const server = await startServer({
+      [INVENTORY]: { body: codexInventory() },
+      [MANIFEST]: { body: codexManifest() },
+    });
+    const host = await createHost({
+      providers: routeProviders(codexProviders(), "zero-aicoding-codex", {
+        baseURL: `${server.url}/v1`,
+      }),
     });
     const runtime = createRuntime(
       options({ declarations: {} }),
-      deps({ settings: () => fake.seam, fetchImpl, env: {} }),
+      deps(host.ctx, { settings: () => host.ctx.settings }),
     );
     const summary = await runtime.run("discover");
+
     expect(summary.result.changes.some((change) => change.field === "contextWindow")).toBe(false);
-    const next = fake.state.user["providers"] as {
-      "zero-aicoding-codex": { models: Array<Record<string, unknown>> };
-    };
-    expect(next["zero-aicoding-codex"].models[0]?.["contextWindow"]).toBe(256000);
+    const models = routeModels(host.providers(), "zero-aicoding-codex");
+    expect(models[0]?.["contextWindow"]).toBe(256000);
   });
 
-  it("keeps the listing's own wire spellings and adds the manifest's extra levels", async () => {
-    const fake = fakeSettings(codexProfile());
-    const { fetchImpl } = routingFetch({
+  it("keeps the manifest's spellings when the listing described few levels", async () => {
+    const server = await startServer({
       [INVENTORY]: {
-        body: JSON.stringify({
+        body: {
           data: [
             {
               id: "gpt-6.1-sol",
@@ -678,19 +635,23 @@ describe("Codex manifest discovery", () => {
             },
             { id: "gpt-6-luna" },
           ],
-        }),
+        },
       },
-      [MANIFEST]: { body: JSON.stringify(codexManifest()) },
+      [MANIFEST]: { body: codexManifest() },
+    });
+    const host = await createHost({
+      providers: routeProviders(codexProviders(), "zero-aicoding-codex", {
+        baseURL: `${server.url}/v1`,
+      }),
     });
     const runtime = createRuntime(
       options({ declarations: {} }),
-      deps({ settings: () => fake.seam, fetchImpl, env: {} }),
+      deps(host.ctx, { settings: () => host.ctx.settings }),
     );
     await runtime.run("discover");
-    const providers = fake.state.user["providers"] as {
-      "zero-aicoding-codex": { models: Array<Record<string, unknown>> };
-    };
-    expect(providers["zero-aicoding-codex"].models[0]?.["reasoningEfforts"]).toEqual({
+
+    const models = routeModels(host.providers(), "zero-aicoding-codex");
+    expect(models[0]?.["reasoningEfforts"]).toEqual({
       low: "low",
       medium: "medium",
       high: "high",
@@ -700,65 +661,77 @@ describe("Codex manifest discovery", () => {
   });
 
   it("does not ask for a manifest when the listing described every declared model", async () => {
-    const fake = fakeSettings(magpieProfile());
-    const { fetchImpl, urls } = routingFetch({
-      "https://magpie.indexyz.me/v1/models": { body: JSON.stringify(magpieListing()) },
+    const server = await startServer({ [INVENTORY]: { body: magpieListing() } });
+    const host = await createHost({
+      providers: routeProviders(magpieProviders(), "magpie", { baseURL: `${server.url}/v1` }),
     });
     const runtime = createRuntime(
       options({ declarations: {} }),
-      deps({ settings: () => fake.seam, fetchImpl, env: { MAGPIE_API_KEY: "k" } }),
+      deps(host.ctx, { settings: () => host.ctx.settings }),
     );
     const summary = await runtime.run("discover");
-    expect(urls).toHaveLength(1);
+
+    expect(server.requests).toHaveLength(1);
     expect(summary.result.kind).toBe("applied");
   });
 
   it("treats a relay without the endpoint as having nothing more to say", async () => {
-    const fake = fakeSettings(codexProfile());
-    const { fetchImpl, urls } = routingFetch({
-      [INVENTORY]: { body: JSON.stringify(codexInventory()) },
+    const server = await startServer({
+      [INVENTORY]: { body: codexInventory() },
       [MANIFEST]: { status: 403, body: "<html>forbidden</html>" },
+    });
+    const host = await createHost({
+      providers: routeProviders(codexProviders(), "zero-aicoding-codex", {
+        baseURL: `${server.url}/v1`,
+      }),
     });
     const runtime = createRuntime(
       options({ declarations: {} }),
-      deps({ settings: () => fake.seam, fetchImpl, env: {} }),
+      deps(host.ctx, { settings: () => host.ctx.settings }),
     );
     const summary = await runtime.run("discover");
-    expect(urls).toEqual([INVENTORY, MANIFEST]);
+
+    expect(server.requests.map((request) => request.url)).toEqual([INVENTORY, MANIFEST]);
     expect(summary.failures).toEqual([]);
     expect(summary.result.kind).toBe("unchanged");
   });
 
   it("reports a manifest the endpoint failed to serve", async () => {
-    const fake = fakeSettings(codexProfile());
-    const { fetchImpl } = routingFetch({
-      [INVENTORY]: { body: JSON.stringify(codexInventory()) },
-      [MANIFEST]: { status: 500, body: "{}" },
+    const server = await startServer({
+      [INVENTORY]: { body: codexInventory() },
+      [MANIFEST]: { status: 500, body: {} },
+    });
+    const host = await createHost({
+      providers: routeProviders(codexProviders(), "zero-aicoding-codex", {
+        baseURL: `${server.url}/v1`,
+      }),
     });
     const runtime = createRuntime(
       options({ declarations: {} }),
-      deps({ settings: () => fake.seam, fetchImpl, env: {} }),
+      deps(host.ctx, { settings: () => host.ctx.settings }),
     );
     const summary = await runtime.run("discover");
+
     expect(summary.failures[0]).toMatch(/backend-api\/codex\/models answered 500/);
   });
 
   it("does not consult a manifest for another protocol", async () => {
-    const profile = codexProfile();
-    const route = (profile["providers"] as Record<string, Record<string, unknown>>)[
-      "zero-aicoding-codex"
-    ];
-    if (route !== undefined) route["api"] = "openai-completions";
-    const fake = fakeSettings(profile);
-    const { fetchImpl, urls } = routingFetch({
-      [INVENTORY]: { body: JSON.stringify(codexInventory()) },
-      [MANIFEST]: { body: JSON.stringify(codexManifest()) },
+    const server = await startServer({
+      [INVENTORY]: { body: codexInventory() },
+      [MANIFEST]: { body: codexManifest() },
+    });
+    const host = await createHost({
+      providers: routeProviders(codexProviders(), "zero-aicoding-codex", {
+        baseURL: `${server.url}/v1`,
+        api: "openai-completions",
+      }),
     });
     const runtime = createRuntime(
       options({ declarations: {} }),
-      deps({ settings: () => fake.seam, fetchImpl, env: {} }),
+      deps(host.ctx, { settings: () => host.ctx.settings }),
     );
     await runtime.run("discover");
-    expect(urls).toEqual([INVENTORY]);
+
+    expect(server.requests.map((request) => request.url)).toEqual([INVENTORY]);
   });
 });
