@@ -32,6 +32,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Install the browser for real-environment tests
+        run: npx playwright install --with-deps chromium
+
       - name: Check repository
         run: npm run check
 

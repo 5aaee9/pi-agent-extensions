@@ -1,13 +1,28 @@
-/** Verify the installed tarball with Node built-ins and no host peers or API calls. */
+/**
+ * Verify the installed tarball in its real environment.
+ *
+ * The first half checks the published artifact itself with Node built-ins: every
+ * manifest entry must point at a real file inside the installed package. The
+ * second half then runs the browser half where it actually runs: the installed
+ * package is installed into a throwaway profile, the pinned host's real `dsh web`
+ * server boots, a real Chromium loads the page the host built, and the assertions
+ * observe what the host's own services and primitives rendered. Nothing about the
+ * host, its settings service, its UI, or its DOM is replaced by a stand-in.
+ *
+ * Usage: `node test/smoke-release.ts <installed-package-dir>`. The host CLI and
+ * Playwright come from this package's devDependencies, so the script runs from
+ * the worktree that packed the tarball, against the installed copy.
+ */
 import assert from "node:assert/strict";
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
-import { runInNewContext } from "node:vm";
+
+import { launchBrowser, openSettingsSheet, openWebPlane } from "./web-plane.ts";
 
 const PACKAGE_ID = "@indexyz/dsh-thread-summary";
 const SETTINGS_SLOT = "settings.general.item";
 const NAMESPACE = "thread-summary";
-const INJECT = ["slots", "locale", "remote.settings", "remote.session"];
+const ROW_SELECTOR = "section.dsh-thread-summary";
 
 type UnknownFunction = (...args: unknown[]) => unknown;
 
@@ -56,123 +71,85 @@ function exportTargets(value: unknown, field = "exports"): string[] {
   );
 }
 
-function checkClient(clientPath: string): void {
-  const registrations: unknown[] = [];
-  // A separate browser-like context prevents accidental Node imports or access
-  // to real host services while executing the installed artifact.
-  runInNewContext(
-    readFileSync(clientPath, "utf8"),
-    {
-      window: {
-        __ModuleLoader__: {
-          load(registration: unknown): void {
-            registrations.push(registration);
-          },
-        },
-      },
-    },
-    { filename: clientPath, timeout: 5_000 },
-  );
-  assert.equal(registrations.length, 1, "client.js must register exactly one module");
-  const registration = object(registrations[0], "client module registration");
-  assert.equal(registration["id"], PACKAGE_ID, "client module id");
-
-  class ComponentStub {}
-  const element = (type: unknown, props: unknown): unknown => ({ type, props });
-  const fragment = Symbol("Fragment");
-  const modules = new Map<string, unknown>([
-    ["react", { Component: ComponentStub, createElement: element, Fragment: fragment }],
-    ["react/jsx-runtime", { jsx: element, jsxs: element, Fragment: fragment }],
-    ["@deepseek-ai/dsh-client-ui-primitives", { Button: element, Switch: element, Menu: element }],
-  ]);
-  const factory = callable(registration["factory"], "client module factory");
-  const plugin = object(
-    factory((id: unknown): unknown => {
-      assert.ok(
-        typeof id === "string" && modules.has(id),
-        `client requested a module outside the page module table: ${String(id)}`,
-      );
-      return modules.get(id);
-    }),
-    "client factory result",
-  );
-  const inject: unknown = plugin["inject"];
-  assert.ok(Array.isArray(inject), "client must export an inject service list");
-  assert.deepEqual(Array.from(inject), INJECT, "client injected services");
-  const apply = callable(plugin["apply"], "client apply export");
-
-  const dictionaries = new Map<string, Record<string, unknown>>();
-  const injectedSlots: string[] = [];
-  const rows: { options: Record<string, unknown>; render: UnknownFunction }[] = [];
-  const cleanups: UnknownFunction[] = [];
-  const noRemoteCalls = (): never => {
-    throw new Error("client registration must not call remote APIs");
-  };
-  const services = new Map<string, unknown>([
-    ["remote.settings", { describe: noRemoteCalls, update: noRemoteCalls }],
-    ["remote.session", { modelCatalog: noRemoteCalls }],
-  ]);
-  const context = {
-    get(service: string): unknown {
-      assert.ok(services.has(service), `unexpected service requested: ${service}`);
-      return services.get(service);
-    },
-    effect(effect: unknown): void {
-      const cleanup = callable(effect, "client effect")();
-      if (cleanup !== undefined) cleanups.push(callable(cleanup, "effect cleanup"));
-    },
-    locale: {
-      register(namespace: string, dictionary: unknown): () => void {
-        assert.equal(namespace, NAMESPACE, "locale namespace");
-        assert.ok(!dictionaries.has(namespace), "locale registered more than once");
-        dictionaries.set(namespace, object(dictionary, "locale dictionary"));
-        return () => {
-          dictionaries.delete(namespace);
-        };
-      },
-      bind(namespace: string): (key: string) => unknown {
-        assert.equal(namespace, NAMESPACE, "bound locale namespace");
-        return (key: string): unknown => {
-          const dictionary = object(dictionaries.get(namespace), "registered locale dictionary");
-          return object(dictionary["en"], "English locale")[key];
-        };
-      },
-    },
-    slots: {
-      inject(name: string, callback: unknown): unknown {
-        injectedSlots.push(name);
-        return callable(callback, "slot injection callback")();
-      },
-      register(options: unknown, render: unknown): () => void {
-        const row = {
-          options: object(options, "settings row options"),
-          render: callable(render, "settings row renderer"),
-        };
-        rows.push(row);
-        return () => {
-          rows.splice(rows.indexOf(row), 1);
-        };
-      },
-    },
-  };
-  apply(context);
-  assert.deepEqual(injectedSlots, [SETTINGS_SLOT], "General settings slot injection");
-  assert.equal(rows.length, 1, "client must register one General settings row");
-  const row = rows[0];
-  assert.ok(row, "General settings row is missing");
-  assert.equal(row.options["name"], SETTINGS_SLOT, "settings row slot");
-  assert.equal(row.options["id"], NAMESPACE, "settings row id");
-  assert.equal(row.options["order"], 40, "settings row order");
-  assert.equal(callable(row.options["label"], "settings row label")(), "Summary model");
-  assert.ok(row.render() !== undefined, "settings row renderer must return an element");
-  const dictionary = object(dictionaries.get(NAMESPACE), "registered locale dictionary");
-  assert.equal(object(dictionary["zh"], "Chinese locale")["label"], "摘要模型");
-  for (const cleanup of cleanups.reverse()) cleanup();
-  assert.equal(rows.length, 0, "General settings row must unregister on disposal");
-  assert.equal(dictionaries.size, 0, "locale must unregister on disposal");
+interface RenderedRow {
+  readonly rows: number;
+  readonly title: string;
+  readonly description: string;
+  readonly switchChecked: string;
+  readonly switchClass: string;
+  readonly saveClass: string;
+  readonly styleLength: number;
 }
 
-function main(): void {
+/** What the host rendered for this package, read from the live document. */
+const RENDERED_ROW = `(() => {
+  const root = document.querySelector("section.dsh-thread-summary");
+  if (root === null) return null;
+  const switchElement = root.querySelector("[role=switch]");
+  const save = root.querySelector("button.dsh-summary-save");
+  return JSON.stringify({
+    rows: document.querySelectorAll("section.dsh-thread-summary").length,
+    title: root.querySelector("h3.dsh-summary-title")?.textContent ?? "",
+    description: root.querySelector("p.dsh-summary-description")?.textContent ?? "",
+    switchChecked: switchElement?.getAttribute("aria-checked") ?? "",
+    switchClass: switchElement?.className ?? "",
+    saveClass: save?.className ?? "",
+    styleLength: (root.querySelector("style")?.textContent ?? "").length,
+  });
+})()`;
+
+/**
+ * Load the installed package in the real host plane and assert what the host's
+ * own Settings surface rendered for it.
+ */
+async function checkRenderedClient(installed: string): Promise<void> {
+  const plane = await openWebPlane([installed]);
+  const browser = await launchBrowser();
+  try {
+    const page = await browser.newPage();
+    await openSettingsSheet(page, plane.pageUrl, ROW_SELECTOR);
+
+    const raw: unknown = await page.evaluate(RENDERED_ROW);
+    assert.ok(raw !== null, "the host did not render this package's General settings row");
+    const row = JSON.parse(String(raw)) as RenderedRow;
+    assert.equal(row.rows, 1, "the host must mount exactly one settings row");
+    assert.equal(row.title, "Summary model", "English row title from the registered locale");
+    assert.equal(
+      row.description,
+      "Name new sessions from your first message.",
+      "row description from the registered locale",
+    );
+    assert.ok(row.styleLength > 0, "the row must ship its own styles");
+    assert.match(row.switchClass, /_switch_[0-9a-z]+_[0-9a-z]+/, "host Switch primitive");
+    assert.match(row.saveClass, /_button_[0-9a-z]+_[0-9a-z]+/, "host Button primitive");
+    assert.equal(row.switchChecked, "true", "a freshly installed package starts enabled");
+
+    // The row must write through the host's real settings service and be read
+    // back by a second page, which is what the host's storage really guarantees.
+    await page.locator(`${ROW_SELECTOR} [role=switch]`).first().click({ timeout: 8_000 });
+    await page.locator(`${ROW_SELECTOR} button.dsh-summary-save`).first().click({ timeout: 8_000 });
+    const status = page.locator(`${ROW_SELECTOR} .dsh-summary-status[data-tone]`).first();
+    await status.waitFor({ state: "attached", timeout: 8_000 });
+    assert.equal((await status.textContent())?.trim(), "Saved", "save feedback from the service");
+    assert.equal(await status.getAttribute("data-tone"), "success", "success feedback tone");
+
+    const fresh = await browser.newContext();
+    const freshPage = await fresh.newPage();
+    await openSettingsSheet(freshPage, plane.pageUrl, ROW_SELECTOR);
+    assert.equal(
+      await freshPage.locator(`${ROW_SELECTOR} [role=switch]`).first().getAttribute("aria-checked"),
+      "false",
+      "the write persisted for a new page",
+    );
+    await fresh.close();
+    await page.close();
+  } finally {
+    await browser.close().catch(() => {});
+    await plane.close().catch(() => {});
+  }
+}
+
+async function main(): Promise<void> {
   const argument = process.argv[2];
   assert.ok(
     process.argv.length === 3 && argument !== undefined && argument.trim() !== "",
@@ -192,15 +169,14 @@ function main(): void {
   const bundle = object(dsh["bundle"], "dsh.bundle manifest");
   packagedPath(installed, bundle["patch"], "dsh.bundle.patch");
   packagedPath(installed, "lib/index.js", "built host entry");
-  checkClient(packagedPath(installed, "client.js", "built client entry"));
+  packagedPath(installed, "client.js", "built client entry");
+  await checkRenderedClient(installed);
   console.log(
-    `smoke-release: ${PACKAGE_ID} passed (main/types/exports/patch, client module/inject/apply, General row/locale/disposal)`,
+    `smoke-release: ${PACKAGE_ID} passed (main/types/exports/patch files, installed package rendered in the real host plane, saved through the settings service, persisted across pages)`,
   );
 }
 
-try {
-  main();
-} catch (error: unknown) {
+main().catch((error: unknown) => {
   console.error(`smoke-release: ${error instanceof Error ? error.message : String(error)}`);
   process.exitCode = 1;
-}
+});
