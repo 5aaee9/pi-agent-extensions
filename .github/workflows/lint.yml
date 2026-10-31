@@ -32,6 +32,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Install pnpm for the dsh host's plugin manager
+        run: npm install --global pnpm@11.28.5
+
       - name: Install the browser for real-environment tests
         run: npx playwright install --with-deps chromium
 
