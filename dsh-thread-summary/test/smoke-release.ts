@@ -20,11 +20,7 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { launchBrowser, openSettingsSheet, openWebPlane } from "./web-plane.ts";
 
 const PACKAGE_ID = "@indexyz/dsh-thread-summary";
-const SETTINGS_SLOT = "settings.general.item";
-const NAMESPACE = "thread-summary";
 const ROW_SELECTOR = "section.dsh-thread-summary";
-
-type UnknownFunction = (...args: unknown[]) => unknown;
 
 function object(value: unknown, description: string): Record<string, unknown> {
   assert.ok(
@@ -32,11 +28,6 @@ function object(value: unknown, description: string): Record<string, unknown> {
     `${description} must be an object`,
   );
   return value as Record<string, unknown>;
-}
-
-function callable(value: unknown, description: string): UnknownFunction {
-  assert.equal(typeof value, "function", `${description} must be a function`);
-  return value as UnknownFunction;
 }
 
 function insidePackage(dir: string, path: string, field: string): void {
