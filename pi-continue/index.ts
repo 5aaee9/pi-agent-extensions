@@ -77,7 +77,9 @@ export default function piContinue(pi: ExtensionAPI) {
         return;
       }
 
-      if (!ctx.model) {
+      // With nothing selected Pi still reports a placeholder model ("unknown/unknown"),
+      // so a model counts as selected only when the registry knows it.
+      if (!ctx.model || ctx.modelRegistry.find(ctx.model.provider, ctx.model.id) === undefined) {
         ctx.ui.notify("No model selected", "error");
         return;
       }

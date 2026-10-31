@@ -1,20 +1,17 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
-import type { LoadExtensionsResult } from "@earendil-works/pi-coding-agent";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import {
+  discoverAndLoadExtensions,
+  type LoadExtensionsResult,
+} from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it } from "vitest";
 
 const extensionPath = fileURLToPath(new URL("../index.ts", import.meta.url));
-const codingAgentEntry = fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"));
-const loaderUrl = pathToFileURL(join(dirname(codingAgentEntry), "core/extensions/loader.js")).href;
 
 const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
 const temporaryDirectories = new Set<string>();
-
-interface ExtensionLoaderModule {
-  loadExtensions(paths: string[], cwd: string): Promise<LoadExtensionsResult>;
-}
 
 afterEach(async () => {
   if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
@@ -33,9 +30,10 @@ async function isolatedAgentDir(): Promise<string> {
   return agentDir;
 }
 
+/** Pi's public extension discovery; the isolated agent and project directories
+ * hold no other extensions, so only `paths` are loaded. */
 async function loadExtensions(agentDir: string, paths: string[]): Promise<LoadExtensionsResult> {
-  const loader = (await import(loaderUrl)) as ExtensionLoaderModule;
-  return loader.loadExtensions(paths, agentDir);
+  return discoverAndLoadExtensions(paths, agentDir, agentDir);
 }
 
 describe("Pi extension loading", () => {

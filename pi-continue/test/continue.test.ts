@@ -1,8 +1,9 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
+  discoverAndLoadExtensions,
   ExtensionRunner,
   ModelRegistry,
   ModelRuntime,
@@ -14,6 +15,15 @@ import {
 import { afterEach, describe, expect, it } from "vitest";
 import { findInterruptedTurn } from "../index.ts";
 import {
+  LOCAL_MODEL,
+  LOCAL_PROVIDER,
+  conversationOf,
+  startModelServer,
+  writeModelsJson,
+  type ModelServer,
+} from "./model-server.ts";
+import {
+  type PiRpcHost,
   type RpcMessage,
   createRpcWorkspace,
   customMessages,
@@ -24,8 +34,7 @@ import {
 type SessionMessage = Parameters<SessionManager["appendMessage"]>[0];
 
 const extensionPath = fileURLToPath(new URL("../index.ts", import.meta.url));
-const codingAgentEntry = fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"));
-const loaderUrl = pathToFileURL(join(dirname(codingAgentEntry), "core/extensions/loader.js")).href;
+const LOCAL = `${LOCAL_PROVIDER}/${LOCAL_MODEL}`;
 
 const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
 const temporaryDirectories = new Set<string>();
@@ -96,14 +105,11 @@ function appendAbortedTurn(
   session.appendMessage(assistantMessage("aborted", provider, model));
 }
 
-interface ExtensionLoaderModule {
-  loadExtensions(paths: string[], cwd: string): Promise<LoadExtensionsResult>;
-}
-
+/** Pi's public extension discovery, confined to an isolated agent directory. */
 async function loadPiContinue(agentDir: string): Promise<LoadExtensionsResult> {
-  const loader = (await import(loaderUrl)) as ExtensionLoaderModule;
-  const result = await loader.loadExtensions([extensionPath], agentDir);
+  const result = await discoverAndLoadExtensions([extensionPath], agentDir, agentDir);
   expect(result.errors).toEqual([]);
+  expect(result.extensions).toHaveLength(1);
   return result;
 }
 
@@ -111,11 +117,33 @@ function isUserMessage(entry: SessionEntry): boolean {
   return entry.type === "message" && entry.message.role === "user";
 }
 
+function retryMarkers(entries: readonly SessionEntry[]): readonly SessionEntry[] {
+  return entries.filter(
+    (entry) => entry.type === "custom_message" && entry.customType === "pi-continue:retry",
+  );
+}
+
+/** The stop reason of the last assistant entry Pi persisted. */
+function lastStopReason(entries: readonly SessionEntry[]): string | undefined {
+  for (let index = entries.length - 1; index >= 0; index--) {
+    const entry = entries[index];
+    if (entry?.type === "message" && entry.message.role === "assistant") {
+      return entry.message.stopReason;
+    }
+  }
+  return undefined;
+}
+
+/** What the original request looked like before it was interrupted. */
+const ORIGINAL_REQUEST = [{ role: "user", content: "Do the task" }];
+
 interface ScenarioOptions {
-  readonly model: string;
+  /** `provider/id` to start Pi with; omitted, no model is selected. */
+  readonly model?: string;
+  /** Register the local model server in the agent's `models.json`. */
+  readonly localModel?: boolean;
   readonly build: (session: SessionManager) => void;
-  readonly prompts: readonly string[];
-  readonly turns: number;
+  readonly drive: (host: PiRpcHost, server: ModelServer) => Promise<void>;
 }
 
 interface ScenarioResult {
@@ -125,32 +153,55 @@ interface ScenarioResult {
     readonly type: string | undefined;
   }[];
   readonly entries: readonly SessionEntry[];
+  readonly requests: ModelServer["requests"];
 }
 
 async function runContinueScenario(options: ScenarioOptions): Promise<ScenarioResult> {
   const workspace = await createRpcWorkspace();
   try {
-    options.build(workspace.session);
-    const host = await startPiRpc({
-      agentDir: workspace.agentDir,
-      sessionDir: workspace.sessionDir,
-      sessionFile: workspace.sessionFile,
-      model: options.model,
-    });
+    const server = await startModelServer();
     try {
-      for (const prompt of options.prompts) await host.prompt(prompt);
-      if (options.turns > 0) await host.waitForSettled(options.turns);
-      return {
-        messages: host.messages,
-        notifications: host.notifications(),
-        entries: await host.entries(),
-      };
+      if (options.localModel !== false) await writeModelsJson(workspace.agentDir, server.baseUrl);
+      options.build(workspace.session);
+      const host = await startPiRpc({
+        agentDir: workspace.agentDir,
+        sessionDir: workspace.sessionDir,
+        sessionFile: workspace.sessionFile,
+        ...(options.model === undefined ? {} : { model: options.model }),
+      });
+      try {
+        await options.drive(host, server);
+        return {
+          messages: host.messages,
+          notifications: host.notifications(),
+          entries: await host.entries(),
+          requests: server.requests,
+        };
+      } finally {
+        await host.close();
+      }
     } finally {
-      await host.close();
+      await server.close();
     }
   } finally {
     await removeRpcWorkspace(workspace.agentDir);
   }
+}
+
+async function continueOnce(host: PiRpcHost): Promise<void> {
+  await host.prompt("/continue");
+  await host.waitForSettled(1);
+}
+
+/** No turn may start: wait for the command's notice, then confirm the host is idle. */
+async function commandWithoutTurn(host: PiRpcHost, message: string): Promise<void> {
+  await host.prompt(message);
+  await host.waitForMessage(
+    (entry) => entry["type"] === "extension_ui_request" && entry["method"] === "notify",
+    "the command's notice",
+  );
+  const state = await host.command({ type: "get_state" });
+  expect(state["data"]).toMatchObject({ isStreaming: false });
 }
 
 describe("findInterruptedTurn", () => {
@@ -198,21 +249,19 @@ describe("findInterruptedTurn", () => {
 });
 
 describe("/continue", () => {
-  it("continues an aborted turn with the currently selected model", async () => {
+  it("retries an aborted turn with the currently selected model", async () => {
     const result = await runContinueScenario({
-      model: "openai/gpt-5.4",
+      model: LOCAL,
       build: (session) => {
         appendAbortedTurn(session);
-        session.appendModelChange("openai", "gpt-5.4");
+        session.appendModelChange(LOCAL_PROVIDER, LOCAL_MODEL);
       },
-      prompts: ["/continue"],
-      turns: 1,
+      drive: continueOnce,
     });
 
     expect(result.notifications).toEqual([
       {
-        message:
-          "Retrying interrupted or failed work with openai/gpt-5.4 (previously anthropic/claude-sonnet)",
+        message: `Retrying interrupted or failed work with ${LOCAL} (previously anthropic/claude-sonnet)`,
         type: "info",
       },
     ]);
@@ -224,36 +273,37 @@ describe("/continue", () => {
       content: [],
       display: false,
     });
-    expect(result.messages.some((message) => message["type"] === "turn_start")).toBe(true);
-    expect(result.messages.some((message) => message["type"] === "agent_start")).toBe(true);
+    // The model saw the original request only: neither the aborted reply nor the marker.
+    expect(result.requests).toHaveLength(1);
+    expect(conversationOf(result.requests[0])).toEqual(ORIGINAL_REQUEST);
+    // The retried turn completed against the real model stack.
+    expect(lastStopReason(result.entries)).toBe("stop");
     expect(result.entries.filter(isUserMessage)).toHaveLength(1);
-    expect(
-      result.entries.filter(
-        (entry) => entry.type === "custom_message" && entry.customType === "pi-continue:retry",
-      ),
-    ).toHaveLength(1);
+    expect(retryMarkers(result.entries)).toHaveLength(1);
   });
 
-  it("continues a provider error with the newly selected model", async () => {
+  it("retries a provider error with the newly selected model", async () => {
     const result = await runContinueScenario({
-      model: "anthropic/claude-sonnet-5",
+      model: LOCAL,
       build: (session) => {
         session.appendMessage(userMessage());
         session.appendMessage(assistantMessage("error", "openrouter", "stealth/ox-alpha"));
-        session.appendModelChange("anthropic", "claude-sonnet-5");
+        session.appendModelChange(LOCAL_PROVIDER, LOCAL_MODEL);
       },
-      prompts: ["/continue"],
-      turns: 1,
+      drive: continueOnce,
     });
 
     expect(result.notifications).toEqual([
       {
-        message:
-          "Retrying interrupted or failed work with anthropic/claude-sonnet-5 (previously openrouter/stealth/ox-alpha)",
+        message: `Retrying interrupted or failed work with ${LOCAL} (previously openrouter/stealth/ox-alpha)`,
         type: "info",
       },
     ]);
     expect(customMessages(result.messages)).toHaveLength(1);
+    // The failed reply and the marker are both removed from what the model receives.
+    expect(result.requests).toHaveLength(1);
+    expect(conversationOf(result.requests[0])).toEqual(ORIGINAL_REQUEST);
+    expect(lastStopReason(result.entries)).toBe("stop");
     expect(result.entries.filter(isUserMessage)).toHaveLength(1);
   });
 
@@ -267,6 +317,9 @@ describe("/continue", () => {
     session.appendMessage(userMessage("Try another task"));
     const failedId = session.appendMessage(assistantMessage("error"));
     const markerId = session.appendCustomMessageEntry("pi-continue:retry", [], false);
+    session.appendMessage(userMessage("And a third"));
+    const abortedId = session.appendMessage(assistantMessage("aborted"));
+    const secondMarkerId = session.appendCustomMessageEntry("pi-continue:retry", [], false);
     session.appendCustomMessageEntry("other-extension", "Keep this context", false);
 
     const loaded = await loadPiContinue(agentDir);
@@ -289,9 +342,10 @@ describe("/continue", () => {
     const context = await runner.emitContext(
       session.getBranch().flatMap(sessionEntryToContextMessages),
     );
+    const removed = new Set([failedId, markerId, abortedId, secondMarkerId]);
     const expected = session
       .getBranch()
-      .filter((entry) => entry.id !== failedId && entry.id !== markerId)
+      .filter((entry) => !removed.has(entry.id))
       .flatMap(sessionEntryToContextMessages);
 
     expect(context).toEqual(expected);
@@ -303,62 +357,74 @@ describe("/continue", () => {
     ).toBe(true);
   });
 
-  it("checks the settled branch after waiting for the abort", async () => {
+  it("waits for a streaming turn's abort to settle before reading the branch", async () => {
     const result = await runContinueScenario({
-      model: "openai/gpt-5.4",
+      model: LOCAL,
       build: (session) => {
-        appendAbortedTurn(session);
-        session.appendModelChange("openai", "gpt-5.4");
+        session.appendModelChange(LOCAL_PROVIDER, LOCAL_MODEL);
       },
-      prompts: ["/continue", "/continue"],
-      turns: 2,
+      drive: async (host, server) => {
+        // A real turn is streaming: the model's reply is held.
+        const release = server.holdNext();
+        try {
+          await host.prompt("Do the task");
+          await server.waitForRequests(1);
+          // /continue arrives while the turn still streams; only then is it aborted.
+          const continued = host.prompt("/continue");
+          await host.command({ type: "abort" });
+          await continued;
+          // The aborted turn settles, then the retried one.
+          await host.waitForSettled(2);
+        } finally {
+          release();
+        }
+      },
     });
 
+    // The command saw the aborted turn the abort produced, not a still-running one.
     expect(result.notifications).toEqual([
-      {
-        message:
-          "Retrying interrupted or failed work with openai/gpt-5.4 (previously anthropic/claude-sonnet)",
-        type: "info",
-      },
-      {
-        message: "Retrying interrupted or failed work with openai/gpt-5.4",
-        type: "info",
-      },
+      { message: `Retrying interrupted or failed work with ${LOCAL}`, type: "info" },
     ]);
+    expect(result.requests).toHaveLength(2);
+    expect(conversationOf(result.requests[1])).toEqual(ORIGINAL_REQUEST);
+    expect(lastStopReason(result.entries)).toBe("stop");
     expect(
-      result.entries.filter(
-        (entry) => entry.type === "custom_message" && entry.customType === "pi-continue:retry",
+      result.entries.some(
+        (entry) =>
+          entry.type === "message" &&
+          entry.message.role === "assistant" &&
+          entry.message.stopReason === "aborted",
       ),
-    ).toHaveLength(2);
+    ).toBe(true);
+    expect(retryMarkers(result.entries)).toHaveLength(1);
     expect(result.entries.filter(isUserMessage)).toHaveLength(1);
   });
 
   it("rejects model arguments instead of switching models", async () => {
     const result = await runContinueScenario({
-      model: "openai/gpt-5.4",
+      model: LOCAL,
       build: (session) => {
         appendAbortedTurn(session);
-        session.appendModelChange("openai", "gpt-5.4");
+        session.appendModelChange(LOCAL_PROVIDER, LOCAL_MODEL);
       },
-      prompts: ["/continue --model openai/gpt-5.4"],
-      turns: 0,
+      drive: (host) => commandWithoutTurn(host, `/continue --model ${LOCAL}`),
     });
 
     expect(result.notifications).toEqual([{ message: "Usage: /continue", type: "warning" }]);
     expect(customMessages(result.messages)).toEqual([]);
     expect(result.messages.some((message) => message["type"] === "agent_start")).toBe(false);
+    expect(result.requests).toEqual([]);
     expect(result.entries.filter(isUserMessage)).toHaveLength(1);
   });
 
   it("does nothing when the latest turn was not interrupted", async () => {
     const result = await runContinueScenario({
-      model: "openai/gpt-5.4",
+      model: LOCAL,
       build: (session) => {
         session.appendMessage(userMessage());
         session.appendMessage(assistantMessage("stop"));
       },
-      prompts: ["/continue"],
-      turns: 0,
+      drive: (host) => commandWithoutTurn(host, "/continue"),
     });
 
     expect(result.notifications).toEqual([
@@ -366,45 +432,24 @@ describe("/continue", () => {
     ]);
     expect(customMessages(result.messages)).toEqual([]);
     expect(result.messages.some((message) => message["type"] === "agent_start")).toBe(false);
+    expect(result.requests).toEqual([]);
     expect(result.entries.filter(isUserMessage)).toHaveLength(1);
   });
 
   it("requires a currently selected model", async () => {
-    const agentDir = await makeTemporaryDirectory("pi-continue-no-model-");
-    process.env.PI_CODING_AGENT_DIR = agentDir;
-
-    const session = SessionManager.create(agentDir, join(agentDir, "sessions"));
-    appendAbortedTurn(session);
-    const loaded = await loadPiContinue(agentDir);
-    const modelRuntime = await ModelRuntime.create({
-      authPath: join(agentDir, "auth.json"),
-      modelsPath: join(agentDir, "models.json"),
-    });
-    const runner = new ExtensionRunner(
-      loaded.extensions,
-      loaded.runtime,
-      agentDir,
-      session,
-      new ModelRegistry(modelRuntime),
-    );
-    const errors: string[] = [];
-    runner.onError((error) => {
-      errors.push(`${error.event}: ${error.error}`);
+    const result = await runContinueScenario({
+      // No models.json and no --model: Pi starts with no model selected.
+      localModel: false,
+      build: (session) => {
+        appendAbortedTurn(session);
+      },
+      drive: (host) => commandWithoutTurn(host, "/continue"),
     });
 
-    const command = runner.getCommand("continue");
-    if (command === undefined) throw new Error("/continue was not registered");
-    const entryCount = session.getEntries().length;
-    await command.handler("", runner.createCommandContext());
-
-    expect(errors).toEqual([]);
-    expect(session.getEntries()).toHaveLength(entryCount);
-    expect(
-      session
-        .getBranch()
-        .some(
-          (entry) => entry.type === "custom_message" && entry.customType === "pi-continue:retry",
-        ),
-    ).toBe(false);
+    expect(result.notifications).toEqual([{ message: "No model selected", type: "error" }]);
+    expect(customMessages(result.messages)).toEqual([]);
+    expect(result.messages.some((message) => message["type"] === "agent_start")).toBe(false);
+    expect(retryMarkers(result.entries)).toEqual([]);
+    expect(result.requests).toEqual([]);
   });
 });

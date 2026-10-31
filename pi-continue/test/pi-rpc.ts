@@ -31,6 +31,10 @@ export interface PiRpcHost {
   command(command: Record<string, unknown>): Promise<RpcMessage>;
   prompt(message: string): Promise<void>;
   waitForSettled(count: number): Promise<void>;
+  waitForMessage(
+    predicate: (message: RpcMessage) => boolean,
+    description: string,
+  ): Promise<RpcMessage>;
   entries(): Promise<readonly SessionEntry[]>;
   notifications(): readonly Notification[];
   close(): Promise<void>;
@@ -91,7 +95,8 @@ export async function startPiRpc(options: {
   readonly agentDir: string;
   readonly sessionDir: string;
   readonly sessionFile: string;
-  readonly model: string;
+  /** `provider/id` to select; omitted, Pi starts with whatever its settings select. */
+  readonly model?: string;
 }): Promise<PiRpcHost> {
   const messages: RpcMessage[] = [];
   let stderr = "";
@@ -109,8 +114,7 @@ export async function startPiRpc(options: {
       options.sessionFile,
       "--session-dir",
       options.sessionDir,
-      "--model",
-      options.model,
+      ...(options.model === undefined ? [] : ["--model", options.model]),
       "--no-skills",
       "--no-prompt-templates",
       "--no-themes",
@@ -188,11 +192,33 @@ export async function startPiRpc(options: {
     return response;
   }
 
-  await command({ type: "get_state" });
+  const kill = async (): Promise<void> => {
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    const exited = new Promise<void>((resolve) => {
+      // A process that failed to spawn never emits "exit"; do not wait forever.
+      const timeout = setTimeout(resolve, 3_000);
+      child.once("exit", () => {
+        clearTimeout(timeout);
+        resolve();
+      });
+    });
+    child.kill("SIGKILL");
+    await exited;
+  };
+
+  try {
+    await command({ type: "get_state" });
+  } catch (error) {
+    // A host that never became ready must not outlive the test that started it.
+    closed = true;
+    await kill();
+    throw error;
+  }
 
   return {
     messages,
     command,
+    waitForMessage: (predicate, description) => waitForMessage(predicate, description),
     async prompt(message: string): Promise<void> {
       await command({ type: "prompt", message });
     },
@@ -231,8 +257,8 @@ export async function startPiRpc(options: {
     async close(): Promise<void> {
       if (closed) return;
       closed = true;
-      child.stdin.end();
-      const exited = await new Promise<boolean>((resolve) => {
+      if (child.exitCode !== null || child.signalCode !== null) return;
+      const exited = new Promise<boolean>((resolve) => {
         const timeout = setTimeout(() => {
           resolve(false);
         }, 3_000);
@@ -241,7 +267,8 @@ export async function startPiRpc(options: {
           resolve(true);
         });
       });
-      if (!exited) child.kill("SIGKILL");
+      child.stdin.end();
+      if (!(await exited)) await kill();
     },
   };
 }
