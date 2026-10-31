@@ -113,6 +113,7 @@ describe("saved model limits", () => {
     await writeSettings(globalSettingsPath(), input);
     const bytes = await readFile(globalSettingsPath(), "utf8");
     const stored = await readSettings(globalSettingsPath());
+    const snapshot = structuredClone(stored);
 
     const next = withModelLimit(stored, key, 300000);
     expect(next).toEqual({
@@ -122,6 +123,10 @@ describe("saved model limits", () => {
         modelLimits: { "other/model": 1000, [key]: 300000 },
       },
     });
+    // The merge returns a new object; the settings value it was given is untouched.
+    expect(stored).toEqual(snapshot);
+    expect(stored).toEqual(input);
+    expect(next).not.toBe(stored);
     expect(await readFile(globalSettingsPath(), "utf8")).toBe(bytes);
     expect((await readSettings(globalSettingsPath())).piAutocompact).toEqual({
       note: "keep",
@@ -244,14 +249,19 @@ describe("read-only configuration", () => {
       compaction: { reserveTokens: 5000, keepRecentTokens: 25000 },
     });
     const bytes = await readFile(globalSettingsPath(), "utf8");
+    const globalSettings = await readSettings(globalSettingsPath());
+    const projectSettings = await readSettings(projectSettingsPath());
+    const globalSnapshot = structuredClone(globalSettings);
+    const projectSnapshot = structuredClone(projectSettings);
 
-    expect(
-      effectiveCompaction(
-        await readSettings(globalSettingsPath()),
-        await readSettings(projectSettingsPath()),
-        key,
-      ),
-    ).toEqual({ enabled: true, reserveTokens: 40000, keepRecentTokens: 25000 });
+    expect(effectiveCompaction(globalSettings, projectSettings, key)).toEqual({
+      enabled: true,
+      reserveTokens: 40000,
+      keepRecentTokens: 25000,
+    });
+    // Resolution reads both layers without mutating either settings value.
+    expect(globalSettings).toEqual(globalSnapshot);
+    expect(projectSettings).toEqual(projectSnapshot);
     expect(await readFile(globalSettingsPath(), "utf8")).toBe(bytes);
 
     await writeSettings(projectSettingsPath(), { compaction: { enabled: false } });

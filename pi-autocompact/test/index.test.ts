@@ -4,6 +4,10 @@ import { createRealPlane, type RealPlane, type RealSession } from "./real-plane.
 
 const MODEL = "probe/compact-model";
 
+/** Seeded below the 300k thresholds the tests set, replied above them: the
+ * idle-input path stays out of the way and the real turn boundaries act. */
+const ACROSS = { tokens: 250_000, replyTokens: 350_000 } as const;
+
 let plane: RealPlane;
 
 beforeEach(async () => {
@@ -21,14 +25,6 @@ function compactions(real: RealSession): number {
 
 function lastNotification(real: RealSession): RealSession["notifications"][number] | undefined {
   return real.notifications.at(-1);
-}
-
-async function waitFor(predicate: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 200; attempt++) {
-    if (predicate()) return;
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
-  throw new Error("The session never reached the expected state");
 }
 
 describe("Pi extension loading", () => {
@@ -51,7 +47,7 @@ describe("Pi extension loading", () => {
 
 describe("session-only commands", () => {
   it("sets model-local overrides, clears them on session start, and never changes model metadata", async () => {
-    const real = await plane.startSession({ tokens: 350_000 });
+    const real = await plane.startSession(ACROSS);
     const model = real.session.model;
     if (!model) throw new Error("The test session has no model");
     expect(model.contextWindow).toBe(1_000_000);
@@ -59,52 +55,66 @@ describe("session-only commands", () => {
     await real.command("300k");
     expect(real.session.model).toBe(model);
 
-    const entries = await real.boundary("turn_end");
+    // A real turn ends above the threshold: turn_end commits one compaction.
+    // agent_before_settle in the same run then sees the compacted, not yet
+    // re-measured context and leaves it alone.
+    const entries = await real.turn();
     expect(entries).toHaveLength(1);
     const entry = entries[0];
-    expect(entry?.type).toBe("compaction");
-    if (entry?.type !== "compaction") throw new Error("Expected a compaction draft");
+    if (entry === undefined) throw new Error("Expected a compaction entry");
     expect(entry.details).toEqual({ source: "pi-autocompact" });
-    expect(entry.firstKeptEntryId).not.toBeNull();
-    const firstKeptEntryId = entry.firstKeptEntryId;
-    if (firstKeptEntryId === null) throw new Error("Expected a kept entry id");
-    expect(real.session.sessionManager.getEntry(firstKeptEntryId)).toBeDefined();
-
-    // The same boundary is deduplicated until another command or session start.
-    expect(await real.boundary("agent_before_settle")).toEqual([]);
+    expect(entry.summary).toContain("local summary");
+    expect(real.session.sessionManager.getEntry(entry.firstKeptEntryId)).toBeDefined();
+    expect(plane.server.summaryRequests()).toBe(1);
 
     const otherModel = real.session.modelRuntime.getModel("probe", "other-model");
     if (!otherModel) throw new Error("The test models.json is missing probe/other-model");
     await real.session.setModel(otherModel);
-    expect(await real.boundary("turn_end")).toEqual([]);
+    expect(await real.turn()).toEqual([]);
 
     await real.session.setModel(model);
-    await real.session.extensionRunner.emit({ type: "session_start", reason: "reload" });
+    // Pi's own reload delivers a real session_start, which drops session overrides.
+    await real.reload();
     expect(real.session.model?.contextWindow).toBe(1_000_000);
-    expect(await real.boundary("turn_end")).toEqual([]);
+    expect(await real.turn()).toEqual([]);
+    expect(plane.server.summaryRequests()).toBe(1);
+  });
+
+  it("attempts one boundary only once when its summary fails", async () => {
+    const real = await plane.startSession(ACROSS);
+    await real.command("300k");
+    plane.server.failNextSummary = true;
+
+    // turn_end tries and fails; agent_before_settle reaches the same leaf in the
+    // same run and must not ask the summarizer a second time.
+    expect(await real.turn()).toEqual([]);
+    expect(plane.server.summaryRequests()).toBe(1);
+    expect(real.notifications.filter((entry) => entry.type === "warning")).toHaveLength(1);
+
+    // The next turn is a new boundary and is attempted again.
+    expect(await real.turn()).toHaveLength(1);
   });
 
   it("off masks the global default, default restores inheritance", async () => {
     await plane.writeGlobalSettings({ piAutocompact: { modelLimits: { [MODEL]: 300_000 } } });
-    const real = await plane.startSession({ tokens: 350_000 });
+    const real = await plane.startSession(ACROSS);
 
     // session_start loaded the real settings file.
-    expect(await real.boundary("turn_end")).toHaveLength(1);
-    expect(plane.server.requests).toHaveLength(1);
+    expect(await real.turn()).toHaveLength(1);
+    expect(plane.server.summaryRequests()).toBe(1);
 
     await real.command("off");
-    expect(await real.boundary("turn_end")).toEqual([]);
-    expect(plane.server.requests).toHaveLength(1);
+    expect(await real.turn()).toEqual([]);
+    expect(plane.server.summaryRequests()).toBe(1);
 
     await real.command("default");
-    expect(await real.boundary("turn_end")).toHaveLength(1);
-    expect(plane.server.requests).toHaveLength(2);
+    expect(await real.turn()).toHaveLength(1);
   });
 
   it("writes the user model limit only when --save is present", async () => {
     await plane.writeProjectSettings({ theme: "dark" });
     const projectSettings = await plane.readProjectSettings();
-    const real = await plane.startSession({ tokens: 350_000 });
+    const real = await plane.startSession(ACROSS);
     const untouched = await plane.readGlobalSettings();
 
     await real.command("300k");
@@ -131,11 +141,11 @@ describe("session-only commands", () => {
     });
     expect(lastNotification(real)?.message).not.toContain("No settings written.");
 
-    expect(await real.boundary("turn_end")).toHaveLength(1);
+    expect(await real.turn()).toHaveLength(1);
 
     await real.command("default");
     expect(lastNotification(real)?.message).toContain("global default");
-    expect(await real.boundary("turn_end")).toHaveLength(1);
+    expect(await real.turn()).toHaveLength(1);
   });
 
   it("rejects --save without a usable threshold and keeps the previous override", async () => {
@@ -161,97 +171,133 @@ describe("session-only commands", () => {
 
     await plane.writeGlobalSettings({});
     // 280k is below the original 300k override, so the rejected 250k never took effect.
-    expect(await real.boundary("turn_end")).toEqual([]);
+    expect(await real.turn()).toEqual([]);
+    expect(plane.server.summaryRequests()).toBe(0);
   });
 
   it("loads a saved model limit on the next session without another command", async () => {
-    const first = await plane.startSession({ tokens: 350_000 });
+    const first = await plane.startSession(ACROSS);
     await first.command("300k --save");
     const saved = await plane.readGlobalSettings();
     // The saving session does not need a reload.
-    expect(await first.boundary("turn_end")).toHaveLength(1);
+    expect(await first.turn()).toHaveLength(1);
 
-    const second = await plane.startSession({ tokens: 350_000 });
+    const second = await plane.startSession(ACROSS);
     expect(await plane.readGlobalSettings()).toBe(saved);
-    expect(await second.boundary("turn_end")).toHaveLength(1);
+    expect(await second.turn()).toHaveLength(1);
   });
 
   it("does not compact below the threshold or when native auto-compaction is disabled", async () => {
     const real = await plane.startSession({ tokens: 350_000 });
     await real.command("400k");
-    expect(await real.boundary("turn_end")).toEqual([]);
-    expect(plane.server.requests).toHaveLength(0);
+    expect(await real.turn()).toEqual([]);
+    expect(plane.server.turnRequests()).toBe(1);
+    expect(plane.server.summaryRequests()).toBe(0);
 
     const disabled = { compaction: { enabled: false } };
     await plane.writeGlobalSettings(disabled);
-    await real.session.extensionRunner.emit({ type: "session_start", reason: "reload" });
+    await real.reload();
     await real.command("300k");
     expect(lastNotification(real)).toMatchObject({
       message: expect.stringContaining("disabled"),
       type: "error",
     });
-    expect(await real.boundary("turn_end")).toEqual([]);
+    expect(await real.turn()).toEqual([]);
     expect(JSON.parse(await plane.readGlobalSettings())).toEqual(disabled);
-    expect(plane.server.requests).toHaveLength(0);
+    expect(plane.server.summaryRequests()).toBe(0);
   });
 
-  it("skips unknown usage after a real native compaction", async () => {
+  // An *undefined* usage (`getContextUsage()` returning undefined) is not
+  // reachable in the pinned host while a model is selected: Pi returns it only
+  // for a model without a positive context window, and its models.json loader
+  // rejects such a model ("invalid contextWindow"). The extension's undefined
+  // guard is therefore defensive; the reachable unknown state is the null usage
+  // of a compacted, not yet re-measured context below.
+  it("does not compact again before a compacted context is re-measured", async () => {
     const real = await plane.startSession({ tokens: 350_000 });
     await real.command("300k");
     await real.session.compact();
+    // Pi reports the compacted context as unmeasured until the next reply.
     expect(real.session.getContextUsage()?.tokens).toBeNull();
-    const afterCompaction = compactions(real);
-    expect(afterCompaction).toBe(1);
+    expect(compactions(real)).toBe(1);
 
-    expect(await real.boundary("turn_end")).toEqual([]);
-    await real.session.extensionRunner.emitInput("hello", undefined, "interactive");
-    expect(compactions(real)).toBe(afterCompaction);
+    // Idle input on the unmeasured context starts no second native compaction.
+    // (In JavaScript `null <= limit` holds, so this guards the observable
+    // behaviour rather than the explicit null check on its own.)
+    plane.server.usageTokens = 10;
+    expect(await real.turn()).toEqual([]);
+    expect(compactions(real)).toBe(1);
   });
 
   it("uses native compaction for input while the session is idle", async () => {
     const real = await plane.startSession({ tokens: 350_000 });
     await real.command("300k");
-    const before = compactions(real);
+    // The reply itself is small, so only the input path can compact.
+    plane.server.usageTokens = 10;
 
-    await real.session.extensionRunner.emitInput("hello", undefined, "interactive");
+    expect(await real.turn()).toEqual([]);
 
-    expect(compactions(real)).toBe(before + 1);
+    const native = real.session.sessionManager
+      .getBranch()
+      .filter((entry) => entry.type === "compaction");
+    expect(native).toHaveLength(1);
+    expect(plane.server.summaryRequests()).toBe(1);
+    // The compaction ran before the prompt reached the model.
+    expect(plane.server.requests.map((request) => request.summary)).toEqual([true, false]);
   });
 
   it("does not start native compaction for input while the session is busy", async () => {
-    const real = await plane.startSession({ tokens: 350_000 });
+    // Seeded below the threshold, so the first prompt's own idle input passes;
+    // that prompt's text then lifts the live context above it while it streams.
+    const real = await plane.startSession({ tokens: 250_000, replyTokens: 10 });
     await real.command("300k");
-    plane.server.delayMs = 120;
 
-    const running = real.session.compact();
-    await waitFor(() => !real.session.isIdle);
-    await real.session.extensionRunner.emitInput("hello", undefined, "interactive");
+    // Keep a real turn streaming: hold the model reply until the follow-up is queued.
+    const release = plane.server.hold();
+    const running = real.session.prompt("x".repeat(100_000 * 4));
+    await plane.server.waitForRequests(1);
+    expect(real.session.isIdle).toBe(false);
+    expect(real.session.getContextUsage()?.tokens).toBeGreaterThan(300_000);
+
+    // Input while busy: above the threshold, but Pi is not idle, so no native
+    // compaction may start under the running turn.
+    await real.session.prompt("second", { streamingBehavior: "followUp" });
     expect(compactions(real)).toBe(0);
+    expect(plane.server.summaryRequests()).toBe(0);
 
+    release();
     await running;
-    expect(compactions(real)).toBe(1);
+    await real.session.waitForIdle();
+    expect(compactions(real)).toBe(0);
+    expect(plane.server.summaryRequests()).toBe(0);
+    // The follow-up was delivered as its own turn.
+    expect(plane.server.turnRequests()).toBe(2);
   });
 
   it("applies project compaction settings over the global default", async () => {
     await plane.writeGlobalSettings({ piAutocompact: { modelLimits: { [MODEL]: 300_000 } } });
     await plane.writeProjectSettings({ compaction: { keepRecentTokens: 50_000 } });
-    const real = await plane.startSession({ tokens: 350_000 });
-    expect(await real.boundary("turn_end")).toHaveLength(1);
+    const real = await plane.startSession(ACROSS);
+    expect(await real.turn()).toHaveLength(1);
 
     await plane.writeProjectSettings({ compaction: { enabled: false } });
-    await real.session.extensionRunner.emit({ type: "session_start", reason: "reload" });
-    expect(await real.boundary("turn_end")).toEqual([]);
+    await real.reload();
+    expect(await real.turn()).toEqual([]);
   });
 
   it("leaves the boundary unchanged on a summarizer error", async () => {
-    const real = await plane.startSession({ tokens: 350_000 });
+    const real = await plane.startSession(ACROSS);
     await real.command("300k");
-    plane.server.failNextRequest = true;
+    plane.server.failNextSummary = true;
 
-    expect(await real.boundary("turn_end")).toEqual([]);
-    expect(plane.server.requests.length).toBeGreaterThan(0);
-    expect(lastNotification(real)?.type).toBe("warning");
-    expect(lastNotification(real)?.message).toMatch(/^Autocompact failed: /);
+    expect(await real.turn()).toEqual([]);
+    expect(plane.server.summaryRequests()).toBe(1);
+    const warning = lastNotification(real);
+    expect(warning?.type).toBe("warning");
+    expect(warning?.message).toMatch(/^Autocompact failed: /);
+    // The real provider's error surfaces in the notice, not a generic message.
+    expect(warning?.message).toMatch(/local model failure|500/);
     expect(real.statuses.get("autocompact")).toBeUndefined();
+    expect(real.autocompactions()).toEqual([]);
   });
 });

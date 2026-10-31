@@ -1,99 +1,53 @@
 import { createServer } from "node:http";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
-  convertToLlm,
   createAgentSession,
   DefaultResourceLoader,
   ModelRuntime,
   SessionManager,
   SettingsManager,
   type AgentSession,
-  type BoundaryContextPreview,
+  type CompactionEntry,
   type ExtensionUIContext,
-  type SessionBoundaryDraft,
-  type Theme,
 } from "@earendil-works/pi-coding-agent";
 
 const extensionPath = fileURLToPath(new URL("../index.ts", import.meta.url));
-const codingAgentEntry = fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"));
-const themeModuleUrl = pathToFileURL(
-  join(dirname(codingAgentEntry), "modes/interactive/theme/theme.js"),
-).href;
-const themeModule = (await import(themeModuleUrl)) as {
-  getThemeByName: (name: string) => Theme | undefined;
-};
 
-/** The host's UI seam: a mode supplies this context and Pi hands it to handlers.
- * Tests record what the extension reports instead of rendering an interactive UI. */
-interface RecordingUi {
-  readonly ui: ExtensionUIContext;
-  readonly notifications: Array<{
-    message: string;
-    type: "info" | "warning" | "error" | undefined;
-  }>;
-  readonly statuses: Map<string, string | undefined>;
-}
-
-function recordingUi(): RecordingUi {
-  const notifications: RecordingUi["notifications"] = [];
-  const statuses = new Map<string, string | undefined>();
-  const theme = themeModule.getThemeByName("dark");
-  if (!theme) throw new Error("The pinned Pi installation has no built-in dark theme");
-  const ui: ExtensionUIContext = {
-    select: async () => undefined,
-    confirm: async () => false,
-    input: async () => undefined,
-    notify: (message, type) => {
-      notifications.push({ message, type });
-    },
-    onTerminalInput: () => () => undefined,
-    setStatus: (key, text) => {
-      statuses.set(key, text);
-    },
-    setWorkingMessage: () => undefined,
-    setWorkingVisible: () => undefined,
-    setWorkingIndicator: () => undefined,
-    setHiddenThinkingLabel: () => undefined,
-    setWidget: () => undefined,
-    setFooter: () => undefined,
-    setHeader: () => undefined,
-    setTitle: () => undefined,
-    custom: async () => {
-      throw new Error("This test's Pi mode does not provide custom UI components");
-    },
-    pasteToEditor: () => undefined,
-    setEditorText: () => undefined,
-    getEditorText: () => "",
-    editor: async () => undefined,
-    addAutocompleteProvider: () => undefined,
-    setEditorComponent: () => undefined,
-    getEditorComponent: () => undefined,
-    theme,
-    getAllThemes: () => [],
-    getTheme: () => undefined,
-    setTheme: () => ({ success: false }),
-    getToolsExpanded: () => false,
-    setToolsExpanded: () => undefined,
-  };
-  return { ui, notifications, statuses };
-}
+/** Marks a request Pi's summarizer sends: its system prompt opens with this text. */
+const SUMMARIZER_MARKER = "context summarization assistant";
 
 /** A real OpenAI-compatible endpoint. The pinned provider streams to it with
  * its own HTTP client; nothing here replaces a host module or an injected stream. */
 export interface ModelServer {
   readonly baseUrl: string;
-  readonly requests: Array<{ readonly method: string | undefined; readonly body: string }>;
-  failNextRequest: boolean;
-  delayMs: number;
+  readonly requests: Array<{
+    readonly method: string | undefined;
+    readonly body: string;
+    readonly summary: boolean;
+  }>;
+  /** Requests Pi's summarizer sent (autocompact's and native compaction's). */
+  summaryRequests(): number;
+  /** Requests a session turn sent to the model. */
+  turnRequests(): number;
+  /** Fail the next summarizer request with a 500 the real provider surfaces. */
+  failNextSummary: boolean;
+  /** The prompt-token usage every reply reports, i.e. the context size Pi measures. */
+  usageTokens: number;
+  /** Hold every reply until the returned release is called. */
+  hold(): () => void;
+  /** Resolves once at least `count` requests have arrived. */
+  waitForRequests(count: number): Promise<void>;
   readonly close: () => Promise<void>;
 }
 
 async function modelServer(): Promise<ModelServer> {
-  let failNextRequest = false;
-  let delayMs = 0;
+  let failNextSummary = false;
+  let usageTokens = 10;
+  let gate: Promise<void> | undefined;
+  const arrivals: Array<{ count: number; resolve: () => void }> = [];
   const requests: ModelServer["requests"] = [];
   const server = createServer((request, response) => {
     let body = "";
@@ -101,41 +55,46 @@ async function modelServer(): Promise<ModelServer> {
       body += chunk.toString("utf8");
     });
     request.on("end", () => {
-      requests.push({ method: request.method, body });
-      if (failNextRequest) {
-        failNextRequest = false;
+      const summary = body.includes(SUMMARIZER_MARKER);
+      requests.push({ method: request.method, body, summary });
+      for (const waiter of arrivals.splice(0)) {
+        if (requests.length >= waiter.count) waiter.resolve();
+        else arrivals.push(waiter);
+      }
+      if (summary && failNextSummary) {
+        failNextSummary = false;
         response.writeHead(500, { "content-type": "application/json" });
         response.end(
           JSON.stringify({ error: { message: "local model failure", type: "server_error" } }),
         );
         return;
       }
-      setTimeout(() => {
+      const reply = (): void => {
         response.writeHead(200, {
           "content-type": "text/event-stream",
           "cache-control": "no-cache",
         });
-        const chunk = (delta: object, finishReason: string | null = null): string =>
+        const chunk = (delta: object, finishReason: string | null, usage?: object): string =>
           `data: ${JSON.stringify({
             id: "chatcmpl-test",
             object: "chat.completion.chunk",
             created: 0,
             model: "compact-model",
             choices: [{ index: 0, delta, finish_reason: finishReason }],
+            ...(usage === undefined ? {} : { usage }),
           })}\n\n`;
-        response.write(chunk({ role: "assistant", content: "local summary" }));
+        response.write(chunk({ role: "assistant", content: "local summary" }, null));
         response.write(
-          `data: ${JSON.stringify({
-            id: "chatcmpl-test",
-            object: "chat.completion.chunk",
-            created: 0,
-            model: "compact-model",
-            choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
-            usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 },
-          })}\n\n`,
+          chunk({}, "stop", {
+            prompt_tokens: usageTokens,
+            completion_tokens: 2,
+            total_tokens: usageTokens + 2,
+          }),
         );
         response.end("data: [DONE]\n\n");
-      }, delayMs);
+      };
+      if (gate === undefined) reply();
+      else void gate.then(reply);
     });
   });
   await new Promise<void>((resolve, reject) => {
@@ -143,22 +102,43 @@ async function modelServer(): Promise<ModelServer> {
     server.listen(0, "127.0.0.1", resolve);
   });
   const address = server.address();
-  if (address === null || typeof address === "string") throw new Error("Model server did not bind");
+  if (address === null || typeof address === "string") {
+    server.close();
+    throw new Error("Model server did not bind");
+  }
   return {
     baseUrl: `http://127.0.0.1:${address.port}/v1`,
     requests,
-    get failNextRequest(): boolean {
-      return failNextRequest;
+    summaryRequests: () => requests.filter((entry) => entry.summary).length,
+    turnRequests: () => requests.filter((entry) => !entry.summary).length,
+    get failNextSummary(): boolean {
+      return failNextSummary;
     },
-    set failNextRequest(value: boolean) {
-      failNextRequest = value;
+    set failNextSummary(value: boolean) {
+      failNextSummary = value;
     },
-    get delayMs(): number {
-      return delayMs;
+    get usageTokens(): number {
+      return usageTokens;
     },
-    set delayMs(value: number) {
-      delayMs = value;
+    set usageTokens(value: number) {
+      usageTokens = value;
     },
+    hold: () => {
+      let release = (): void => undefined;
+      gate = new Promise<void>((resolve) => {
+        release = () => {
+          gate = undefined;
+          resolve();
+        };
+      });
+      return release;
+    },
+    waitForRequests: (count) =>
+      requests.length >= count
+        ? Promise.resolve()
+        : new Promise<void>((resolve) => {
+            arrivals.push({ count, resolve });
+          }),
     close: async () => {
       const closed = new Promise<void>((resolve) => {
         server.once("close", () => resolve());
@@ -170,16 +150,30 @@ async function modelServer(): Promise<ModelServer> {
   };
 }
 
+type Notifications = Array<{ message: string; type: "info" | "warning" | "error" | undefined }>;
+
 export interface RealSession {
   readonly session: AgentSession;
-  readonly notifications: RecordingUi["notifications"];
-  readonly statuses: RecordingUi["statuses"];
+  readonly notifications: Notifications;
+  readonly statuses: Map<string, string | undefined>;
   command(args: string): Promise<void>;
-  boundary(event: "turn_end" | "agent_before_settle"): Promise<SessionBoundaryDraft[]>;
+  /** Run one real prompt through Pi's agent loop against the local model server,
+   * which fires the real `turn_end` and `agent_before_settle` boundaries, and
+   * return the compaction entries pi-autocompact committed during it. */
+  turn(text?: string): Promise<CompactionEntry[]>;
+  /** Pi's own reload: a fresh extension instance receives a real `session_start`. */
+  reload(): Promise<void>;
+  /** Compaction entries pi-autocompact committed to the branch so far. */
+  autocompactions(): CompactionEntry[];
 }
 
 export interface StartSessionOptions {
+  /** Seed a conversation whose measured context usage is this many tokens. */
   readonly tokens?: number;
+  /** The usage every real reply reports (default: the seeded `tokens`). Seeding
+   * below a threshold and replying above it isolates the turn boundaries from
+   * the idle-input path, which runs first and sees only the seeded usage. */
+  readonly replyTokens?: number;
 }
 
 export interface RealPlane {
@@ -244,150 +238,212 @@ function seedUsage(session: AgentSession, tokens: number): void {
   appendSize(session, third);
 }
 
-function boundaryPreview(session: AgentSession): BoundaryContextPreview {
-  const projection = session.sessionManager.buildSessionProjection();
-  return {
-    contextEntries: projection.entries,
-    contextMessages: projection.messages,
-    llmMessages: convertToLlm(projection.messages),
-    pendingMessages: [],
-    canContinue: true,
-  };
+function autocompactionsOf(session: AgentSession): CompactionEntry[] {
+  return session.sessionManager
+    .getBranch()
+    .filter(
+      (entry): entry is CompactionEntry =>
+        entry.type === "compaction" &&
+        typeof entry.details === "object" &&
+        entry.details !== null &&
+        "source" in entry.details &&
+        entry.details.source === "pi-autocompact",
+    );
+}
+
+function restoreEnv(name: string, value: string | undefined): void {
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
 }
 
 export async function createRealPlane(): Promise<RealPlane> {
-  const agentDir = await mkdtemp(join(tmpdir(), "pi-autocompact-agent-"));
-  const projectDir = await mkdtemp(join(tmpdir(), "pi-autocompact-project-"));
-  const server = await modelServer();
   const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
   const previousOffline = process.env.PI_OFFLINE;
-  process.env.PI_CODING_AGENT_DIR = agentDir;
-  process.env.PI_OFFLINE = "1";
+  const directories: string[] = [];
+  let server: ModelServer | undefined;
+  const sessions: AgentSession[] = [];
 
-  await writeFile(
-    join(agentDir, "models.json"),
-    `${JSON.stringify(
-      {
-        providers: {
-          probe: {
-            baseUrl: server.baseUrl,
-            api: "openai-completions",
-            apiKey: "probe-key",
-            models: [
-              {
-                id: "compact-model",
-                name: "Compact Model",
-                contextWindow: 1_000_000,
-                maxTokens: 4096,
-              },
-              { id: "other-model", name: "Other Model", contextWindow: 2_000_000, maxTokens: 4096 },
-            ],
+  // Every step undoes what it can even when an earlier one throws, so a failed
+  // test never leaks the server, the temporary directories, or the environment.
+  const cleanup = async (): Promise<void> => {
+    const failures: unknown[] = [];
+    for (const session of sessions.splice(0)) {
+      try {
+        session.dispose();
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    try {
+      await server?.close();
+    } catch (error) {
+      failures.push(error);
+    }
+    for (const directory of directories.splice(0)) {
+      try {
+        await rm(directory, { recursive: true, force: true });
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    restoreEnv("PI_CODING_AGENT_DIR", previousAgentDir);
+    restoreEnv("PI_OFFLINE", previousOffline);
+    if (failures.length > 0) {
+      throw new AggregateError(failures, "Closing the real Pi plane failed");
+    }
+  };
+
+  try {
+    const agentDir = await mkdtemp(join(tmpdir(), "pi-autocompact-agent-"));
+    directories.push(agentDir);
+    const projectDir = await mkdtemp(join(tmpdir(), "pi-autocompact-project-"));
+    directories.push(projectDir);
+    const modelServerInstance = await modelServer();
+    server = modelServerInstance;
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    process.env.PI_OFFLINE = "1";
+
+    await writeFile(
+      join(agentDir, "models.json"),
+      `${JSON.stringify(
+        {
+          providers: {
+            probe: {
+              baseUrl: modelServerInstance.baseUrl,
+              api: "openai-completions",
+              apiKey: "probe-key",
+              models: [
+                {
+                  id: "compact-model",
+                  name: "Compact Model",
+                  contextWindow: 1_000_000,
+                  maxTokens: 4096,
+                },
+                {
+                  id: "other-model",
+                  name: "Other Model",
+                  contextWindow: 2_000_000,
+                  maxTokens: 4096,
+                },
+              ],
+            },
           },
         },
-      },
-      null,
-      2,
-    )}\n`,
-  );
-  await writeFile(join(agentDir, "settings.json"), "{}\n");
+        null,
+        2,
+      )}\n`,
+    );
+    await writeFile(join(agentDir, "settings.json"), "{}\n");
 
-  const sessions: AgentSession[] = [];
-  const writeSettings = async (directory: string, settings: unknown): Promise<void> => {
-    await mkdir(directory, { recursive: true });
-    await writeFile(join(directory, "settings.json"), `${JSON.stringify(settings, null, 2)}\n`);
-  };
+    const writeSettings = async (directory: string, settings: unknown): Promise<void> => {
+      await mkdir(directory, { recursive: true });
+      await writeFile(join(directory, "settings.json"), `${JSON.stringify(settings, null, 2)}\n`);
+    };
 
-  return {
-    agentDir,
-    projectDir,
-    server,
-    writeGlobalSettings: (settings) => writeSettings(agentDir, settings),
-    writeProjectSettings: (settings) => writeSettings(join(projectDir, ".pi"), settings),
-    readGlobalSettings: () => readFile(join(agentDir, "settings.json"), "utf8"),
-    readProjectSettings: () => readFile(join(projectDir, ".pi", "settings.json"), "utf8"),
-    startSession: async (options = {}) => {
-      const modelRuntime = await ModelRuntime.create({
-        authPath: join(agentDir, "auth.json"),
-        modelsPath: join(agentDir, "models.json"),
-      });
-      const model = modelRuntime.getModel("probe", "compact-model");
-      if (!model) throw new Error("Model probe/compact-model is missing");
-      const settingsManager = SettingsManager.create(projectDir, agentDir);
-      const resourceLoader = new DefaultResourceLoader({
-        cwd: projectDir,
-        agentDir,
-        settingsManager,
-        additionalExtensionPaths: [extensionPath],
-      });
-      await resourceLoader.reload();
-      const loaded = resourceLoader.getExtensions();
-      if (loaded.errors.length > 0 || loaded.extensions.length !== 1) {
-        throw new Error(
-          `The real extension loader rejected the package: ${JSON.stringify(loaded.errors)}`,
-        );
-      }
-      const { session } = await createAgentSession({
-        cwd: projectDir,
-        agentDir,
-        model,
-        modelRuntime,
-        settingsManager,
-        sessionManager: SessionManager.inMemory(projectDir),
-        resourceLoader,
-        noTools: "all",
-      });
-      sessions.push(session);
-      const recorded = recordingUi();
-      await session.bindExtensions({
-        uiContext: recorded.ui,
-        mode: "print",
-        commandContextActions: {
-          waitForIdle: () => session.waitForIdle(),
-          newSession: async () => ({ cancelled: false }),
-          fork: async () => ({ cancelled: false }),
-          navigateTree: async () => ({ cancelled: false }),
-          switchSession: async () => ({ cancelled: false }),
-          reload: async () => undefined,
-        },
-      });
-      if (options.tokens !== undefined && options.tokens > 0) seedUsage(session, options.tokens);
-      return {
-        session,
-        notifications: recorded.notifications,
-        statuses: recorded.statuses,
-        command: async (args) => {
-          await session.prompt(args.length === 0 ? "/autocompact" : `/autocompact ${args}`);
-        },
-        boundary: async (event) => {
-          const activeModel = session.model;
-          if (!activeModel) throw new Error("The test session has no model");
-          const result = await session.extensionRunner.emitBoundary(
-            event === "turn_end"
-              ? {
-                  type: "turn_end",
-                  turnIndex: 0,
-                  message: assistantMessage(activeModel, 0),
-                  toolResults: [],
-                  messageEntryId: session.sessionManager.getLeafId() ?? "",
-                  toolResultEntryIds: [],
-                  outcome: "completed",
-                }
-              : { type: "agent_before_settle", outcome: "completed" },
-            () => boundaryPreview(session),
+    return {
+      agentDir,
+      projectDir,
+      server: modelServerInstance,
+      writeGlobalSettings: (settings) => writeSettings(agentDir, settings),
+      writeProjectSettings: (settings) => writeSettings(join(projectDir, ".pi"), settings),
+      readGlobalSettings: () => readFile(join(agentDir, "settings.json"), "utf8"),
+      readProjectSettings: () => readFile(join(projectDir, ".pi", "settings.json"), "utf8"),
+      startSession: async (options = {}) => {
+        const modelRuntime = await ModelRuntime.create({
+          authPath: join(agentDir, "auth.json"),
+          modelsPath: join(agentDir, "models.json"),
+        });
+        const model = modelRuntime.getModel("probe", "compact-model");
+        if (!model) throw new Error("Model probe/compact-model is missing");
+        const settingsManager = SettingsManager.create(projectDir, agentDir);
+        const resourceLoader = new DefaultResourceLoader({
+          cwd: projectDir,
+          agentDir,
+          settingsManager,
+          additionalExtensionPaths: [extensionPath],
+          noSkills: true,
+          noPromptTemplates: true,
+          noThemes: true,
+          noContextFiles: true,
+        });
+        await resourceLoader.reload();
+        const loaded = resourceLoader.getExtensions();
+        if (loaded.errors.length > 0 || loaded.extensions.length !== 1) {
+          throw new Error(
+            `The real extension loader rejected the package: ${JSON.stringify(loaded.errors)}`,
           );
-          return result.entries;
-        },
-      };
-    },
-    close: async () => {
-      for (const session of sessions) session.dispose();
-      await server.close();
-      await rm(agentDir, { recursive: true, force: true });
-      await rm(projectDir, { recursive: true, force: true });
-      if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
-      else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
-      if (previousOffline === undefined) delete process.env.PI_OFFLINE;
-      else process.env.PI_OFFLINE = previousOffline;
-    },
-  };
+        }
+        const { session } = await createAgentSession({
+          cwd: projectDir,
+          agentDir,
+          model,
+          modelRuntime,
+          settingsManager,
+          sessionManager: SessionManager.inMemory(projectDir),
+          resourceLoader,
+          noTools: "all",
+        });
+        sessions.push(session);
+
+        // Pi's UI context is the client side of the host's UI port (interactive
+        // mode renders it, RPC mode serializes it). Keep the host's own context,
+        // theme included, and record only what the extension reports through it.
+        const notifications: Notifications = [];
+        const statuses = new Map<string, string | undefined>();
+        const uiContext: ExtensionUIContext = {
+          ...session.extensionRunner.getUIContext(),
+          notify: (message, type) => {
+            notifications.push({ message, type });
+          },
+          setStatus: (key, text) => {
+            statuses.set(key, text);
+          },
+        };
+        // The print-mode command actions only route session navigation, which
+        // pi-autocompact never requests; waitForIdle is the session's own.
+        await session.bindExtensions({
+          uiContext,
+          mode: "print",
+          commandContextActions: {
+            waitForIdle: () => session.waitForIdle(),
+            newSession: async () => ({ cancelled: false }),
+            fork: async () => ({ cancelled: false }),
+            navigateTree: async () => ({ cancelled: false }),
+            switchSession: async () => ({ cancelled: false }),
+            reload: async () => {
+              await session.reload();
+            },
+          },
+        });
+        if (options.tokens !== undefined && options.tokens > 0) {
+          seedUsage(session, options.tokens);
+        }
+        modelServerInstance.usageTokens = options.replyTokens ?? options.tokens ?? 10;
+        return {
+          session,
+          notifications,
+          statuses,
+          command: async (args) => {
+            await session.prompt(args.length === 0 ? "/autocompact" : `/autocompact ${args}`);
+          },
+          turn: async (text = "next step") => {
+            const before = autocompactionsOf(session).length;
+            await session.prompt(text);
+            await session.waitForIdle();
+            return autocompactionsOf(session).slice(before);
+          },
+          reload: () => session.reload(),
+          autocompactions: () => autocompactionsOf(session),
+        };
+      },
+      close: cleanup,
+    };
+  } catch (error) {
+    try {
+      await cleanup();
+    } catch (cleanupError) {
+      throw new AggregateError([error, cleanupError], "Creating the real Pi plane failed");
+    }
+    throw error;
+  }
 }
