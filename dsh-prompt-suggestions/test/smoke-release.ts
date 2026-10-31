@@ -1,20 +1,28 @@
-/** Verify the installed tarball offline with the repo dev tooling, no host peers, and no API calls. */
+/**
+ * Verify the installed tarball in its real environment.
+ *
+ * The first half checks the published artifact itself with Node built-ins: every
+ * manifest entry must point at a real file inside the installed package. The second
+ * half then runs both browser halves where they actually run: the installed package
+ * is installed into a throwaway profile, the pinned host's real `dsh web` server
+ * boots, a real Chromium loads the page the host built, and the assertions observe
+ * what the host's own services, slot registry, composer and primitives rendered.
+ * Nothing about the host, its settings service, its UI, or its DOM is replaced by a
+ * stand-in.
+ *
+ * Usage: `node test/smoke-release.ts <installed-package-dir>`. The host CLI and
+ * Playwright come from this package's devDependencies, so the script runs from the
+ * worktree that packed the tarball, against the installed copy.
+ */
 import assert from "node:assert/strict";
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
-import { pathToFileURL } from "node:url";
 
-import { JSDOM } from "jsdom";
-import * as jsxRuntime from "react/jsx-runtime";
-import * as React from "react";
+import { launchBrowser, openLiveSession, openSettingsSheet, openWebPlane } from "./web-plane.ts";
 
 const PACKAGE_ID = "@indexyz/dsh-prompt-suggestions";
-const NAMESPACE = "prompt-suggestions";
-const OVERLAY_SLOT = "conversation.input.overlay";
 const SETTINGS_SLOT = "settings.general.item";
-const INJECT = ["connection", "locale", "slots", "remote.settings"];
-
-type UnknownFunction = (...args: unknown[]) => unknown;
+const ROW_SELECTOR = "section.dsh-prompt-suggestions";
 
 function object(value: unknown, description: string): Record<string, unknown> {
   assert.ok(
@@ -22,11 +30,6 @@ function object(value: unknown, description: string): Record<string, unknown> {
     `${description} must be an object`,
   );
   return value as Record<string, unknown>;
-}
-
-function callable(value: unknown, description: string): UnknownFunction {
-  assert.equal(typeof value, "function", `${description} must be a function`);
-  return value as UnknownFunction;
 }
 
 function insidePackage(dir: string, path: string, field: string): void {
@@ -61,147 +64,144 @@ function exportTargets(value: unknown, field = "exports"): string[] {
   );
 }
 
-interface ModuleRegistration {
-  readonly id: string;
-  readonly factory: (require: (id: string) => unknown) => unknown;
+interface RenderedRow {
+  readonly rows: number;
+  readonly title: string;
+  readonly description: string;
+  readonly hint: string;
+  readonly switchChecked: string;
+  readonly switchClass: string;
+  readonly styleLength: number;
 }
 
-interface ClientPlugin {
-  readonly inject: readonly string[];
-  apply(ctx: unknown): void;
-}
+/** What the host rendered for this package's settings row, from the live document. */
+const RENDERED_ROW = `(() => {
+  const root = document.querySelector("section.dsh-prompt-suggestions");
+  if (root === null) return null;
+  const switchElement = root.querySelector("[role=switch]");
+  const text = (selector) => root.querySelector(selector)?.textContent?.trim() ?? "";
+  return JSON.stringify({
+    rows: document.querySelectorAll("section.dsh-prompt-suggestions").length,
+    title: text("h3.dsh-prompt-suggestions-title"),
+    description: text(".dsh-prompt-suggestions-description"),
+    hint: text(".dsh-prompt-suggestions-hint"),
+    switchChecked: switchElement?.getAttribute("aria-checked") ?? "",
+    switchClass: String(switchElement?.className ?? ""),
+    styleLength: (root.querySelector("style")?.textContent ?? "").length,
+  });
+})()`;
 
-interface RegisteredRow {
-  readonly options: Record<string, unknown>;
-  readonly render: UnknownFunction;
+/** What the host rendered for this package's composer overlay, from the live document. */
+const RENDERED_OVERLAY = `(() => {
+  const anchor = document.querySelector("[data-prompt-suggestions-anchor]");
+  const card = anchor?.closest("[data-composer-card]") ?? null;
+  const editor = card?.querySelector('[contenteditable="true"]') ?? null;
+  const placeholder = card?.querySelector("[data-composer-placeholder]") ?? null;
+  return JSON.stringify({
+    anchors: document.querySelectorAll("[data-prompt-suggestions-anchor]").length,
+    anchorLabel: anchor?.getAttribute("data-prompt-suggestions-anchor") ?? "",
+    anchorHidden: anchor?.hasAttribute("hidden") ?? false,
+    cardFound: card !== null,
+    editorEditable: editor?.getAttribute("contenteditable") ?? "",
+    placeholderText: placeholder?.textContent?.trim() ?? "",
+    placeholderVisibility: placeholder === null ? "" : getComputedStyle(placeholder).visibility,
+    ghosts: document.querySelectorAll("[data-prompt-suggestions]").length,
+  });
+})()`;
+
+/** Wait until a locator reports the settled copy instead of a transient state. */
+async function waitForText(
+  locator: { textContent(): Promise<string | null> },
+  expected: string,
+  timeoutMs: number,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const current = (await locator.textContent())?.trim();
+    if (current === expected) return;
+    if (Date.now() > deadline) {
+      throw new Error(`the host never showed "${expected}" (last: ${String(current)})`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  }
 }
 
 /**
- * Execute the installed browser artifact the way the page's module loader does:
- * a real jsdom window, the real module-loader registration, and the real React
- * modules the page supplies. The primitives module is present as an empty
- * module because the pinned primitives package cannot be evaluated standalone
- * (its shipped lib imports runtime modules the workspace does not install);
- * this smoke only inspects registration and disposal, never renders the row.
- * @param clientPath - the installed `client.js`.
+ * Load the installed package in the real host plane and assert what the host's own
+ * Settings surface and live session rendered for it.
  */
-async function checkClient(clientPath: string): Promise<void> {
-  const registrations: ModuleRegistration[] = [];
-  const dom = new JSDOM("<!doctype html><html><body></body></html>", {
-    url: "http://localhost/",
-    pretendToBeVisual: true,
-  });
-  Object.assign(dom.window, {
-    __ModuleLoader__: {
-      load(registration: ModuleRegistration): void {
-        registrations.push(registration);
-      },
-    },
-  });
-  Object.defineProperty(globalThis, "window", { value: dom.window, configurable: true });
-  // A real module evaluation of the installed artifact, not a shim: the file is
-  // ESM-valid and calls the loader contract captured above.
-  await import(pathToFileURL(clientPath).href);
-  assert.equal(registrations.length, 1, "client.js must register exactly one module");
-  const registration = registrations[0];
-  assert.ok(registration !== undefined, "client module registration is missing");
-  assert.equal(registration.id, PACKAGE_ID, "client module id");
+async function checkRenderedClient(installed: string): Promise<void> {
+  const plane = await openWebPlane([installed]);
+  const browser = await launchBrowser();
+  try {
+    const page = await browser.newPage();
+    await openSettingsSheet(page, plane.pageUrl, ROW_SELECTOR);
 
-  const factory = callable(registration.factory, "client module factory");
-  const plugin = object(
-    factory((id: unknown): unknown => {
-      if (id === "react") return React;
-      if (id === "react/jsx-runtime") return jsxRuntime;
-      if (id === "@deepseek-ai/dsh-client-ui-primitives") return {};
-      throw new Error(`client requested a module outside the page module table: ${String(id)}`);
-    }),
-    "client factory result",
-  ) as unknown as ClientPlugin;
-  assert.deepEqual(Array.from(plugin.inject), INJECT, "client injected services");
-  const apply = callable(plugin.apply, "client apply export");
+    const raw: unknown = await page.evaluate(RENDERED_ROW);
+    assert.ok(raw !== null, "the host did not render this package's General settings row");
+    const row = JSON.parse(String(raw)) as RenderedRow;
+    assert.equal(row.rows, 1, "the host must mount exactly one settings row");
+    assert.equal(row.title, "Next-message suggestions", "English row title from the locale");
+    assert.equal(
+      row.description,
+      "Show a dim suggestion in the empty composer after a successful reply.",
+      "row description from the registered locale",
+    );
+    assert.ok(row.hint.length > 0, "the row must show its hint while enabled");
+    assert.ok(row.styleLength > 0, "the row must ship its own styles");
+    assert.match(row.switchClass, /_switch_[0-9a-z]+_[0-9a-z]+/, "host Switch primitive");
+    assert.equal(row.switchChecked, "true", "a freshly installed package starts enabled");
 
-  const dictionaries = new Map<string, Record<string, unknown>>();
-  const injectedSlots: string[] = [];
-  const rows: RegisteredRow[] = [];
-  const cleanups: UnknownFunction[] = [];
-  const services = new Map<string, unknown>([
-    ["connection", { rpc: { call: () => Promise.reject(new Error("no remote calls")) } }],
-    ["remote.settings", { describe: () => Promise.reject(new Error("no remote calls")) }],
-    ["shortcuts", { catalog: { getSnapshot: () => [] }, fixedCatalog: { getSnapshot: () => [] } }],
-  ]);
-  const context = {
-    get(service: string): unknown {
-      assert.ok(services.has(service), `unexpected service requested: ${service}`);
-      return services.get(service);
-    },
-    effect(effect: unknown): void {
-      const cleanup = callable(effect, "client effect")();
-      if (cleanup !== undefined) cleanups.push(callable(cleanup, "effect cleanup"));
-    },
-    locale: {
-      register(namespace: string, dictionary: unknown): () => void {
-        assert.equal(namespace, NAMESPACE, "locale namespace");
-        assert.ok(!dictionaries.has(namespace), "locale registered more than once");
-        dictionaries.set(namespace, object(dictionary, "locale dictionary"));
-        return () => {
-          dictionaries.delete(namespace);
-        };
-      },
-      bind(namespace: string): (key: string) => unknown {
-        assert.equal(namespace, NAMESPACE, "bound locale namespace");
-        return (key: string): unknown => {
-          const dictionary = object(dictionaries.get(namespace), "registered locale dictionary");
-          return object(dictionary["en"], "English locale")[key];
-        };
-      },
-    },
-    slots: {
-      inject(name: string, callback: unknown): unknown {
-        injectedSlots.push(name);
-        return callable(callback, "slot injection callback")();
-      },
-      register(options: unknown, render: unknown): () => void {
-        const row = {
-          options: object(options, "slot registration options"),
-          render: callable(render, "slot renderer"),
-        };
-        rows.push(row);
-        return () => {
-          rows.splice(rows.indexOf(row), 1);
-        };
-      },
-    },
-  };
-  apply(context);
-  assert.deepEqual(
-    injectedSlots,
-    [OVERLAY_SLOT, SETTINGS_SLOT],
-    "composer and General settings slot injections",
-  );
-  assert.equal(rows.length, 2, "client must register the overlay and one General settings row");
-  const [overlay, settings] = rows;
-  assert.ok(overlay, "composer overlay registration is missing");
-  assert.ok(settings, "General settings registration is missing");
-  assert.equal(overlay.options["name"], OVERLAY_SLOT, "overlay slot");
-  assert.equal(overlay.options["id"], NAMESPACE, "overlay id");
-  assert.equal(overlay.options["order"], 50, "overlay order");
-  assert.ok(React.isValidElement(overlay.render({})), "overlay renderer must return an element");
-  assert.equal(settings.options["name"], SETTINGS_SLOT, "settings row slot");
-  assert.equal(settings.options["id"], NAMESPACE, "settings row id");
-  assert.equal(settings.options["order"], 45, "settings row order");
-  assert.equal(
-    callable(settings.options["label"], "settings row label")(),
-    "Next-message suggestions",
-  );
-  assert.ok(
-    React.isValidElement(settings.render()),
-    "settings row renderer must return an element",
-  );
-  const dictionary = object(dictionaries.get(NAMESPACE), "registered locale dictionary");
-  assert.equal(object(dictionary["zh"], "Chinese locale")["label"], "下一句建议");
-  for (const cleanup of cleanups.reverse()) cleanup();
-  assert.equal(rows.length, 0, "slot registrations must unregister on disposal");
-  assert.equal(dictionaries.size, 0, "locale must unregister on disposal");
+    // The row must write through the host's real settings service and be read back by
+    // a second page, which is what the host's storage really guarantees. The toggle
+    // writes immediately, so the settled copy is the service's own feedback.
+    await page.locator(`${ROW_SELECTOR} [role=switch]`).first().click({ timeout: 8_000 });
+    const status = page.locator(`${ROW_SELECTOR} [role=status][data-tone]`).first();
+    await status.waitFor({ state: "attached", timeout: 15_000 });
+    await waitForText(status, "Saved", 20_000);
+    assert.equal(await status.getAttribute("data-tone"), "success", "success feedback tone");
+
+    const fresh = await browser.newContext();
+    const freshPage = await fresh.newPage();
+    await openSettingsSheet(freshPage, plane.pageUrl, ROW_SELECTOR);
+    assert.equal(
+      await freshPage.locator(`${ROW_SELECTOR} [role=switch]`).first().getAttribute("aria-checked"),
+      "false",
+      "the write persisted for a new page",
+    );
+    await fresh.close();
+
+    // The overlay half must mount in the host's own composer, not only in Settings.
+    await openLiveSession(page, plane.pageUrl, plane.workspace);
+    const overlayRaw: unknown = await page.evaluate(RENDERED_OVERLAY);
+    const overlay = JSON.parse(String(overlayRaw)) as {
+      anchors: number;
+      anchorLabel: string;
+      anchorHidden: boolean;
+      cardFound: boolean;
+      editorEditable: string;
+      placeholderText: string;
+      placeholderVisibility: string;
+      ghosts: number;
+    };
+    assert.equal(overlay.anchors, 1, "the overlay slot must mount once in the live composer");
+    assert.equal(
+      overlay.anchorLabel,
+      "Next-message suggestions",
+      "the anchor carries the localized label",
+    );
+    assert.equal(overlay.anchorHidden, true, "the anchor itself stays inert");
+    assert.equal(overlay.cardFound, true, "the overlay must find the host composer card");
+    assert.equal(overlay.editorEditable, "true", "the host composer must be editable");
+    assert.ok(overlay.placeholderText.length > 0, "the composer keeps its native placeholder");
+    assert.equal(overlay.placeholderVisibility, "visible", "nothing is painted without a reply");
+    assert.equal(overlay.ghosts, 0, "no ghost row exists before a suggestion is available");
+
+    await page.close();
+  } finally {
+    await browser.close().catch(() => {});
+    await plane.close().catch(() => {});
+  }
 }
 
 async function main(): Promise<void> {
@@ -215,26 +215,31 @@ async function main(): Promise<void> {
   const parsed: unknown = JSON.parse(readFileSync(join(installed, "package.json"), "utf8"));
   const manifest = object(parsed, "package.json");
   assert.equal(manifest["name"], PACKAGE_ID, "installed package name");
+  const dsh = object(manifest["dsh"], "dsh manifest");
+  const client = object(dsh["client"], "dsh.client manifest");
+  assert.equal(client["platform"], "web", "the client half targets the web platform");
+  const inject = client["inject"];
+  assert.ok(Array.isArray(inject), "dsh.client.inject must be a list");
+  assert.ok(
+    inject.includes("@deepseek-ai/dsh-client-ui-settings"),
+    `dsh.client.inject must include the settings surface package that mounts ${SETTINGS_SLOT}`,
+  );
   packagedPath(installed, manifest["main"], "main");
   packagedPath(installed, manifest["types"], "types");
   const targets = exportTargets(manifest["exports"]);
   assert.ok(targets.length > 0, "package.json must declare exports targets");
   for (const target of targets) packagedPath(installed, target, "exports");
-  const dsh = object(manifest["dsh"], "dsh manifest");
   const bundle = object(dsh["bundle"], "dsh.bundle manifest");
   packagedPath(installed, bundle["patch"], "dsh.bundle.patch");
   packagedPath(installed, "lib/index.js", "built host entry");
-  const patch = readFileSync(packagedPath(installed, bundle["patch"], "dsh.bundle.patch"), "utf8");
-  assert.match(patch, /id:\s*prompt-suggestions/u, "bundle patch must insert the plugin row");
-  await checkClient(packagedPath(installed, "client.js", "built client entry"));
+  packagedPath(installed, "client.js", "built client entry");
+  await checkRenderedClient(installed);
   console.log(
-    `smoke-release: ${PACKAGE_ID} passed (main/types/exports/patch, client module/inject/apply, overlay/settings/locale/disposal)`,
+    `smoke-release: ${PACKAGE_ID} passed (main/types/exports/patch files, installed package rendered in the real host plane, toggled through the settings service and persisted across pages, overlay mounted in the live composer)`,
   );
 }
 
-try {
-  await main();
-} catch (error: unknown) {
+main().catch((error: unknown) => {
   console.error(`smoke-release: ${error instanceof Error ? error.message : String(error)}`);
   process.exitCode = 1;
-}
+});
