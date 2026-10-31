@@ -17,7 +17,16 @@ import assert from "node:assert/strict";
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 
+import type { Browser } from "playwright";
+import {
+  localProviders,
+  MODEL_API_KEY,
+  MODEL_API_KEY_ENV,
+  startModelServer,
+} from "./model-server.ts";
+import type { ModelServer } from "./model-server.ts";
 import { launchBrowser, openSettingsSheet, openWebPlane } from "./web-plane.ts";
+import type { WebPlane } from "./web-plane.ts";
 
 const PACKAGE_ID = "@indexyz/dsh-thread-summary";
 const ROW_SELECTOR = "section.dsh-thread-summary";
@@ -69,6 +78,7 @@ interface RenderedRow {
   readonly switchChecked: string;
   readonly switchClass: string;
   readonly saveClass: string;
+  readonly triggers: string[];
   readonly styleLength: number;
 }
 
@@ -85,18 +95,44 @@ const RENDERED_ROW = `(() => {
     switchChecked: switchElement?.getAttribute("aria-checked") ?? "",
     switchClass: switchElement?.className ?? "",
     saveClass: save?.className ?? "",
+    triggers: [...root.querySelectorAll("button.dsh-summary-trigger")].map((element) => (element.textContent ?? "").trim()),
     styleLength: (root.querySelector("style")?.textContent ?? "").length,
   });
 })()`;
 
+/** Run every teardown step, log each failure, and report whether all succeeded. */
+async function teardown(steps: readonly (() => Promise<unknown> | undefined)[]): Promise<boolean> {
+  let clean = true;
+  for (const step of steps) {
+    try {
+      await step();
+    } catch (error) {
+      clean = false;
+      console.error(
+        `smoke-release: teardown failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+  return clean;
+}
+
 /**
  * Load the installed package in the real host plane and assert what the host's
- * own Settings surface rendered for it.
+ * own Settings surface rendered for it. The host's catalog is its own dormant
+ * `llm-pi-ai` adapter, routed to a locally started endpoint.
  */
 async function checkRenderedClient(installed: string): Promise<void> {
-  const plane = await openWebPlane([installed]);
-  const browser = await launchBrowser();
+  let server: ModelServer | undefined;
+  let plane: WebPlane | undefined;
+  let browser: Browser | undefined;
+  let failure: unknown;
   try {
+    server = await startModelServer();
+    plane = await openWebPlane([installed], {
+      patch: [{ id: "llm-pi-ai", config: { providers: localProviders(server.baseURL) } }],
+      env: { [MODEL_API_KEY_ENV]: MODEL_API_KEY },
+    });
+    browser = await launchBrowser();
     const page = await browser.newPage();
     await openSettingsSheet(page, plane.pageUrl, ROW_SELECTOR);
 
@@ -114,30 +150,47 @@ async function checkRenderedClient(installed: string): Promise<void> {
     assert.match(row.switchClass, /_switch_[0-9a-z]+_[0-9a-z]+/, "host Switch primitive");
     assert.match(row.saveClass, /_button_[0-9a-z]+_[0-9a-z]+/, "host Button primitive");
     assert.equal(row.switchChecked, "true", "a freshly installed package starts enabled");
+    assert.deepEqual(
+      row.triggers,
+      ["Local Summary Endpoint", "Local Summary Model"],
+      "the pickers are filled from the host's live model catalog",
+    );
 
-    // The row must write through the host's real settings service and be read
-    // back by a second page, which is what the host's storage really guarantees.
-    await page.locator(`${ROW_SELECTOR} [role=switch]`).first().click({ timeout: 8_000 });
+    // The row must write the selected route through the host's real settings
+    // service and be read back by a second page.
     await page.locator(`${ROW_SELECTOR} button.dsh-summary-save`).first().click({ timeout: 8_000 });
     const status = page.locator(`${ROW_SELECTOR} .dsh-summary-status[data-tone]`).first();
-    await status.waitFor({ state: "attached", timeout: 8_000 });
+    await status.waitFor({ state: "visible", timeout: 15_000 });
     assert.equal((await status.textContent())?.trim(), "Saved", "save feedback from the service");
     assert.equal(await status.getAttribute("data-tone"), "success", "success feedback tone");
+    assert.match(
+      readFileSync(plane.patchPath, "utf8"),
+      /model: local\/summary-model/u,
+      "the route was written into the profile patch",
+    );
 
     const fresh = await browser.newContext();
     const freshPage = await fresh.newPage();
     await openSettingsSheet(freshPage, plane.pageUrl, ROW_SELECTOR);
-    assert.equal(
-      await freshPage.locator(`${ROW_SELECTOR} [role=switch]`).first().getAttribute("aria-checked"),
-      "false",
-      "the write persisted for a new page",
+    const reread: unknown = await freshPage.evaluate(RENDERED_ROW);
+    assert.ok(reread !== null, "the second page did not render the row");
+    const second = JSON.parse(String(reread)) as RenderedRow;
+    assert.equal(second.switchChecked, "true", "the saved switch persisted for a new page");
+    assert.deepEqual(
+      second.triggers,
+      ["Local Summary Endpoint", "Local Summary Model"],
+      "the saved route persisted for a new page",
     );
-    await fresh.close();
-    await page.close();
-  } finally {
-    await browser.close().catch(() => {});
-    await plane.close().catch(() => {});
+  } catch (error) {
+    failure = error;
   }
+  const clean = await teardown([
+    () => browser?.close(),
+    () => plane?.close(),
+    () => server?.close(),
+  ]);
+  if (failure !== undefined) throw failure;
+  assert.ok(clean, "the real plane did not tear down cleanly");
 }
 
 async function main(): Promise<void> {
@@ -163,7 +216,7 @@ async function main(): Promise<void> {
   packagedPath(installed, "client.js", "built client entry");
   await checkRenderedClient(installed);
   console.log(
-    `smoke-release: ${PACKAGE_ID} passed (main/types/exports/patch files, installed package rendered in the real host plane, saved through the settings service, persisted across pages)`,
+    `smoke-release: ${PACKAGE_ID} passed (main/types/exports/patch files, installed package rendered in the real host plane with its live model catalog, saved the route through the settings service, persisted across pages)`,
   );
 }
 
