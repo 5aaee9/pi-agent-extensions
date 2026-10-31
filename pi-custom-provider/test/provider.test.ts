@@ -17,6 +17,7 @@ import {
 } from "./local-server.ts";
 import {
   loadExtensionHost,
+  loadInPiProcess,
   recordNotifications,
   runExtensionCommand,
   startHostSession,
@@ -30,6 +31,8 @@ let sessions: AgentSession[];
 beforeEach(async () => {
   agentDir = await mkdtemp(join(tmpdir(), "pi-custom-provider-test-"));
   vi.stubEnv("PI_CODING_AGENT_DIR", agentDir);
+  // Pi also reads user-scoped state under HOME; keep the developer's out of the plane.
+  vi.stubEnv("HOME", agentDir);
   vi.stubEnv("CUSTOM_PROVIDER_KEY", "env-key");
   servers = [];
   sessions = [];
@@ -187,13 +190,19 @@ describe("custom provider extension", () => {
         },
       },
     });
-    const warn = vi.spyOn(console, "warn");
-    const host = await loadHost();
+    // The real pi binary loads the extension; its stderr carries the diagnostics.
+    const piProcess = await loadInPiProcess(agentDir, {
+      HOME: agentDir,
+      PI_CODING_AGENT_DIR: agentDir,
+    });
+    expect(piProcess.commands).toContain("refresh-custom-provider-models");
+    expect(piProcess.stderr).toContain("[custom-provider:command] model discovery failed");
+    expect(piProcess.stderr).not.toContain("secret");
+    expect(server.requests).toHaveLength(0);
 
+    const host = await loadHost();
     expect(server.requests).toHaveLength(0);
     expect(host.registrations[0]!.config.models![0]!.id).toBe("fallback");
-    expect(warn).toHaveBeenCalled();
-    expect(JSON.stringify(warn.mock.calls)).not.toContain("secret");
 
     const session = await startSession(host);
     const notifications = recordNotifications(session);
@@ -291,7 +300,9 @@ describe("custom provider extension", () => {
   });
 
   it("enriches models from models.dev and caches the catalog separately", async () => {
+    let upstream: "ok" | "unavailable" = "ok";
     const server = await startServer((request) => {
+      if (upstream === "unavailable") return unavailable();
       if (request.path === "/gateway/v1/models") {
         return jsonResponse({
           data: [{ id: "deepseek/deepseek-flash-max", context_window: 8192, cost: { input: 9 } }],
@@ -347,10 +358,16 @@ describe("custom provider extension", () => {
     const cache = JSON.parse(await readFile(join(agentDir, "custom-provider-models.json"), "utf8"));
     expect(cache.modelsDev.providers.deepseek.models["deepseek-flash"]).toBeDefined();
 
-    // With the upstream unreachable, the fresh on-disk cache answers on its own.
-    await server.close();
+    // The server stays open but would now answer 503: a fresh on-disk cache must
+    // answer on its own, so no request reaches the server at all.
+    expect(server.requests).toHaveLength(3);
+    upstream = "unavailable";
     const second = await loadHost();
-    expect(second.registrations[0]!.config.models![0]!.cost.output).toBe(0.4);
+    expect(second.registrations[0]!.config.models![0]!).toMatchObject({
+      id: "deepseek/deepseek-flash-max",
+      maxTokens: 4096,
+      cost: { input: 9, output: 0.4 },
+    });
     expect(server.requests).toHaveLength(3);
   });
 
@@ -559,6 +576,9 @@ describe("custom provider extension", () => {
       providers: {
         ollama: {
           baseURL: server.url,
+          // The README's local-deployment shape: Pi only offers providers that
+          // carry a credential, so a placeholder key makes the model selectable.
+          apiKey: "ollama",
           api: "ollama",
         },
       },
@@ -585,53 +605,37 @@ describe("custom provider extension", () => {
       contextWindow: 131072,
     });
 
-    const model = {
-      id: qwen.id,
-      name: qwen.name,
-      api: "ollama-chat",
-      provider: "ollama",
-      baseUrl: qwen.baseUrl!,
-      reasoning: qwen.reasoning,
-      thinkingLevelMap: qwen.thinkingLevelMap,
-      input: qwen.input,
-      cost: qwen.cost,
-      contextWindow: qwen.contextWindow,
-      maxTokens: qwen.maxTokens,
-    };
-    const events: Array<{ type: string }> = [];
-    const stream = ollama.config.streamSimple!(
-      model as never,
-      {
-        systemPrompt: "Be brief.",
-        messages: [{ role: "user", content: "hi", timestamp: 1 }],
-      },
-      { reasoning: "medium" } as never,
-    );
-    for await (const event of stream) events.push(event);
+    // Select the discovered model through Pi's own registry and session, and
+    // let the session's real model stack drive the provider's stream.
+    const session = await startSession(host);
+    const registered = session.extensionRunner.getModelRegistry().find("ollama", "qwen3:8b");
+    if (!registered) throw new Error("ollama/qwen3:8b was not registered by the extension");
+    await session.setModel(registered);
+    session.setThinkingLevel("medium");
+    await session.prompt("hi");
 
-    const chatCall = server.requests.find(({ path }) => path === "/api/chat")!;
-    const chatBody = JSON.parse(chatCall.body);
-    expect(chatBody).toMatchObject({
-      model: "qwen3:8b",
-      stream: true,
-      think: "medium",
-      messages: [
-        { role: "system", content: "Be brief." },
-        { role: "user", content: "hi" },
-      ],
-    });
-
-    const done = events.find((event) => event.type === "done")! as {
-      type: "done";
-      reason: string;
-      message: { content: unknown[]; usage: Record<string, number>; stopReason: string };
+    const chatCall = server.requests.find(({ path }) => path === "/api/chat");
+    if (!chatCall) throw new Error("the session never called /api/chat");
+    const chatBody = JSON.parse(chatCall.body) as {
+      model: string;
+      stream: boolean;
+      think: unknown;
+      messages: Array<{ role: string; content: unknown }>;
     };
-    expect(done.reason).toBe("stop");
-    expect(done.message.content).toEqual([
+    expect(chatBody).toMatchObject({ model: "qwen3:8b", stream: true, think: "medium" });
+    expect(chatBody.messages[0]?.role).toBe("system");
+    expect(chatBody.messages.at(-1)).toMatchObject({ role: "user", content: "hi" });
+    expect(chatCall.headers.authorization).toBe("Bearer ollama");
+
+    const reply = session.messages.at(-1);
+    if (reply?.role !== "assistant")
+      throw new Error("the session did not record an assistant reply");
+    expect(reply.stopReason).toBe("stop");
+    expect(reply.content).toEqual([
       { type: "thinking", thinking: "thinking hard" },
       { type: "text", text: "Hello!" },
     ]);
-    expect(done.message.usage).toMatchObject({
+    expect(reply.usage).toMatchObject({
       input: 10,
       output: 2,
       cacheRead: 4,
@@ -639,8 +643,9 @@ describe("custom provider extension", () => {
     });
   });
 
-  it("registers refreshModels that rediscovers with the auth credential", async () => {
-    const server = await startServer(() => jsonResponse({ data: [{ id: "model-v1" }] }));
+  it("registers refreshModels that rediscovers with the stored credential", async () => {
+    let modelId = "model-v1";
+    const server = await startServer(() => jsonResponse({ data: [{ id: modelId }] }));
     await writeProviderConfig({
       modelsDev: false,
       providers: {
@@ -666,14 +671,24 @@ describe("custom provider extension", () => {
     expect(provider.config.headers?.Authorization).toBeUndefined();
     expect(provider.config.refreshModels).toBeTypeOf("function");
 
-    const refreshed = await provider.config.refreshModels!({
-      credential: { type: "api_key", key: "stored-key" },
+    // A credential stored in Pi's own auth file is what the host hands to
+    // refreshModels; the registry's refresh entry point drives the call.
+    await writeFile(
+      join(agentDir, "auth.json"),
+      JSON.stringify({ refreshable: { type: "api_key", key: "stored-key" } }),
+    );
+    const session = await startSession(host);
+    const registry = session.extensionRunner.getModelRegistry();
+    expect(registry.find("refreshable", "model-v1")).toBeDefined();
+
+    modelId = "model-v2";
+    const result = await registry.refresh({
+      providers: ["refreshable"],
       allowNetwork: true,
       force: true,
-      signal: new AbortController().signal,
-      publish: async () => true,
     });
+    expect(result.errors.size).toBe(0);
     expect(seenAuth()).toEqual(["Bearer config-key", "Bearer stored-key"]);
-    expect(refreshed[0]!.id).toBe("model-v1");
+    expect(registry.find("refreshable", "model-v2")).toBeDefined();
   });
 });
