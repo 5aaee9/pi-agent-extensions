@@ -1,5 +1,6 @@
 import { Context } from "@deepseek-ai/cordis";
-import { describe, expect, it, onTestFinished } from "vitest";
+import { credentialRef } from "@deepseek-ai/dsh-credentials";
+import { beforeEach, describe, expect, it, onTestFinished } from "vitest";
 
 import type { SettingsSeam } from "../apply.ts";
 import {
@@ -18,9 +19,11 @@ import {
   codexManifest,
   codexProviders,
   createHost,
+  isolateCredentialEnvironment,
   magpieListing,
   magpieProviders,
   modelField,
+  REFUSED_ORIGIN,
   routeModels,
   routeProviders,
   setEnvironment,
@@ -50,6 +53,8 @@ function deps(ctx: Context, overrides: Partial<RuntimeDeps> = {}): RuntimeDeps {
 }
 
 describe("createRuntime on the real settings plane", () => {
+  beforeEach(isolateCredentialEnvironment);
+
   it("reports unavailable when no settings service is mounted", async () => {
     const ctx = new Context();
     onTestFinished(async () => {
@@ -211,11 +216,8 @@ describe("createRuntime on the real settings plane", () => {
   });
 
   it("contains a probe failure and still applies the declarations", async () => {
-    const server = await startServer({});
-    const unreachable = `${server.url}/v1`;
-    await server.close();
     const host = await createHost({
-      providers: routeProviders(magpieProviders(), "magpie", { baseURL: unreachable }),
+      providers: routeProviders(magpieProviders(), "magpie", { baseURL: `${REFUSED_ORIGIN}/v1` }),
     });
     const runtime = createRuntime(options(), deps(host.ctx, { settings: () => host.ctx.settings }));
     const summary = await runtime.run("discover");
@@ -273,6 +275,39 @@ describe("createRuntime on the real settings plane", () => {
     expect(server.requests).toHaveLength(1);
     expect(server.requests[0]?.headers["authorization"]).toBeUndefined();
   });
+
+  it("resolves the route's credential through the real store before the environment", async () => {
+    const server = await startServer({ "/v1/models": { body: magpieListing() } });
+    setEnvironment("MAGPIE_API_KEY", "from-env");
+    const host = await createHost({
+      credentials: true,
+      providers: routeProviders(magpieProviders(), "magpie", { baseURL: `${server.url}/v1` }),
+    });
+    const ref = credentialRef("MAGPIE_API_KEY");
+    await host.ctx.credentials.set(ref, "from-store");
+
+    // The plugin's own command resolves `ctx.credentials` from the real graph.
+    const stored = await host.run("discover");
+    expect(stored.kind).toBe("success");
+    expect(server.requests[0]?.headers["authorization"]).toBe("Bearer from-store");
+
+    // Removing the stored value lets the real store's environment layer answer.
+    await host.ctx.credentials.unset(ref);
+    await host.run("discover");
+    expect(server.requests.map((request) => request.headers["authorization"])).toEqual([
+      "Bearer from-store",
+      "Bearer from-env",
+    ]);
+  });
+
+  // Boundary: runtime.ts `resolveApiKey` also handles a credential-store
+  // rejection ("could not resolve the credential …", then an unauthenticated
+  // probe). The only CredentialProvider in this package's pinned closure,
+  // `@deepseek-ai/dsh-credentials-local` 0.2.2-alpha.2, never rejects
+  // `resolve()` (a stored-map lookup over the launch environment; an invalid
+  // document fails the provider's boot, which leaves the service absent and
+  // the plugin on its environment path), so that branch is unreachable through
+  // the real store and is deliberately not asserted with a stand-in.
 
   it("does not probe a route the profile does not declare", async () => {
     const server = await startServer({});
@@ -539,6 +574,8 @@ describe("SettingsSeam typing", () => {
 });
 
 describe("Codex manifest discovery over real HTTP", () => {
+  beforeEach(isolateCredentialEnvironment);
+
   const INVENTORY = "/v1/models";
   const MANIFEST = "/backend-api/codex/models";
 

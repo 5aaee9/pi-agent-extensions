@@ -1,9 +1,10 @@
 import { writeFile } from "node:fs/promises";
 
 import { Context } from "@deepseek-ai/cordis";
-import { CommandRuntime } from "@deepseek-ai/dsh-commands";
+import { CommandRuntime, type CommandInvocation } from "@deepseek-ai/dsh-commands";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 
+import { DeclarationError } from "../declarations.ts";
 import { apply, Config, inject, name, type ReasoningEffortsConfig } from "../index.ts";
 
 import { createHost, modelField } from "./fixture.ts";
@@ -16,24 +17,28 @@ const vision = {
   magpie: { "ollama-cloud/kimi-k3": ["text", "image"] },
 };
 
-async function loadError(config: ReasoningEffortsConfig): Promise<Error> {
+/**
+ * Load the plugin on a real command registry and return the load error.
+ *
+ * The error must be the declaration validator's own {@link DeclarationError},
+ * and the failed load must leave no `/reasoning-efforts` registered.
+ */
+async function loadError(config: ReasoningEffortsConfig): Promise<DeclarationError> {
   const ctx = new Context();
   onTestFinished(async () => {
     await ctx.fiber.dispose();
   });
   await ctx.plugin(CommandRuntime).await();
+  let failure: unknown;
   try {
     await ctx.plugin({ apply, inject: [...inject] }, config).await();
   } catch (error) {
-    return error instanceof Error ? error : new Error(String(error));
+    failure = error;
   }
-  throw new Error("the plugin loaded with a malformed declaration");
-}
-
-async function flush(): Promise<void> {
-  await new Promise((resolve) => {
-    setTimeout(resolve, 50);
-  });
+  expect(failure).toBeInstanceOf(DeclarationError);
+  expect(ctx.commands.find({} as CommandInvocation["agent"], "reasoning-efforts")).toBeUndefined();
+  if (!(failure instanceof DeclarationError)) throw new Error("unreachable");
+  return failure;
 }
 
 describe("plugin identity", () => {
@@ -242,18 +247,27 @@ describe("the load-time pass on the real service graph", () => {
 
   it("does nothing when applyOnLoad is off", async () => {
     const host = await createHost({
+      appReady: true,
       config: {
         providers: { magpie: { "ollama-cloud/kimi-k3": { low: "low" } } },
         discover: false,
         applyOnLoad: false,
       },
     });
-    await flush();
+    // With applyOnLoad on, the booted plugin has registered its pass on the
+    // readiness signal by now (see "waits for the launcher's readiness signal");
+    // off, it registers nothing, so firing the signal starts no pass.
     expect(host.readyPending()).toBe(0);
+    host.triggerReady();
+
+    // The real command still sees the declaration as pending: nothing was written.
+    const status = await host.run("status");
+    expect(status.text).toMatch(/1 pending change\(s\)/);
     expect(
       modelField(host.providers(), "magpie", "ollama-cloud/kimi-k3", "reasoningEfforts"),
     ).toBeUndefined();
     expect(await host.readPatch()).not.toContain("reasoningEfforts");
+    expect(host.logs.some((line) => line.includes("reasoning-efforts:"))).toBe(false);
   });
 
   it("contains a failed pass to the log", async () => {
@@ -276,6 +290,28 @@ describe("the load-time pass on the real service graph", () => {
     ).toBeUndefined();
   });
 
+  it("logs the missing namespace once the load-time pass gives up", async () => {
+    const host = await createHost({
+      row: false,
+      config: {
+        providers: { magpie: { "ollama-cloud/kimi-k3": { low: "low" } } },
+        discover: false,
+      },
+    });
+    await vi.waitFor(
+      () => {
+        expect(host.logs).toContain(
+          'debug reasoning-efforts: no configurable "llm-pi-ai" entry is mounted, so there is nothing to declare',
+        );
+      },
+      { timeout: 5000, interval: 25 },
+    );
+    expect(host.logs.filter((line) => line.includes("reasoning-efforts:"))).toEqual([
+      'debug reasoning-efforts: no configurable "llm-pi-ai" entry is mounted, so there is nothing to declare',
+    ]);
+    expect(await host.readPatch()).not.toContain("reasoningEfforts");
+  });
+
   it("reports the missing service through the command when none is mounted", async () => {
     const host = await createHost({
       settings: false,
@@ -284,11 +320,15 @@ describe("the load-time pass on the real service graph", () => {
         discover: false,
       },
     });
-    await flush();
+    // Without a settings service the plugin's `inject(["settings"])` child is
+    // never activated, so the real graph starts no load-time pass at all.
+    expect(host.ctx.get("settings")).toBeUndefined();
     const result = await host.run("apply");
 
-    expect(result.kind).toBe("success");
-    expect(result.text).toMatch(/no configurable "llm-pi-ai" entry is mounted/);
-    expect(host.logs.some((line) => line.includes("load-time pass"))).toBe(false);
+    expect(result).toEqual({
+      kind: "success",
+      text: 'reasoning-efforts: no configurable "llm-pi-ai" entry is mounted, so there is nothing to declare',
+    });
+    expect(host.logs.some((line) => line.includes("reasoning-efforts:"))).toBe(false);
   });
 });

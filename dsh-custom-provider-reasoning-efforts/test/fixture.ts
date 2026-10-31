@@ -16,6 +16,7 @@
 
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
+import { createRequire } from "node:module";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -30,7 +31,7 @@ import type {
 } from "@deepseek-ai/dsh-commands";
 import type { SettingsDescriptor } from "@deepseek-ai/dsh-settings";
 import { resolveDshHome } from "@deepseek-ai/dsh-home-paths";
-import { onTestFinished } from "vitest";
+import { onTestFinished, vi } from "vitest";
 
 import type { ProviderDescriptor, SettingsSeam } from "../apply.ts";
 
@@ -201,6 +202,28 @@ export interface RecordedRequest {
   readonly headers: Readonly<Record<string, string | string[] | undefined>>;
 }
 
+/**
+ * An origin that refuses every connection: TCP port 1 on loopback has no
+ * listener on any host this suite runs on, so the real `fetch` fails with a
+ * connection refusal instead of racing a released ephemeral port.
+ */
+export const REFUSED_ORIGIN = "http://127.0.0.1:1";
+
+/** The credential references the fixture routes resolve. */
+const CREDENTIAL_REFS = ["MAGPIE_API_KEY", "ZERO_AICODING_CODEX_API_KEY"] as const;
+
+/**
+ * Clear every credential reference the fixture routes name, for one test.
+ *
+ * Discovery resolves a route's `apiKeyEnv` through the real process
+ * environment, so a developer's own key must not reach the local server or
+ * change what a test observes; a test that needs a key sets it afterwards.
+ */
+export function isolateCredentialEnvironment(): void {
+  // `vi.stubEnv` is undone by the config's `unstubEnvs`, so this is safe in a `beforeEach`.
+  for (const ref of CREDENTIAL_REFS) vi.stubEnv(ref, undefined);
+}
+
 /** A real local HTTP server the package's real `fetch` calls. */
 export interface TestServer {
   readonly url: string;
@@ -277,6 +300,16 @@ export interface HostOptions {
   readonly settings?: boolean;
   /** Provide the launcher's readiness signal on the real context. */
   readonly appReady?: boolean;
+  /**
+   * Mount the configurable `namespace` row beside the settings service
+   * (default true); `false` leaves the service with no entry to write.
+   */
+  readonly row?: boolean;
+  /**
+   * Mount the real file-backed credentials provider
+   * (`@deepseek-ai/dsh-credentials-local`) over the isolated `$DSH_HOME`.
+   */
+  readonly credentials?: boolean;
 }
 
 /** The live host one test drives. */
@@ -332,9 +365,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+const requireFromPackage = createRequire(join(packageRoot, "package.json"));
+
+/**
+ * The entry file of one pinned host package, resolved the way Node resolves
+ * this package's own imports (nearest `node_modules` upward), so the Loader
+ * mounts the same copy the tests import.
+ */
 function moduleEntry(name: string): string {
-  return pathToFileURL(join(packageRoot, "node_modules", "@deepseek-ai", name, "lib", "index.js"))
-    .href;
+  return pathToFileURL(requireFromPackage.resolve(`@deepseek-ai/${name}`)).href;
 }
 
 function sourceEntry(relativePath: string): string {
@@ -342,7 +381,7 @@ function sourceEntry(relativePath: string): string {
 }
 
 /** A real command invocation carrying only what this plugin's handler reads. */
-export function invocation(rawInput: string): CommandInvocation {
+function invocation(rawInput: string): CommandInvocation {
   return { rawInput, signal: new AbortController().signal } as CommandInvocation;
 }
 
@@ -359,9 +398,15 @@ export async function createHost(options: HostOptions = {}): Promise<Host> {
   const providers = options.providers ?? magpieProviders();
   const config = options.config ?? { applyOnLoad: false };
   const withSettings = options.settings !== false;
+  const withRow = withSettings && options.row !== false;
   const ready = options.appReady === true ? createReadyGate() : undefined;
 
   const root = await mkdtemp(join(tmpdir(), "custom-provider-reasoning-efforts-"));
+  let ctx: Context | undefined;
+  onTestFinished(async () => {
+    await ctx?.fiber.dispose();
+    await rm(root, { recursive: true, force: true });
+  });
   const home = resolveDshHome(join(root, "home"));
   const profileDir = join(home, "profiles", "test-profile");
   await mkdir(profileDir, { recursive: true });
@@ -384,6 +429,13 @@ export async function createHost(options: HostOptions = {}): Promise<Host> {
       name: moduleEntry("dsh-commands"),
     },
   ];
+  if (options.credentials === true) {
+    inserted.unshift({
+      id: "credentials",
+      name: moduleEntry("dsh-credentials-local"),
+      config: { dshHome: home, watch: false },
+    });
+  }
   if (withSettings) {
     inserted.unshift(
       {
@@ -395,6 +447,8 @@ export async function createHost(options: HostOptions = {}): Promise<Host> {
         name: moduleEntry("dsh-settings"),
       },
     );
+  }
+  if (withRow) {
     inserted.push({
       id: namespace,
       name: row,
@@ -407,7 +461,7 @@ export async function createHost(options: HostOptions = {}): Promise<Host> {
     config,
   });
   const patches: unknown[] = [{ insert: inserted }];
-  if (withSettings) {
+  if (withRow) {
     patches.push({
       id: namespace,
       name: row,
@@ -430,12 +484,6 @@ export async function createHost(options: HostOptions = {}): Promise<Host> {
   };
 
   const logs: string[] = [];
-  let ctx: Context | undefined;
-  onTestFinished(async () => {
-    await ctx?.fiber.dispose();
-    await rm(root, { recursive: true, force: true });
-  });
-
   ctx = await boot(
     "test-profile",
     join(profileDir, "cordis.yml"),
@@ -476,10 +524,7 @@ export async function createHost(options: HostOptions = {}): Promise<Host> {
     profileContext,
     definition,
     logs,
-    run: (rawInput) =>
-      Promise.resolve(
-        definition.handler({ rawInput, signal: new AbortController().signal } as CommandInvocation),
-      ),
+    run: (rawInput) => Promise.resolve(definition.handler(invocation(rawInput))),
     providers: providersOf,
     descriptor,
     readPatch: () => readFile(patchPath, "utf8"),
@@ -518,13 +563,8 @@ export function routeModels(
  * @param value - the value to expose, or `undefined` to remove it.
  */
 export function setEnvironment(name: string, value: string | undefined): void {
-  const previous = process.env[name];
-  if (value === undefined) delete process.env[name];
-  else process.env[name] = value;
-  onTestFinished(() => {
-    if (previous === undefined) delete process.env[name];
-    else process.env[name] = previous;
-  });
+  // Restored after the test by the config's `unstubEnvs`.
+  vi.stubEnv(name, value);
 }
 
 /**
@@ -548,6 +588,12 @@ export function routeProviders(
 
 /**
  * The real settings service as the seam the writer consumes.
+ *
+ * Boundary: the pinned `SettingsForms.writable` getter returns `true`
+ * unconditionally (`@deepseek-ai/dsh-settings` 0.2.2-alpha.2), so no real
+ * profile state reaches the writer's readonly branch. The one test that drives
+ * that branch overrides `writable` on this seam and nothing else; every read
+ * and write still goes to the real service.
  *
  * @param ctx - a context whose pinned settings service is mounted.
  * @returns a seam that delegates every read and write to that service.

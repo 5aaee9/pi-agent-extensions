@@ -10,7 +10,7 @@ import {
   type RouteProbe,
 } from "../discovery.ts";
 
-import { startServer } from "./fixture.ts";
+import { REFUSED_ORIGIN, startServer } from "./fixture.ts";
 
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 
@@ -105,10 +105,8 @@ describe("probeRoute over real HTTP", () => {
   });
 
   it("reports an unreachable endpoint", async () => {
-    const server = await startServer({});
-    await server.close();
     await expect(
-      probeRoute({ route: "magpie", baseURL: `${server.url}/v1`, api: "openai-responses" }),
+      probeRoute({ route: "magpie", baseURL: `${REFUSED_ORIGIN}/v1`, api: "openai-responses" }),
     ).rejects.toThrow(/could not reach .*\/v1\/models/);
   });
 
@@ -236,11 +234,9 @@ describe("probeManifest over real HTTP", () => {
   });
 
   it("reports an unreachable endpoint", async () => {
-    const server = await startServer({});
-    await server.close();
     await expect(
-      probeManifest({ route: "relay", baseURL: `${server.url}/v1`, api: "openai-responses" }),
-    ).rejects.toThrow(/could not reach/);
+      probeManifest({ route: "relay", baseURL: `${REFUSED_ORIGIN}/v1`, api: "openai-responses" }),
+    ).rejects.toThrow(/could not reach .*\/backend-api\/codex\/models/);
   });
 
   it("refuses an oversized manifest", async () => {

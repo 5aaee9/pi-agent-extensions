@@ -83,8 +83,10 @@ describe("applyIntents through the real settings service", () => {
 
   it("reports a profile that does not accept edits", async () => {
     const host = await createHost();
-    // The pinned SettingsForms reports writable unconditionally; this drives the
-    // writer's own readonly branch over the real descriptor without a write.
+    // Boundary (see `settingsSeam` in fixture.ts): the pinned SettingsForms
+    // reports `writable` as `true` unconditionally, so no real profile reaches
+    // this branch. Only `writable` is overridden; the descriptor the writer
+    // reads is the real service's, and the assertion re-reads the real file.
     const readonly: SettingsSeam = { ...settingsSeam(host.ctx), writable: false };
     const result = await applyIntents(readonly, { namespace: "llm-pi-ai", intents });
 
