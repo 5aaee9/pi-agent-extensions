@@ -2,7 +2,7 @@
 
 ## Purpose
 
-TBD - created by archiving change real-environment-testing. Update Purpose after archive.
+Define what the shared agent instruction surface (`AGENTS.md`, `docs/`) must tell an agent, so that following the documents alone produces package work that meets the repository's contracts — today, the real-environment testing contract and the boundaries it records.
 
 ## Requirements
 

@@ -95,11 +95,35 @@ Package unit tests SHALL NOT re-implement packing, isolated installation, or hos
 - **WHEN** a package's `release.smoke` script is rewritten to run against a real environment instead of an in-process harness
 - **THEN** the manifest still declares the same relative script, the published files do not change, and `npm run check` plus the e2e run must stay green
 
+### Requirement: A real plane cleans up after itself
+
+A test helper that starts host processes, servers, or browsers SHALL terminate every process it spawned and remove every directory it created on every exit path — success, assertion failure, startup timeout, hook timeout, and process exit — and SHALL NOT write outside temporary directories it owns. A test that loads a package's built artifacts SHALL fail, naming the build command, when those artifacts are missing or older than the sources they are built from, rather than skip or assert against stale output.
+
+#### Scenario: The host server never reports its URL
+
+- **WHEN** a spawned host server times out or exits before the helper observes it ready
+- **THEN** the helper kills the server's process group before rejecting, and no server outlives the test run
+
+#### Scenario: The built artifacts are stale
+
+- **WHEN** a client-plane test runs while `lib/` or `client.js` is older than a file under the package's sources
+- **THEN** the test fails with a message to run the package build
+
 ### Requirement: Conversion never touches published content
 
-A conversion SHALL live inside the package's `test/` tree (test modules, helpers, and the package's own declared smoke script path) and SHALL NOT change any file listed in the package's `files` allowlist, its manifest, its versions, or its changelogs; therefore no conversion by itself needs a release intent.
+A conversion SHALL live inside the package's `test/` tree (test modules, helpers, and the package's own declared smoke script path) and SHALL NOT change any file listed in the package's `files` allowlist, the package's runtime manifest fields (`dependencies`, `peerDependencies`, `exports`, the `dsh`/`pi` manifest, `files`, `release`), its versions, or its changelogs. The only manifest change a conversion MAY make is adding or removing `devDependencies` the test plane needs; each added entry SHALL be an exact version on the host line the package already pins, and because `package.json` ships in the tarball, that change SHALL carry a `none` release intent naming it as verification-only.
 
-#### Scenario: A conversion would need a new host package
+#### Scenario: A conversion needs a test-only host package
 
-- **WHEN** exercising the real plane requires a host package the package manifest does not already pin
-- **THEN** that manifest change is a separate change with its own release decision, not part of a test conversion
+- **WHEN** exercising the real plane requires a host package (or a browser driver) the package does not already pin in `devDependencies`
+- **THEN** the conversion adds it as an exact `devDependencies` entry and records a `none` intent for the package, and the release gate accepts the change
+
+#### Scenario: A conversion would change a runtime dependency
+
+- **WHEN** exercising the real plane would require changing `dependencies`, `peerDependencies`, or any published file
+- **THEN** that change is a separate change with its own release decision, not part of a test conversion
+
+#### Scenario: A test installs a package the manifest does not pin
+
+- **WHEN** a test installs or loads a package by registry name that is neither pinned in the package's `devDependencies` nor present in `package-lock.json`
+- **THEN** the test does not meet this requirement: the plane must be reproducible from the lockfile, so the package is pinned or replaced by a locally started route
