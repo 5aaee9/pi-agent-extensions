@@ -1,6 +1,6 @@
 /**
  * Shared helper for driving this package's client half through the real Harness web
- * plane (`docs/conventions.md`, "real-plane contract"; AGENTS.md rule 5).
+ * plane (`docs/conventions.md`, "Tests"; AGENTS.md rule 5).
  *
  * It starts the pinned host CLI (`@deepseek-ai/dsh`, a devDependency pinned to the
  * host version this package builds against) as a real `dsh web` server over a
@@ -11,24 +11,89 @@
  * registry, locale service, settings service, session store, and UI primitives all
  * come from the running host, and every assertion runs against the DOM the host
  * itself renders.
+ *
+ * The server child runs with `HOME` pointed at a directory inside the throwaway
+ * home, so the host's workspace picker (which lists the process home) offers the
+ * plane's workspace without the test touching the real user home.
+ *
+ * Every spawned process is started in its own process group and tracked until it
+ * exits; a startup failure or timeout kills its group before rejecting, and a
+ * process `exit` hook kills any group still alive, so neither a failed `beforeAll`
+ * nor an interrupted run can leave a `dsh web` server behind.
  */
 
-import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { createRequire } from "node:module";
-import { mkdtempSync, rmSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium, type Browser, type Page } from "playwright";
 
 const requireFromHere = createRequire(import.meta.url);
 
+/** Children still alive, killed by group on process exit. */
+const live = new Set<ChildProcess>();
+
+function killGroup(child: ChildProcess, signal: NodeJS.Signals): void {
+  if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) return;
+  try {
+    process.kill(-child.pid, signal);
+  } catch {
+    // The group is already gone.
+  }
+}
+
+process.once("exit", () => {
+  for (const child of live) killGroup(child, "SIGKILL");
+});
+
+/** Spawn in a fresh process group and track the child until it exits. */
+function spawnTracked(args: readonly string[], env: NodeJS.ProcessEnv): ChildProcess {
+  const child = spawn(process.execPath, args, {
+    env,
+    stdio: ["ignore", "pipe", "pipe"],
+    detached: true,
+  });
+  live.add(child);
+  child.once("exit", () => live.delete(child));
+  return child;
+}
+
+async function stopChild(child: ChildProcess, graceMs = 10_000): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    live.delete(child);
+    return;
+  }
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(() => {
+      killGroup(child, "SIGKILL");
+    }, graceMs);
+    child.once("exit", () => {
+      clearTimeout(timer);
+      resolve();
+    });
+    killGroup(child, "SIGTERM");
+  });
+}
+
 export interface WebPlane {
   readonly home: string;
   /** The authenticated page URL; it carries the host token, so never print it. */
   readonly pageUrl: string;
-  /** The real workspace directory this plane opened a session in. */
+  /** The real workspace directory this plane opens sessions in. */
   readonly workspace: string;
+  /** Create another workspace directory the host's picker lists, for a fresh session. */
+  addWorkspace(name: string): string;
   close(): Promise<void>;
+}
+
+export interface WebPlaneOptions {
+  /** Extra rows appended to the profile's own `cordis.patch.yml`. */
+  readonly patch?: string;
+  /** Extra environment for the server process. */
+  readonly env?: Readonly<Record<string, string>>;
+  /** Startup budget for install plus server boot. */
+  readonly timeoutMs?: number;
 }
 
 /** Resolve the CLI script a host package ships. */
@@ -36,103 +101,138 @@ function hostCli(): string {
   return requireFromHere.resolve("@deepseek-ai/dsh/lib/bin.js");
 }
 
-/** Install each source into a throwaway web profile the way the Harness does. */
-function installIntoProfile(home: string, sources: readonly string[]): void {
-  for (const source of sources) {
-    const result = spawnSync(
-      process.execPath,
-      [hostCli(), "plugin", "--profile", "web", "add", source],
-      {
-        env: { ...process.env, DSH_HOME: home },
-        encoding: "utf8",
-        timeout: 180_000,
-      },
+/** Every file under `path` (a file or a directory), relative to `root`. */
+function filesUnder(root: string, path: string): string[] {
+  if (!statSync(join(root, path)).isDirectory()) return [path];
+  return readdirSync(join(root, path), { withFileTypes: true }).flatMap((entry) =>
+    entry.isDirectory() ? filesUnder(root, join(path, entry.name)) : [join(path, entry.name)],
+  );
+}
+
+/**
+ * Fail fast when `client.js` or `lib/` is missing or older than the sources they
+ * are built from: the plane installs the package directory as it sits on disk, so
+ * a stale artifact would be tested instead of the current code.
+ */
+export function assertFreshBuild(packageDir: string): void {
+  let built: number;
+  try {
+    built = Math.min(
+      statSync(join(packageDir, "client.js")).mtimeMs,
+      statSync(join(packageDir, "lib", "index.js")).mtimeMs,
     );
-    if (result.status !== 0) {
-      throw new Error(
-        `the host refused to install ${source}:\n${(result.stderr || result.stdout || (result.error?.message ?? "")).trim()}`,
-      );
-    }
+  } catch {
+    throw new Error(`${packageDir} has no build output; run \`npm run build\` first`);
+  }
+  const sources = ["index.ts", "src"].flatMap((path) => filesUnder(packageDir, path));
+  const stale = sources.filter((path) => statSync(join(packageDir, path)).mtimeMs > built);
+  if (stale.length > 0) {
+    throw new Error(
+      `${packageDir}'s client.js or lib/ is older than ${stale.join(", ")}; run \`npm run build\` first`,
+    );
   }
 }
 
-/** Boot `dsh web` on a free port and wait until it reports its authenticated URL. */
-async function startWebServer(
-  home: string,
+/** Run one host CLI command to completion, killing its group on timeout. */
+async function runCli(
+  args: readonly string[],
+  env: NodeJS.ProcessEnv,
   timeoutMs: number,
-): Promise<{ url: string; child: ChildProcess }> {
-  const child = spawn(process.execPath, [hostCli(), "web", "--no-open", "--port", "0"], {
-    env: { ...process.env, DSH_HOME: home },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  let buffer = "";
-  const url = await new Promise<string>((resolve, reject) => {
+): Promise<void> {
+  const child = spawnTracked([hostCli(), ...args], env);
+  let output = "";
+  child.stdout?.on("data", (chunk: Buffer) => (output += chunk.toString("utf8")));
+  child.stderr?.on("data", (chunk: Buffer) => (output += chunk.toString("utf8")));
+  await new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => {
-      reject(new Error(`dsh web did not report a URL within ${String(timeoutMs)} ms:\n${buffer}`));
+      killGroup(child, "SIGKILL");
+      reject(new Error(`dsh ${args.join(" ")} did not finish within ${String(timeoutMs)} ms`));
+    }, timeoutMs);
+    child.once("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.once("exit", (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolve();
+      else
+        reject(new Error(`dsh ${args.join(" ")} exited with ${String(code)}:\n${output.trim()}`));
+    });
+  });
+}
+
+/** Boot `dsh web` on a free port and wait until it reports its authenticated URL. */
+async function startWebServer(child: ChildProcess, timeoutMs: number): Promise<string> {
+  let buffer = "";
+  return await new Promise<string>((resolve, reject) => {
+    const fail = (error: Error): void => {
+      clearTimeout(timer);
+      killGroup(child, "SIGKILL");
+      reject(error);
+    };
+    const timer = setTimeout(() => {
+      fail(new Error(`dsh web did not report a URL within ${String(timeoutMs)} ms:\n${buffer}`));
     }, timeoutMs);
     const onData = (chunk: Buffer): void => {
       buffer += chunk.toString("utf8");
       const match = /http:\/\/127\.0\.0\.1:\d+\/\S*/.exec(buffer);
       if (match !== null) {
         clearTimeout(timer);
+        child.stdout?.off("data", onData);
+        child.stderr?.off("data", onData);
+        // Keep draining so a chatty server never blocks on a full pipe.
+        child.stdout?.resume();
+        child.stderr?.resume();
         resolve(match[0]);
       }
     };
     child.stdout?.on("data", onData);
     child.stderr?.on("data", onData);
+    child.once("error", fail);
     child.once("exit", (code) => {
-      clearTimeout(timer);
-      reject(new Error(`dsh web exited with ${String(code)} before reporting a URL:\n${buffer}`));
+      fail(new Error(`dsh web exited with ${String(code)} before reporting a URL:\n${buffer}`));
     });
-  });
-  return { url, child };
-}
-
-async function stopServer(child: ChildProcess): Promise<void> {
-  if (child.exitCode !== null || child.signalCode !== null) return;
-  await new Promise<void>((resolve) => {
-    const timer = setTimeout(() => {
-      child.kill("SIGKILL");
-      resolve();
-    }, 10_000);
-    child.once("exit", () => {
-      clearTimeout(timer);
-      resolve();
-    });
-    child.kill("SIGTERM");
   });
 }
 
 /**
  * Install `sources` into a throwaway web profile and boot the real web app. The
- * workspace directory is a real directory in the user's home so the host's own
- * workspace picker lists and opens it; the caller owns the plane and must close it.
+ * returned plane owns the server process and the throwaway home; `close` stops the
+ * server and removes the home.
  */
 export async function openWebPlane(
   sources: readonly string[],
-  timeoutMs = 120_000,
+  options: WebPlaneOptions = {},
 ): Promise<WebPlane> {
+  const timeoutMs = options.timeoutMs ?? 180_000;
   const home = mkdtempSync(join(tmpdir(), "dsh-web-plane-"));
-  const workspace = mkdtempSync(join(homedir(), "dsh-ps-session-"));
+  const userHome = join(home, "user");
+  const workspace = join(userHome, "dsh-ps-session");
+  mkdirSync(workspace, { recursive: true });
+  const env: NodeJS.ProcessEnv = { ...process.env, ...options.env, DSH_HOME: home, HOME: userHome };
   let child: ChildProcess | undefined;
-  try {
-    installIntoProfile(home, sources);
-    const started = await startWebServer(home, timeoutMs);
-    child = started.child;
-    return {
-      home,
-      workspace,
-      pageUrl: started.url,
-      close: async () => {
-        if (child !== undefined) await stopServer(child);
-        rmSync(home, { recursive: true, force: true });
-        rmSync(workspace, { recursive: true, force: true });
-      },
-    };
-  } catch (error) {
-    if (child !== undefined) await stopServer(child);
+  const close = async (): Promise<void> => {
+    if (child !== undefined) await stopChild(child);
     rmSync(home, { recursive: true, force: true });
-    rmSync(workspace, { recursive: true, force: true });
+  };
+  try {
+    for (const source of sources) {
+      await runCli(["plugin", "--profile", "web", "add", source], env, timeoutMs);
+    }
+    if (options.patch !== undefined) {
+      const file = join(home, "profiles", "web", "cordis.patch.yml");
+      writeFileSync(file, options.patch);
+    }
+    child = spawnTracked([hostCli(), "web", "--no-open", "--port", "0"], env);
+    const pageUrl = await startWebServer(child, timeoutMs);
+    const addWorkspace = (name: string): string => {
+      const path = join(userHome, name);
+      mkdirSync(path, { recursive: true });
+      return path;
+    };
+    return { home, workspace, pageUrl, addWorkspace, close };
+  } catch (error) {
+    await close();
     throw error;
   }
 }
@@ -143,40 +243,78 @@ export async function launchBrowser(): Promise<Browser> {
 }
 
 /**
- * Dismiss the host's first-run dialogs. They mount a moment after the shell and
- * reappear after a reload, so dismiss in rounds and only stop once two consecutive
- * rounds find none.
+ * The first-run dialogs the pinned host opens, each with the button that closes
+ * it. Only these are answered; any other dialog fails the test with its text.
  */
-async function dismissFirstRunDialogs(page: Page): Promise<void> {
-  let clear = 0;
-  for (let round = 0; round < 12 && clear < 2; round += 1) {
-    const closed = await page.evaluate(`(() => {
-      const dialog = document.querySelector("[role=dialog],[role=alertdialog]");
-      if (dialog === null) return "none";
-      const button = [...dialog.querySelectorAll("button")].find((element) =>
-        /close|continue|got it|accept|dismiss/i.test(
-          (element.textContent ?? "") + " " + (element.getAttribute("aria-label") ?? ""),
-        ),
-      );
-      if (button === undefined) return "no-dismiss-button";
-      button.click();
-      return "dismissed";
-    })()`);
-    if (closed === "none") {
-      clear += 1;
-      await page.waitForTimeout(900);
-      continue;
-    }
-    clear = 0;
-    await page.waitForTimeout(900);
+const FIRST_RUN_DIALOGS: readonly { readonly title: RegExp; readonly button: string }[] = [
+  { title: /^Preview Notice/u, button: "Continue" },
+];
+
+/**
+ * Dismiss the host's first-run dialogs. The host mounts them a moment after the
+ * shell, so wait until no dialog appears for a quiet window and close each known
+ * one through its own button.
+ */
+async function dismissFirstRunDialogs(
+  page: Page,
+  quietMs = 2_500,
+  budgetMs = 30_000,
+): Promise<void> {
+  const dialogs = page.locator("[role=dialog],[role=alertdialog]");
+  const started = Date.now();
+  while (Date.now() - started < budgetMs) {
+    const appeared = await dialogs
+      .first()
+      .waitFor({ state: "visible", timeout: quietMs })
+      .then(() => true)
+      .catch(() => false);
+    if (!appeared) return;
+    const dialog = dialogs.first();
+    const text = ((await dialog.textContent()) ?? "").trim();
+    const known = FIRST_RUN_DIALOGS.find((entry) => entry.title.test(text));
+    if (known === undefined) throw new Error(`unexpected host dialog: ${text.slice(0, 200)}`);
+    await dialog.getByRole("button", { name: known.button, exact: true }).click({ timeout: 5_000 });
+    await dialog.waitFor({ state: "detached", timeout: 5_000 });
   }
+  throw new Error("the host kept opening dialogs");
 }
 
-async function loadPage(page: Page, url: string): Promise<void> {
+/** Credential reference the local model route resolves through the host's credentials. */
+export const LOCAL_KEY_REF = "PROMPT_SUGGESTIONS_LOCAL_KEY";
+
+/**
+ * Profile patch rows that point the host's own `llm-pi-ai` adapter at a locally
+ * started OpenAI-compatible endpoint and select its model as the default for new
+ * sessions, the same rows the web Models page and model picker would persist.
+ * @param baseURL - the local endpoint's base URL.
+ * @returns YAML for the profile's `cordis.patch.yml`.
+ */
+export function localModelPatch(baseURL: string): string {
+  return `- id: llm-pi-ai
+  config:
+    providers:
+      local:
+        displayName: Local endpoint
+        api: openai-completions
+        baseURL: ${JSON.stringify(baseURL)}
+        apiKeyEnv: ${LOCAL_KEY_REF}
+        retryPolicy: { mode: normal, maxRetries: 0 }
+        models:
+          - id: local-model
+            reasoningEfforts: { off: null, low: low, high: high }
+- id: agent-default-model
+  config:
+    provider: local
+    model: local-model
+`;
+}
+
+/** Load the page and wait for the host shell, then clear first-run dialogs. */
+export async function loadPage(page: Page, url: string): Promise<void> {
   await page.goto(url, { waitUntil: "load", timeout: 30_000 });
   await page
     .getByRole("button", { name: "Account menu" })
-    .waitFor({ state: "attached", timeout: 30_000 });
+    .waitFor({ state: "visible", timeout: 30_000 });
   await dismissFirstRunDialogs(page);
 }
 
@@ -192,106 +330,40 @@ export async function openSettingsSheet(
   waitSelector: string,
 ): Promise<void> {
   await loadPage(page, url);
-  await openSettingsWhileLoaded(page, waitSelector);
-}
-
-/**
- * Reopen the Settings sheet in an already loaded page (for example after a reload,
- * where the host shows its first-run dialog again). The row only mounts when the
- * sheet mounts, so the wait selector is the package's own root.
- */
-export async function reopenSettingsSheet(page: Page, waitSelector: string): Promise<void> {
-  await dismissFirstRunDialogs(page);
-  await openSettingsWhileLoaded(page, waitSelector);
-}
-
-async function openSettingsWhileLoaded(page: Page, waitSelector: string): Promise<void> {
   await page.getByRole("button", { name: "Account menu" }).click({ timeout: 10_000 });
-  await page.waitForTimeout(1500);
-  await page.getByRole("menuitem", { name: "Settings" }).first().click({ timeout: 8_000 });
-  await page.locator(waitSelector).waitFor({ state: "attached", timeout: 15_000 });
-  await page.waitForTimeout(1200);
+  const item = page.getByRole("menuitem", { name: "Settings" }).first();
+  await item.waitFor({ state: "visible", timeout: 10_000 });
+  await item.click({ timeout: 8_000 });
+  await page.locator(waitSelector).waitFor({ state: "visible", timeout: 15_000 });
 }
 
 /**
  * Load the page and open a session in `workspace` through the host's own workspace
  * picker, so the composer (and this package's `conversation.input.overlay` slot) is
  * the live host composer rather than a stand-in. Resolves once the editable composer
- * surface is attached.
+ * surface and this package's anchor are attached.
  */
 export async function openLiveSession(page: Page, url: string, workspace: string): Promise<void> {
   await loadPage(page, url);
   const name = workspace.slice(workspace.lastIndexOf("/") + 1);
-  await chooseWorkspace(page, name);
-  await page.locator('div[contenteditable="true"]').first().waitFor({
+  const composer = page.locator('div[contenteditable="true"]').first();
+  if (!(await composer.isVisible())) {
+    await page
+      .getByRole("button", { name: /choose workspace/iu })
+      .first()
+      .click({ timeout: 15_000 });
+    await page.getByRole("button", { name, exact: true }).first().click({ timeout: 15_000 });
+    // Picking a row either opens the session directly or arms the picker's "Open"
+    // button, depending on whether the host already has a session there.
+    const open = page.getByRole("dialog").getByRole("button", { name: "Open", exact: true });
+    await Promise.race([
+      composer.waitFor({ state: "visible", timeout: 30_000 }),
+      open.click({ timeout: 30_000 }).catch(() => undefined),
+    ]);
+  }
+  await composer.waitFor({ state: "visible", timeout: 30_000 });
+  await page.locator("[data-prompt-suggestions-anchor]").waitFor({
     state: "attached",
     timeout: 30_000,
   });
-  await page.waitForTimeout(3000);
-}
-
-/**
- * Click through the host's workspace picker. The host mounts its "Preview Notice"
- * modal a few seconds after the shell and again after a reload, and that modal
- * intercepts pointer events, so this polls: it dismisses any modal that appears over
- * the picker and retries the picker button instead of failing on one timed-out click.
- */
-async function chooseWorkspace(page: Page, name: string): Promise<void> {
-  let picked = false;
-  for (let attempt = 0; attempt < 40 && !picked; attempt += 1) {
-    const state = await page.evaluate(`(() => {
-      const rows = [...document.querySelectorAll("button")].filter(
-        (element) => (element.textContent ?? "").trim() === ${JSON.stringify(name)},
-      );
-      if (rows.length > 0) {
-        rows[0].click();
-        return "picked";
-      }
-      const dialog = document.querySelector("[role=dialog],[role=alertdialog]");
-      if (dialog === null) {
-        const trigger = [...document.querySelectorAll("button")].find((element) =>
-          /choose workspace/i.test(
-            (element.textContent ?? "") + " " + (element.getAttribute("aria-label") ?? ""),
-          ),
-        );
-        if (trigger === undefined) return "no-trigger";
-        trigger.click();
-        return "opened";
-      }
-      const dismiss = [...dialog.querySelectorAll("button")].find((element) =>
-        /continue|close|got it|accept|dismiss/i.test(
-          (element.textContent ?? "") + " " + (element.getAttribute("aria-label") ?? ""),
-        ),
-      );
-      if (dismiss === undefined) return "modal";
-      dismiss.click();
-      return "dismissed";
-    })()`);
-    if (state === "picked") {
-      picked = true;
-      break;
-    }
-    await page.waitForTimeout(600);
-  }
-  if (!picked) throw new Error(`the host's workspace picker never listed ${name}`);
-  await page.waitForTimeout(1200);
-  // Picking a row either opens the session directly or arms the picker's "Open"
-  // button, depending on whether the host already has a session for that workspace,
-  // so poll for whichever the live page does.
-  for (let attempt = 0; attempt < 40; attempt += 1) {
-    const state = await page.evaluate(`(() => {
-      if (document.querySelector('[contenteditable="true"]') !== null) return "ready";
-      const dialog = document.querySelector("[role=dialog],[role=alertdialog]");
-      if (dialog === null) return "no-dialog";
-      const open = [...dialog.querySelectorAll("button")].find(
-        (element) => (element.textContent ?? "").trim() === "Open",
-      );
-      if (open === undefined) return "waits";
-      open.click();
-      return "opened";
-    })()`);
-    if (state === "ready") return;
-    await page.waitForTimeout(600);
-  }
-  throw new Error("the host never attached the composer after picking a workspace");
 }

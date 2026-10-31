@@ -2,7 +2,16 @@ import { describe, expect, it } from "vitest";
 
 import { MAX_REQUEST_BYTES } from "../src/host/constants.ts";
 import { handleSuggestionRequest } from "../src/host/route.ts";
-import { createEnginePlane, liveConfig } from "./host-plane.ts";
+import {
+  addAssistant,
+  addRequestHeader,
+  addUser,
+  createEnginePlane,
+  createHostPlane,
+  endTurn,
+  liveConfig,
+  startTurn,
+} from "./host-plane.ts";
 
 function envelope(payload: unknown = { sessionId: "session-1" }, rpcId = "rpc-1"): string {
   return JSON.stringify({
@@ -43,6 +52,24 @@ describe("suggestion route", () => {
       type: "server-response",
       rpcId: "rpc-1",
       result: { ok: true, value: { state: "none" } },
+    });
+  });
+
+  it("returns the ready text in the envelope through the real Connection handler", async () => {
+    const { session, dispatch, query } = await createHostPlane();
+    addRequestHeader(session);
+    await query(session.id);
+    startTurn(session, 1);
+    addUser(session, "Fix login");
+    addAssistant(session, "Fixed");
+    endTurn(session, 1);
+    const response = await dispatch(request(envelope({ sessionId: session.id })));
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect((await response.json()) as ServerEnvelope).toEqual({
+      type: "server-response",
+      rpcId: "rpc-1",
+      result: { ok: true, value: { state: "ready", text: "Add a regression test" } },
     });
   });
 

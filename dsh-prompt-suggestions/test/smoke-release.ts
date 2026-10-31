@@ -3,10 +3,12 @@
  *
  * The first half checks the published artifact itself with Node built-ins: every
  * manifest entry must point at a real file inside the installed package. The second
- * half then runs both browser halves where they actually run: the installed package
- * is installed into a throwaway profile, the pinned host's real `dsh web` server
- * boots, a real Chromium loads the page the host built, and the assertions observe
- * what the host's own services, slot registry, composer and primitives rendered.
+ * half then runs both halves where they actually run: the installed package is
+ * installed into a throwaway profile, the pinned host's real `dsh web` server boots
+ * with its own `llm-pi-ai` adapter pointed at a locally started endpoint, a real
+ * Chromium loads the page the host built, a real turn completes, and the assertions
+ * observe what the host's own services, slot registry, composer and primitives
+ * rendered — including the suggestion the installed host half generated.
  * Nothing about the host, its settings service, its UI, or its DOM is replaced by a
  * stand-in.
  *
@@ -18,11 +20,25 @@ import assert from "node:assert/strict";
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 
-import { launchBrowser, openLiveSession, openSettingsSheet, openWebPlane } from "./web-plane.ts";
+import type { Browser, Page } from "playwright";
+
+import { DICT } from "../src/client/dictionary.ts";
+import { SUGGESTION_INSTRUCTIONS } from "../src/host/constants.ts";
+import { startModelServer } from "./model-server.ts";
+import {
+  launchBrowser,
+  LOCAL_KEY_REF,
+  localModelPatch,
+  openLiveSession,
+  openSettingsSheet,
+  openWebPlane,
+  type WebPlane,
+} from "./web-plane.ts";
 
 const PACKAGE_ID = "@indexyz/dsh-prompt-suggestions";
 const SETTINGS_SLOT = "settings.general.item";
 const ROW_SELECTOR = "section.dsh-prompt-suggestions";
+const SUGGESTION = "Add a regression test";
 
 function object(value: unknown, description: string): Record<string, unknown> {
   assert.ok(
@@ -77,9 +93,8 @@ interface RenderedRow {
 /** What the host rendered for this package's settings row, from the live document. */
 const RENDERED_ROW = `(() => {
   const root = document.querySelector("section.dsh-prompt-suggestions");
-  if (root === null) return null;
-  const switchElement = root.querySelector("[role=switch]");
-  const text = (selector) => root.querySelector(selector)?.textContent?.trim() ?? "";
+  const switchElement = root?.querySelector("[role=switch]");
+  const text = (selector) => root?.querySelector(selector)?.textContent?.trim() ?? "";
   return JSON.stringify({
     rows: document.querySelectorAll("section.dsh-prompt-suggestions").length,
     title: text("h3.dsh-prompt-suggestions-title"),
@@ -87,7 +102,7 @@ const RENDERED_ROW = `(() => {
     hint: text(".dsh-prompt-suggestions-hint"),
     switchChecked: switchElement?.getAttribute("aria-checked") ?? "",
     switchClass: String(switchElement?.className ?? ""),
-    styleLength: (root.querySelector("style")?.textContent ?? "").length,
+    styleLength: (root?.querySelector("style")?.textContent ?? "").length,
   });
 })()`;
 
@@ -97,110 +112,167 @@ const RENDERED_OVERLAY = `(() => {
   const card = anchor?.closest("[data-composer-card]") ?? null;
   const editor = card?.querySelector('[contenteditable="true"]') ?? null;
   const placeholder = card?.querySelector("[data-composer-placeholder]") ?? null;
+  const ghost = [...document.querySelectorAll("[data-prompt-suggestions]")].find(
+    (element) => element.isConnected && element.style.display !== "none",
+  );
   return JSON.stringify({
     anchors: document.querySelectorAll("[data-prompt-suggestions-anchor]").length,
     anchorLabel: anchor?.getAttribute("data-prompt-suggestions-anchor") ?? "",
     anchorHidden: anchor?.hasAttribute("hidden") ?? false,
     cardFound: card !== null,
     editorEditable: editor?.getAttribute("contenteditable") ?? "",
-    placeholderText: placeholder?.textContent?.trim() ?? "",
     placeholderVisibility: placeholder === null ? "" : getComputedStyle(placeholder).visibility,
-    ghosts: document.querySelectorAll("[data-prompt-suggestions]").length,
+    ghostText: ghost?.firstElementChild?.textContent ?? "",
+    draft: editor?.textContent ?? "",
   });
 })()`;
 
-/** Wait until a locator reports the settled copy instead of a transient state. */
-async function waitForText(
-  locator: { textContent(): Promise<string | null> },
-  expected: string,
-  timeoutMs: number,
+interface RenderedOverlay {
+  readonly anchors: number;
+  readonly anchorLabel: string;
+  readonly anchorHidden: boolean;
+  readonly cardFound: boolean;
+  readonly editorEditable: string;
+  readonly placeholderVisibility: string;
+  readonly ghostText: string;
+  readonly draft: string;
+}
+
+async function readOverlay(page: Page): Promise<RenderedOverlay> {
+  return JSON.parse(String(await page.evaluate(RENDERED_OVERLAY))) as RenderedOverlay;
+}
+
+/** Poll `read` until it returns `expected`, failing with `what` and the last value. */
+async function until<T>(
+  read: () => Promise<T>,
+  expected: T,
+  what: string,
+  timeoutMs = 30_000,
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const current = (await locator.textContent())?.trim();
-    if (current === expected) return;
-    if (Date.now() > deadline) {
-      throw new Error(`the host never showed "${expected}" (last: ${String(current)})`);
-    }
-    await new Promise((resolve) => setTimeout(resolve, 300));
+  let last: T = await read();
+  while (last !== expected) {
+    if (Date.now() > deadline) throw new Error(`${what} (last: ${JSON.stringify(last)})`);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    last = await read();
   }
+}
+
+/** Open the Settings sheet, failing with a package-specific message when the row never mounts. */
+async function openRow(page: Page, url: string): Promise<RenderedRow> {
+  try {
+    await openSettingsSheet(page, url, ROW_SELECTOR);
+  } catch (error) {
+    throw new Error(
+      `the host did not render this package's General settings row: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  await page
+    .locator(`${ROW_SELECTOR}[aria-busy="false"]`)
+    .waitFor({ state: "visible", timeout: 20_000 });
+  return JSON.parse(String(await page.evaluate(RENDERED_ROW))) as RenderedRow;
+}
+
+/** Toggle the row's switch and return the settled status copy. */
+async function toggle(page: Page): Promise<string> {
+  await page.locator(`${ROW_SELECTOR} [role=switch]`).first().click({ timeout: 8_000 });
+  await page
+    .locator(`${ROW_SELECTOR}[aria-busy="false"]`)
+    .waitFor({ state: "visible", timeout: 20_000 });
+  return (await page.locator(`${ROW_SELECTOR} [role=status]`).first().textContent())?.trim() ?? "";
 }
 
 /**
  * Load the installed package in the real host plane and assert what the host's own
- * Settings surface and live session rendered for it.
+ * Settings surface and live session rendered for it, including one real suggestion
+ * produced by the installed host half from a completed turn against a local
+ * OpenAI-compatible endpoint wired through the host's own `llm-pi-ai` adapter.
  */
 async function checkRenderedClient(installed: string): Promise<void> {
-  const plane = await openWebPlane([installed]);
-  const browser = await launchBrowser();
+  const copy = DICT.en;
+  const server = await startModelServer((exchange) => {
+    const messages = exchange.request.body["messages"];
+    const first = Array.isArray(messages) ? (messages[0] as { content?: unknown }) : undefined;
+    const text = first?.content === SUGGESTION_INSTRUCTIONS ? SUGGESTION : "Done.";
+    exchange.chunk({ role: "assistant", content: text });
+    exchange.chunk({}, "stop");
+    exchange.done();
+  });
+  let plane: WebPlane | undefined;
+  let browser: Browser | undefined;
   try {
+    plane = await openWebPlane([installed], {
+      patch: localModelPatch(server.baseURL),
+      env: { [LOCAL_KEY_REF]: "local-endpoint-key" },
+    });
+    browser = await launchBrowser();
     const page = await browser.newPage();
-    await openSettingsSheet(page, plane.pageUrl, ROW_SELECTOR);
-
-    const raw: unknown = await page.evaluate(RENDERED_ROW);
-    assert.ok(raw !== null, "the host did not render this package's General settings row");
-    const row = JSON.parse(String(raw)) as RenderedRow;
+    const row = await openRow(page, plane.pageUrl);
     assert.equal(row.rows, 1, "the host must mount exactly one settings row");
-    assert.equal(row.title, "Next-message suggestions", "English row title from the locale");
-    assert.equal(
-      row.description,
-      "Show a dim suggestion in the empty composer after a successful reply.",
-      "row description from the registered locale",
-    );
-    assert.ok(row.hint.length > 0, "the row must show its hint while enabled");
+    assert.equal(row.title, copy.label, "row title from the registered locale");
+    assert.equal(row.description, copy.description, "row description from the registered locale");
+    assert.equal(row.hint, copy.hint, "the row shows its enabled hint");
     assert.ok(row.styleLength > 0, "the row must ship its own styles");
-    assert.match(row.switchClass, /_switch_[0-9a-z]+_[0-9a-z]+/, "host Switch primitive");
+    assert.match(row.switchClass, /_switch_[0-9a-z]+_[0-9a-z]+/u, "host Switch primitive");
     assert.equal(row.switchChecked, "true", "a freshly installed package starts enabled");
 
-    // The row must write through the host's real settings service and be read back by
-    // a second page, which is what the host's storage really guarantees. The toggle
-    // writes immediately, so the settled copy is the service's own feedback.
-    await page.locator(`${ROW_SELECTOR} [role=switch]`).first().click({ timeout: 8_000 });
-    const status = page.locator(`${ROW_SELECTOR} [role=status][data-tone]`).first();
-    await status.waitFor({ state: "attached", timeout: 15_000 });
-    await waitForText(status, "Saved", 20_000);
-    assert.equal(await status.getAttribute("data-tone"), "success", "success feedback tone");
-
+    // The row writes through the host's real settings service, and a second page
+    // reads the stored value back.
+    assert.equal(await toggle(page), copy.saved, "the switch saves through the settings service");
     const fresh = await browser.newContext();
-    const freshPage = await fresh.newPage();
-    await openSettingsSheet(freshPage, plane.pageUrl, ROW_SELECTOR);
-    assert.equal(
-      await freshPage.locator(`${ROW_SELECTOR} [role=switch]`).first().getAttribute("aria-checked"),
-      "false",
-      "the write persisted for a new page",
-    );
+    const freshRow = await openRow(await fresh.newPage(), plane.pageUrl);
+    assert.equal(freshRow.switchChecked, "false", "the write persisted for a new page");
+    assert.equal(freshRow.hint, copy.disabledHint, "the disabled hint reads back");
     await fresh.close();
+    assert.equal(await toggle(page), copy.saved, "the switch re-enables");
 
-    // The overlay half must mount in the host's own composer, not only in Settings.
+    // The overlay half mounts in the host's own composer and paints a real
+    // suggestion once a real turn completes.
     await openLiveSession(page, plane.pageUrl, plane.workspace);
-    const overlayRaw: unknown = await page.evaluate(RENDERED_OVERLAY);
-    const overlay = JSON.parse(String(overlayRaw)) as {
-      anchors: number;
-      anchorLabel: string;
-      anchorHidden: boolean;
-      cardFound: boolean;
-      editorEditable: string;
-      placeholderText: string;
-      placeholderVisibility: string;
-      ghosts: number;
-    };
-    assert.equal(overlay.anchors, 1, "the overlay slot must mount once in the live composer");
-    assert.equal(
-      overlay.anchorLabel,
-      "Next-message suggestions",
-      "the anchor carries the localized label",
-    );
-    assert.equal(overlay.anchorHidden, true, "the anchor itself stays inert");
-    assert.equal(overlay.cardFound, true, "the overlay must find the host composer card");
-    assert.equal(overlay.editorEditable, "true", "the host composer must be editable");
-    assert.ok(overlay.placeholderText.length > 0, "the composer keeps its native placeholder");
-    assert.equal(overlay.placeholderVisibility, "visible", "nothing is painted without a reply");
-    assert.equal(overlay.ghosts, 0, "no ghost row exists before a suggestion is available");
+    const before = await readOverlay(page);
+    assert.equal(before.anchors, 1, "the overlay slot must mount once in the live composer");
+    assert.equal(before.anchorLabel, copy.label, "the anchor carries the localized label");
+    assert.equal(before.anchorHidden, true, "the anchor itself stays inert");
+    assert.equal(before.cardFound, true, "the overlay must find the host composer card");
+    assert.equal(before.editorEditable, "true", "the host composer must be editable");
+    assert.equal(before.placeholderVisibility, "visible", "nothing is painted without a reply");
+    assert.equal(before.ghostText, "", "no ghost before a suggestion is available");
 
+    await page.locator('div[contenteditable="true"]').first().click({ timeout: 10_000 });
+    await page.keyboard.type("Fix the login redirect");
+    await page.keyboard.press("Enter");
+    await until(
+      async () => (await readOverlay(page)).ghostText,
+      SUGGESTION,
+      "the installed package never painted the suggestion after a completed turn",
+    );
+    assert.equal(
+      (await readOverlay(page)).placeholderVisibility,
+      "hidden",
+      "ghost replaces the placeholder",
+    );
+    await page.keyboard.press("Tab");
+    await until(
+      async () => (await readOverlay(page)).draft,
+      SUGGESTION,
+      "Tab did not insert the suggestion into the draft",
+      10_000,
+    );
     await page.close();
   } finally {
-    await browser.close().catch(() => {});
-    await plane.close().catch(() => {});
+    const failures: unknown[] = [];
+    for (const step of [
+      async () => browser?.close(),
+      async () => plane?.close(),
+      async () => server.close(),
+    ]) {
+      try {
+        await step();
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (failures.length > 0) console.error("smoke-release: teardown failed", failures);
   }
 }
 
@@ -235,7 +307,7 @@ async function main(): Promise<void> {
   packagedPath(installed, "client.js", "built client entry");
   await checkRenderedClient(installed);
   console.log(
-    `smoke-release: ${PACKAGE_ID} passed (main/types/exports/patch files, installed package rendered in the real host plane, toggled through the settings service and persisted across pages, overlay mounted in the live composer)`,
+    `smoke-release: ${PACKAGE_ID} passed (main/types/exports/patch files, installed package rendered in the real host plane, toggled through the settings service and persisted across pages, overlay painted a real suggestion from a completed turn and Tab inserted it)`,
   );
 }
 
