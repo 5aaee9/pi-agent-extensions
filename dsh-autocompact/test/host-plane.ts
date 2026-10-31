@@ -21,11 +21,20 @@
  *   `stream` throws the credential gate's diagnostic, so a test that tried to
  *   exercise a model call would fail loudly instead of receiving a fake.
  *
- * @module @deepseek-ai/dsh-autocompact/test/host-plane
+ * Agents come from the real `AgentRegistry.create()` backed by the real
+ * `AgentLoop` factory (with the real tool and system-prompt services it
+ * injects), so each subject carries the session, options, and scoped context
+ * the host itself builds. The preset-mounted backend path
+ * (`agentPresets.serviceFor`) is exercised where the host composes it — the
+ * shipped web profile, whose root compaction row is disabled — by
+ * `client-plane.test.ts`.
+ *
+ * @module @indexyz/dsh-autocompact/test/host-plane
  */
 import { Context } from "@deepseek-ai/cordis";
 import { AgentRegistry, agentEvents } from "@deepseek-ai/dsh-agent";
-import type { Agent, AgentOptions, PreStepDecision } from "@deepseek-ai/dsh-agent";
+import type { Agent, PreStepDecision } from "@deepseek-ai/dsh-agent";
+import AgentLoop from "@deepseek-ai/dsh-agent-loop";
 import { CommandRuntime } from "@deepseek-ai/dsh-commands";
 import type { CommandResult } from "@deepseek-ai/dsh-commands";
 import { CompactionEngine } from "@deepseek-ai/dsh-compaction";
@@ -34,8 +43,11 @@ import { LlmAdapter, LlmRuntime, createUserMessage } from "@deepseek-ai/dsh-llm"
 import type { GenerateOptions, LlmResolvedModelInfo, StreamChunk } from "@deepseek-ai/dsh-llm";
 import { SessionStore } from "@deepseek-ai/dsh-session";
 import type { Session, SessionSeq } from "@deepseek-ai/dsh-session";
+import { SessionId } from "@deepseek-ai/dsh-session/types";
 import { SessionProjectionRegistry } from "@deepseek-ai/dsh-session-projection";
+import SystemPrompt from "@deepseek-ai/dsh-system-prompt";
 import { TokenMeter } from "@deepseek-ai/dsh-token-meter";
+import ToolsService from "@deepseek-ai/dsh-tools";
 import { apply, Config, inject } from "../index.ts";
 import type { AutocompactConfig } from "../index.ts";
 
@@ -180,7 +192,7 @@ const capturedWarnings = new WeakMap<Context, string[]>();
 export async function mountRuntime(
   runtime: RuntimeOptions,
   pluginConfig: Record<string, unknown> = {},
-): Promise<TestRuntime & { readonly config: AutocompactConfig; readonly session: Session }> {
+): Promise<TestRuntime & { readonly config: AutocompactConfig }> {
   const ctx = new Context();
   const logged: string[] = [];
   capturedWarnings.set(ctx, logged);
@@ -194,44 +206,56 @@ export async function mountRuntime(
       }
     },
   });
-  await ctx.plugin(SessionStore).await();
-  await ctx.plugin(SessionProjectionRegistry).await();
-  await ctx.plugin(TokenMeter).await();
-  await ctx.plugin(LlmRuntime).await();
-  ctx.llm.registerAdapter([runtime.provider], new MetadataLlmAdapter(runtime));
-  await ctx.plugin(CommandRuntime).await();
-  await ctx.plugin(AgentRegistry).await();
-  let backend: RecordingCompactionEngine | undefined;
-  if (runtime.backend !== false) {
-    await ctx.plugin(RecordingCompactionEngine, runtime.backendConfig ?? DEFAULT_BACKEND).await();
-    backend = ctx.get("compaction") as RecordingCompactionEngine;
-  }
-  let resolved: AutocompactConfig | undefined;
-  const entry = {
-    apply: (inner: Context, config: AutocompactConfig) => {
-      resolved = config;
-      apply(inner, config);
-    },
-    inject: [...inject],
-    Config,
-  };
+  // Any mount below may throw (a host contract change, an invalid row); the
+  // half-built graph is disposed before the failure propagates.
   try {
+    await ctx.plugin(SessionStore).await();
+    await ctx.plugin(SessionProjectionRegistry).await();
+    await ctx.plugin(TokenMeter).await();
+    await ctx.plugin(LlmRuntime).await();
+    ctx.llm.registerAdapter([runtime.provider], new MetadataLlmAdapter(runtime));
+    await ctx.plugin(CommandRuntime).await();
+    await ctx.plugin(AgentRegistry).await();
+    await ctx.plugin(SystemPrompt).await();
+    await ctx.plugin(ToolsService).await();
+    await ctx.plugin(AgentLoop, {}).await();
+    let backend: RecordingCompactionEngine | undefined;
+    if (runtime.backend !== false) {
+      await ctx.plugin(RecordingCompactionEngine, runtime.backendConfig ?? DEFAULT_BACKEND).await();
+      backend = ctx.get("compaction") as RecordingCompactionEngine;
+    }
+    let resolved: AutocompactConfig | undefined;
+    const entry = {
+      apply: (inner: Context, config: AutocompactConfig) => {
+        resolved = config;
+        apply(inner, config);
+      },
+      inject: [...inject],
+      Config,
+    };
     await ctx.plugin(entry, pluginConfig).await();
+    if (resolved === undefined) throw new Error("the plugin did not run apply");
+    return { ctx, backend, config: resolved };
   } catch (error) {
     await ctx.fiber.dispose();
     throw error;
   }
-  if (resolved === undefined) {
-    await ctx.fiber.dispose();
-    throw new Error("the plugin did not run apply");
-  }
-  return { ctx, backend, config: resolved, session: ctx.sessions.create() };
 }
 
-/** A live-agent subject backed by a real Session and the real Cordis context. */
-export function agentFor(ctx: Context, session: Session, provider: string, model: string): Agent {
-  const options: AgentOptions = { provider, model };
-  return { id: session.id, session, options, ctx } as unknown as Agent;
+let nextAgent = 0;
+
+/**
+ * Create a live root Agent through the real `AgentRegistry`, whose `AgentLoop`
+ * factory prepares its Session, publishes it in the session store, and binds
+ * its scoped context and options.
+ */
+export async function createAgent(ctx: Context, provider: string, model: string): Promise<Agent> {
+  nextAgent += 1;
+  const handle = await ctx.agents.create({
+    sessionId: SessionId(`autocompact-test-${String(nextAgent)}`),
+    agentOptions: { provider, model },
+  });
+  return handle.agent;
 }
 
 /** Dispatch the real `agent/pre-step` waterfall for one agent. */
@@ -269,6 +293,15 @@ export function appendUserText(session: Session, text: string): SessionSeq {
     createUserMessage({ content: [{ type: "text", text }], source: { kind: "user" } }),
     { surfaceOp: "append" },
   ).seq;
+}
+
+/**
+ * Route the session's next request to another model the way the agent loop
+ * does: append the real `request/header` event whose fold `requestHeader()`
+ * reads.
+ */
+export function switchModel(session: Session, provider: string, model: string): void {
+  session.append("request/header", { header: { config: { provider, model } }, reason: "change" });
 }
 
 /** Append `count` real user messages of `size` characters each. */

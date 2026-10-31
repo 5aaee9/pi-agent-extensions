@@ -3,8 +3,10 @@
  *
  * Each test mounts the pinned host services (`SessionStore`,
  * `SessionProjectionRegistry`, `TokenMeter`, `LlmRuntime`, `CommandRuntime`,
- * `AgentRegistry`) and a real compaction service through `ctx.plugin()`, then
- * mounts the plugin itself as `{ apply, inject, Config }`. Commands run through
+ * `AgentRegistry`, `SystemPrompt`, `ToolsService`, `AgentLoop`) and a real
+ * compaction service through `ctx.plugin()`, then mounts the plugin itself as
+ * `{ apply, inject, Config }`. Every Agent comes from the real
+ * `AgentRegistry.create()`. Commands run through
  * the real command registry (so `command/run` and `command/done` land in the
  * real session log) and the pressure check runs through the real
  * `agent/pre-step` waterfall. Model resolution uses a real `LlmAdapter` that
@@ -16,11 +18,12 @@ import { CompactionEngine } from "@deepseek-ai/dsh-compaction";
 import { onTestFinished, describe, expect, it } from "vitest";
 import { Config } from "../index.ts";
 import {
-  agentFor,
   appendUserMessages,
+  createAgent,
   mountRuntime,
   runCommand,
   step,
+  switchModel,
   warnings,
   writeLiveConfig,
 } from "./host-plane.ts";
@@ -48,8 +51,8 @@ async function harness(options: HarnessOptions = {}) {
     options.pluginConfig ?? {},
   );
   onTestFinished(() => runtime.ctx.fiber.dispose());
-  const agent = agentFor(runtime.ctx, runtime.session, PROVIDER, MODEL);
-  return { ...runtime, agent };
+  const agent = await createAgent(runtime.ctx, PROVIDER, MODEL);
+  return { ...runtime, agent, session: agent.session };
 }
 
 describe("session-only thresholds", () => {
@@ -105,15 +108,16 @@ describe("session-only thresholds", () => {
   });
 
   it("reports a composition that mounts no compaction backend", async () => {
-    const h = await harness({ backend: false });
+    const h = await harness({ backend: false, pluginConfig: { defaultLimit: 100 } });
+    expect(h.ctx.get("compaction")).toBeUndefined();
     expect(await runCommand(h.ctx, h.agent, "/autocompact 300k")).toMatchObject({
       kind: "error",
-      text: expect.stringContaining("No compaction backend is mounted"),
+      text: expect.stringContaining("No compaction backend is mounted for provider/model"),
     });
+    // The pressure check still lets the step enter untouched, and has nothing to warn about.
     appendUserMessages(h.session, 8);
-    await runCommand(h.ctx, h.agent, "/autocompact 100");
-    await step(h.ctx, h.agent);
-    expect(h.backend).toBeUndefined();
+    expect(await step(h.ctx, h.agent)).toEqual({ kind: "enter", messages: [] });
+    expect(warnings(h.ctx)).toEqual([]);
   });
 
   it("keeps overrides per model and per session", async () => {
@@ -123,16 +127,19 @@ describe("session-only thresholds", () => {
     await step(h.ctx, h.agent);
     expect(h.backend?.calls).toHaveLength(1);
 
-    // Another model on the same session has no override.
-    const other = agentFor(h.ctx, h.session, PROVIDER, "other-model");
-    await step(h.ctx, other);
+    // The session's next request routes to another model: that model has no override.
+    switchModel(h.session, PROVIDER, "other-model");
+    await step(h.ctx, h.agent);
     expect(h.backend?.calls).toHaveLength(1);
+    expect(await runCommand(h.ctx, h.agent, "/autocompact")).toMatchObject({
+      kind: "success",
+      text: expect.stringContaining("provider/other-model: backend default compaction"),
+    });
 
-    // A new session starts clean.
-    const fresh = h.ctx.sessions.create();
-    appendUserMessages(fresh, 8);
-    const freshAgent = agentFor(h.ctx, fresh, PROVIDER, MODEL);
-    await step(h.ctx, freshAgent);
+    // A new session (a new Agent from the registry) starts clean.
+    const fresh = await createAgent(h.ctx, PROVIDER, MODEL);
+    appendUserMessages(fresh.session, 8);
+    await step(h.ctx, fresh);
     expect(h.backend?.calls).toHaveLength(1);
   });
 

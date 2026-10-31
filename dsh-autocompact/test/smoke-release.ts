@@ -23,7 +23,7 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import type { Page } from "playwright";
 
-import { launchBrowser, openSettingsSheet, openWebPlane } from "./web-plane.ts";
+import { launchBrowser, openSettingsSection, openWebPlane, withTeardown } from "./web-plane.ts";
 
 /** The module id the client artifact must register. */
 const PACKAGE_ID = "@indexyz/dsh-autocompact";
@@ -110,15 +110,8 @@ async function waitForText(
  * which is the entry the section slot registers into.
  */
 async function openSection(page: Page, url: string): Promise<void> {
-  await openSettingsSheet(page, url, "body");
-  await page.evaluate(`(() => {
-    const button = [...document.querySelectorAll("button,[role=tab]")].find(
-      (element) => (element.textContent ?? "").trim() === "Autocompact",
-    );
-    button?.click();
-  })()`);
-  await page.locator(SECTION).waitFor({ state: "attached", timeout: 20_000 });
-  await page.waitForTimeout(1200);
+  await openSettingsSection(page, url, "Autocompact", SECTION);
+  await page.locator(`${SECTION} [role=switch]`).waitFor({ state: "visible", timeout: 20_000 });
 }
 
 /**
@@ -126,10 +119,14 @@ async function openSection(page: Page, url: string): Promise<void> {
  * Settings surface rendered for it and what its settings service accepted.
  */
 async function checkRenderedClient(installed: string): Promise<void> {
-  const plane = await openWebPlane([installed]);
-  const browser = await launchBrowser();
-  try {
-    const page = await browser.newPage();
+  const plane = await openWebPlane({ sources: [installed] });
+  const browser = await launchBrowser().catch(async (error: unknown) => {
+    await plane.close();
+    throw error;
+  });
+  await withTeardown(async () => {
+    const first = await browser.newContext();
+    const page = await first.newPage();
     await openSection(page, plane.pageUrl);
 
     const raw: unknown = await page.evaluate(RENDERED_SECTION);
@@ -155,37 +152,32 @@ async function checkRenderedClient(installed: string): Promise<void> {
     assert.equal(view.defaultLimit, "", "a fresh profile has no deployment threshold");
     assert.ok(view.styleLength > 0, "the section must ship its own styles");
 
-    // The page must write through the host's real settings service and be read back
-    // by a second page, which is what the host's storage really guarantees.
+    // The page must write through the host's real settings service and be read
+    // back by a second page, which is what the host's storage really guarantees.
     await page.locator(`${SECTION} [role=switch]`).first().click({ timeout: 8_000 });
-    const toggleDeadline = Date.now() + 20_000;
-    for (;;) {
-      const checked = await page
-        .locator(`${SECTION} [role=switch]`)
-        .first()
-        .getAttribute("aria-checked");
-      if (checked === "false") break;
-      assert.ok(Date.now() < toggleDeadline, "the host never stored the switch write");
-      await new Promise((resolve) => setTimeout(resolve, 300));
-    }
+    await page.waitForFunction(
+      `document.querySelector("section.dsha-page [role=switch]")?.getAttribute("aria-checked") === "false"`,
+      undefined,
+      { timeout: 20_000 },
+    );
     await page.locator(`${SECTION} input[aria-label="Default threshold"]`).first().fill("300k");
     await page.locator(`${SECTION} button`, { hasText: "Save" }).first().click({ timeout: 8_000 });
     await waitForText(page.locator(`${SECTION} [role=status]`).first(), "Saved.", 20_000);
+    await first.close();
 
     const fresh = await browser.newContext();
-    const freshPage = await fresh.newPage();
-    await openSection(freshPage, plane.pageUrl);
-    const readBack = JSON.parse(
-      String((await freshPage.evaluate(RENDERED_SECTION)) as unknown),
-    ) as { switchChecked: string; defaultLimit: string };
-    assert.equal(readBack.switchChecked, "false", "the switch write persisted for a new page");
-    assert.equal(readBack.defaultLimit, "300000", "the saved threshold persisted for a new page");
-    await fresh.close();
-    await page.close();
-  } finally {
-    await browser.close().catch(() => {});
-    await plane.close().catch(() => {});
-  }
+    try {
+      const freshPage = await fresh.newPage();
+      await openSection(freshPage, plane.pageUrl);
+      const readBack = JSON.parse(
+        String((await freshPage.evaluate(RENDERED_SECTION)) as unknown),
+      ) as { switchChecked: string; defaultLimit: string };
+      assert.equal(readBack.switchChecked, "false", "the switch write persisted for a new page");
+      assert.equal(readBack.defaultLimit, "300000", "the saved threshold persisted for a new page");
+    } finally {
+      await fresh.close();
+    }
+  }, [async () => await browser.close(), async () => await plane.close()]);
 }
 
 async function main(): Promise<void> {

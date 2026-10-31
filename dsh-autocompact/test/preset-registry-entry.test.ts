@@ -11,6 +11,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { assertFreshBuild } from "./web-plane.ts";
 
 const sourceUrl = new URL("../index.ts", import.meta.url);
 const builtUrl = new URL("../lib/index.js", import.meta.url);
@@ -28,14 +29,10 @@ describe("preset registry entry", () => {
   });
 
   it("loads the built host entry as installed ESM against the real registry", () => {
-    if (!existsSync(builtUrl)) {
-      // `npm run check` builds before tests. A bare `vitest` run before the
-      // first build has no host artifact to load; CI always builds first.
-      if (process.env.CI === "true") {
-        throw new Error("lib/index.js is missing; build the host entry before tests in CI");
-      }
-      return;
-    }
+    // `npm run check` builds before tests; a run without a build has nothing to
+    // prove here, so it fails instead of passing silently.
+    expect(existsSync(builtUrl), "lib/index.js is missing; run `npm run build` first").toBe(true);
+    assertFreshBuild();
     const built = readFileSync(builtUrl, "utf8");
     expect(built).not.toMatch(NAMED_SERVICE_FOR_AGENT);
 
