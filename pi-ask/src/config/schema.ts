@@ -10,6 +10,7 @@ const AskNotificationChannelSchema = Type.Union([
   Type.Literal("bell"),
   Type.Literal("osc9"),
   Type.Literal("osc777"),
+  // Retired: still accepted in existing files so they stay valid, then dropped on load.
   Type.Literal("osc7501"),
   Type.Object({
     command: Type.String(),
@@ -212,7 +213,6 @@ export type AskNotificationChannel =
   | "bell"
   | "osc9"
   | "osc777"
-  | "osc7501"
   | { command: string; type: "command" };
 
 export interface AskConfigKeymaps {

@@ -5,6 +5,11 @@ import { registerAnswerCommands } from "./answer-commands.ts";
 import { registerAskSettingsCommand } from "./ask-settings-command.ts";
 import { registerAskTool } from "./ask-tool.ts";
 import { resetAskConfigStore } from "./config/store.ts";
+import {
+  getRestingStatusTracker,
+  resetRestingStatusTracker,
+  subscribeRestingStatus,
+} from "./program-status.ts";
 import { createRemoteAskRuntime } from "./remote-ask.ts";
 import { registerPendingAskResume } from "./resume-pending-ask.ts";
 
@@ -14,6 +19,8 @@ const PI_ASK_CONFIG_PROMPT = `When the user asks to configure, customize, debug,
 
 export default function askExtension(pi: ExtensionAPI) {
   resetAskConfigStore();
+  resetRestingStatusTracker();
+  subscribeRestingStatus(pi, getRestingStatusTracker());
   pi.on("before_agent_start", async (event) => ({
     systemPrompt: `${event.systemPrompt}\n\n${PI_ASK_CONFIG_PROMPT}`,
   }));

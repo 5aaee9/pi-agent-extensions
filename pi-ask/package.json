@@ -1,7 +1,7 @@
 {
   "name": "@indexyz/pi-ask",
   "version": "0.1.0",
-  "description": "Structured interactive questions and OSC 7501 status notifications for the Pi coding agent",
+  "description": "Structured interactive questions for the Pi coding agent, reported as blocked in the OSC 7501 program status",
   "keywords": [
     "ask",
     "pi",
@@ -41,9 +41,9 @@
     "prepack": "npm run check"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "0.84.0",
-    "@earendil-works/pi-coding-agent": "0.84.0",
-    "@earendil-works/pi-tui": "0.84.0",
+    "@earendil-works/pi-ai": "1.5.0",
+    "@earendil-works/pi-coding-agent": "1.5.0",
+    "@earendil-works/pi-tui": "1.5.0",
     "@types/node": "^24.0.0",
     "typebox": "1.3.7",
     "typescript": "^7.0.2",

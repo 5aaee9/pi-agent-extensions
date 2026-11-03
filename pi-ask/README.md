@@ -35,7 +35,15 @@ See [tool contract](docs/contract.md), [configuration](docs/configuration.md), a
 
 Configuration lives at `~/.pi/agent/pi-ask.json`, or `<PI_CODING_AGENT_DIR>/pi-ask.json` when that variable is set. The file is created with defaults on first use. Upstream configuration paths are not read automatically. Existing schema versions migrate in memory without rewriting the file on load.
 
-New configurations enable `bell` and `osc7501` notification channels. Explicit user channel selections are preserved. Terminal notifications are skipped when stdout is not a TTY. OSC 7501 reports `blocked` with `kind=question` using a distinct record per flow; completing or disposing the flow clears that record without clearing unrelated terminal status. Unsupported terminals ignore the sequence.
+New configurations enable the `bell` notification channel. Explicit user channel selections are preserved. Terminal notifications are skipped when stdout is not a TTY. The retired `osc7501` channel is ignored when an existing configuration lists it; program status is reported automatically instead (below).
+
+## Program status
+
+While an ask form is open, terminals and agent dashboards that support the [Program Status Protocol (OSC 7501)](https://www.superlogical.com/rex/docs/build/program-status) see Pi as `blocked` with `kind=question` and the message `Question waiting: <label or prompt>`, instead of `working`. This does not depend on notification settings.
+
+- Pi 1.5.0 and later report it themselves: pi-ask opens the form with the `blocked` option of `ctx.ui.custom()`, and Pi restores its own status when the form closes.
+- On older Pi versions, pi-ask writes the same root record Pi writes (`app=pi`, no `id`) when the form opens. When it closes, pi-ask writes the status Pi would report: `working` with the session name during an agent run, otherwise `done`, `error`, or `idle` according to how the last run ended. A failed or aborted manual `/compact` outside a run is not visible to extensions, so the restored status can differ from Pi's until Pi's next status change.
+- On older Pi versions, pi-ask writes nothing when stdout is not a TTY or `PI_PROGRAM_STATUS=0`. Pi 1.5.0 and later apply their own `PI_PROGRAM_STATUS` and support detection.
 
 The renamed tool does not register an `ask_user` alias. Do not load both forks together: commands and local event identifiers are shared with upstream.
 

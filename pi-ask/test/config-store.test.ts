@@ -204,3 +204,26 @@ test("config store falls back only keymaps when configured keymaps are invalid",
   assert.match(result.notice?.text ?? "", DEFAULT_KEYMAPS_NOTICE_PATTERN);
   await rm(dirname(path), { force: true, recursive: true });
 });
+
+for (const { channels, name } of [
+  { channels: ["bell", "osc7501"], name: "with other channels" },
+  { channels: ["osc7501"], name: "as the only channel" },
+]) {
+  test(`config store ignores the retired osc7501 channel ${name}`, async () => {
+    const path = await makeTempPath("pi-ask-config-osc7501-");
+    await mkdir(dirname(path), { recursive: true });
+    const content = JSON.stringify({
+      ...expectedConfigFile(),
+      notifications: { channels, enabled: true },
+    });
+    await writeFile(path, content);
+    const store = new AskConfigStore(path);
+
+    const result = await store.ensureLoaded();
+
+    assert.equal(result.notice, undefined);
+    assert.deepEqual(result.config.notifications, { channels: ["bell"], enabled: true });
+    assert.equal(await readFile(path, "utf-8"), content);
+    await rm(dirname(path), { force: true, recursive: true });
+  });
+}

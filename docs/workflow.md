@@ -251,7 +251,7 @@ Every change ends with all of these, run from the repository root:
    printf '{"id":"1","type":"get_commands"}\n' | node_modules/.bin/pi -ne -e ./pi-skill/index.ts --mode rpc
    ```
 
-   Replace `pi-skill` with the package you changed. When the package pins a Pi version different from the root's (today `pi-autocompact` and `pi-provider-sub2api`), use its own binary: `pi-autocompact/node_modules/.bin/pi`. Exit code 0 and a `"success":true` response listing the package's commands mean the extension loaded. A load failure prints `Failed to load extension` and exits non-zero.
+   Replace `pi-skill` with the package you changed. When the package pins a Pi version different from the root's (today `pi-autocompact`, `pi-provider-sub2api`, and `pi-ask`), use its own binary: `pi-autocompact/node_modules/.bin/pi`. Exit code 0 and a `"success":true` response listing the package's commands mean the extension loaded. A load failure prints `Failed to load extension` and exits non-zero.
 
    The repository-wide host-loading check runs every supported package discovered from the workspace manifests:
 

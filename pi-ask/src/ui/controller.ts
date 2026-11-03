@@ -3,6 +3,7 @@ import { Editor, type EditorTheme } from "@earendil-works/pi-tui";
 import type { AskConfig } from "../config/schema.ts";
 import { getAskConfigStore } from "../config/store.ts";
 import { createQuestionWaitingNotification, notifyQuestionWaiting } from "../notifications.ts";
+import { getRestingStatusTracker, reportBlockedQuestion } from "../program-status.ts";
 import {
   applyRemoteAskResponse,
   type RemoteAskFlowHandle,
@@ -107,16 +108,33 @@ export async function runAskFlow(
       cancelled: true,
     };
   }
-  return ctx.ui.custom<AskResult>((...args) =>
-    createAskFlowController(args, {
-      ...params,
-      config,
-      configNotice: notice?.text,
-      cwd: ctx.cwd,
-      ctx,
-      flowOptions,
-    }),
+  const waiting = createQuestionWaitingNotification(firstQuestionSubject(params));
+  const restoreProgramStatus = reportBlockedQuestion(
+    waiting.message,
+    ctx,
+    getRestingStatusTracker(),
   );
+  try {
+    return await ctx.ui.custom<AskResult>(
+      (...args) =>
+        createAskFlowController(args, {
+          ...params,
+          config,
+          configNotice: notice?.text,
+          cwd: ctx.cwd,
+          ctx,
+          flowOptions,
+        }),
+      { blocked: { kind: "question", message: waiting.message } },
+    );
+  } finally {
+    restoreProgramStatus();
+  }
+}
+
+function firstQuestionSubject(params: AskParams): { label: string; prompt: string } {
+  const question = params.questions[0];
+  return { label: question?.label ?? "", prompt: question?.prompt ?? "" };
 }
 
 function createAskFlowController(

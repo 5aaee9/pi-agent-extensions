@@ -172,16 +172,16 @@ Notifications are best-effort external alerts emitted once per ask session, when
 ### `notifications.channels`
 
 - type: array
-- default: `["bell", "osc7501"]` (new configurations only; explicit user channels are preserved)
+- default: `["bell"]` (new configurations only; explicit user channels are preserved)
 - supported channels:
   - `"bell"` writes BEL (`\u0007`)
   - `"osc9"` writes an OSC 9 terminal notification
   - `"osc777"` writes an OSC 777 title/body notification
-  - `"osc7501"` writes an OSC 7501 `state=blocked`, `kind=question` program-status report with a base64-encoded message
   - `{ "type": "command", "command": string }` runs a shell command
 - effect: channels run in order; failures are ignored and never fail the ask flow
 - terminal channels are skipped when stdout is not a TTY; ask notifications are only invoked by the interactive TUI flow
-- invalid channels are skipped; if none are valid, pi-ask falls back to `["bell", "osc7501"]`
+- invalid channels are skipped; if none are valid, pi-ask falls back to `["bell"]`
+- `"osc7501"` is retired: existing files that list it stay valid and unchanged, but the entry is ignored. OSC 7501 program status is reported automatically while a form is open, independent of these settings; see the README's "Program status" section
 
 Notification text:
 

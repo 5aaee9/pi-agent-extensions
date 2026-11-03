@@ -3,7 +3,6 @@ import { promisify } from "node:util";
 import type { AskConfig } from "./config/schema.ts";
 import type { AskQuestion } from "./types.ts";
 
-let notificationSequence = 0;
 const execAsync = promisify(exec);
 const DEFAULT_TITLE = "pi ask";
 const EVENT = "question.waiting";
@@ -72,20 +71,6 @@ async function notifyChannel(
           `\x1b]777;notify;${sanitizeOscField(payload.title)};${sanitizeOscField(payload.message)}\x07`,
         );
         return { channel: type, status: "attempted" };
-      case "osc7501": {
-        const id = `pi-ask/${++notificationSequence}`;
-        process.stdout.write(
-          `\x1b]7501;state=blocked:kind=question:app=pi-ask:id=${id}:msg=${encodeBase64(sanitizeOsc(payload.message))}\x07`,
-        );
-        signal?.addEventListener(
-          "abort",
-          () => {
-            process.stdout.write(`\x1b]7501;state=clear:id=${id}\x07`);
-          },
-          { once: true },
-        );
-        return { channel: type, status: "attempted" };
-      }
       case "command": {
         if (typeof channel === "string") {
           return { channel: type, status: "failed", error: "Missing command" };
@@ -118,10 +103,6 @@ function singleLine(value: string): string {
 
 function truncate(value: string, maxLength: number): string {
   return value.length <= maxLength ? value : `${value.slice(0, maxLength - 1)}…`;
-}
-
-function encodeBase64(value: string): string {
-  return Buffer.from(value, "utf8").toString("base64");
 }
 
 function sanitizeOsc(value: string): string {

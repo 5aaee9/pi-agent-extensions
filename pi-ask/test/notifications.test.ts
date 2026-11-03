@@ -37,8 +37,8 @@ test("disabled notifications are skipped", async () => {
   assert.deepEqual(attempts, [{ channel: "notifications", status: "skipped" }]);
 });
 
-test("new configurations enable bell and OSC 7501", () => {
-  assert.deepEqual(DEFAULT_ASK_CONFIG.notifications.channels, ["bell", "osc7501"]);
+test("new configurations enable only the bell", () => {
+  assert.deepEqual(DEFAULT_ASK_CONFIG.notifications.channels, ["bell"]);
 });
 
 test("terminal notifications do not write escape sequences to redirected stdout", async () => {
@@ -47,10 +47,7 @@ test("terminal notifications do not write escape sequences to redirected stdout"
     DEFAULT_ASK_CONFIG,
     createQuestionWaitingNotification({ label: "Scope", prompt: "Prompt" }),
   );
-  assert.deepEqual(attempts, [
-    { channel: "bell", status: "skipped" },
-    { channel: "osc7501", status: "skipped" },
-  ]);
+  assert.deepEqual(attempts, [{ channel: "bell", status: "skipped" }]);
 });
 
 test("command notification receives env and swallows failures", async () => {

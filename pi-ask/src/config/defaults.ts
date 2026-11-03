@@ -29,7 +29,7 @@ export const DEFAULT_ASK_CONFIG: AskConfig = {
   },
   keymaps: cloneKeymaps(DEFAULT_ASK_KEYMAPS),
   notifications: {
-    channels: ["bell", "osc7501"],
+    channels: ["bell"],
     enabled: true,
   },
 };
@@ -156,7 +156,7 @@ function normalizeNotificationChannels(channels: unknown): AskNotificationChanne
 }
 
 function isValidNotificationChannel(value: unknown): value is AskNotificationChannel {
-  if (value === "bell" || value === "osc9" || value === "osc777" || value === "osc7501") {
+  if (value === "bell" || value === "osc9" || value === "osc777") {
     return true;
   }
   return (
