@@ -4,13 +4,53 @@ import { dirname, resolve } from "node:path";
 export type Settings = Record<string, unknown>;
 
 export const AUTOCOMPACT_USAGE =
-  "Usage: /autocompact [300k | 1m | 300000 | off | default] [--save]";
+  "Usage: /autocompact [300k | 1m | 300000 | 80% | off | default] [--save | --save-provider | --save-global]";
+
+/** A threshold or cap: an absolute token count or a share of the model's context window. */
+export type LimitValue =
+  | { readonly kind: "tokens"; readonly tokens: number }
+  | { readonly kind: "percent"; readonly percent: number };
+
+export type SaveTarget = "model" | "provider" | "global";
 
 export type AutocompactCommand =
   | { readonly kind: "status" }
   | { readonly kind: "off" }
   | { readonly kind: "default" }
-  | { readonly kind: "limit"; readonly tokens: number; readonly save: boolean };
+  | { readonly kind: "limit"; readonly value: LimitValue; readonly save: SaveTarget | null };
+
+/** User plugin defaults: thresholds per `provider/modelId`, caps per provider and globally. */
+export interface PluginDefaults {
+  readonly models: Map<string, LimitValue>;
+  readonly providers: Map<string, LimitValue>;
+  global: LimitValue | undefined;
+}
+
+export type LimitSource = "session" | "model" | "provider" | "global" | "window";
+
+export interface EffectiveLimit {
+  readonly tokens: number;
+  readonly source: LimitSource;
+}
+
+export interface LimitLevels {
+  /** undefined: no session override; null: `/autocompact off`. */
+  readonly session: LimitValue | null | undefined;
+  readonly model: LimitValue | undefined;
+  readonly provider: LimitValue | undefined;
+  readonly global: LimitValue | undefined;
+}
+
+export type SaveDestination =
+  | { readonly target: "model"; readonly key: string }
+  | { readonly target: "provider"; readonly provider: string }
+  | { readonly target: "global" };
+
+const SAVE_FLAGS: Record<string, SaveTarget> = {
+  "--save": "model",
+  "--save-provider": "provider",
+  "--save-global": "global",
+};
 
 const LOCK_STALE_MS = 10_000;
 const LOCK_ATTEMPTS = 25;
@@ -36,14 +76,98 @@ export function object(value: unknown, label: string): Settings {
   return value as Settings;
 }
 
-export function parseLimit(input: string): number {
-  const match = /^(\d+(?:\.\d+)?)([km]?)$/i.exec(input.trim());
+/** `80%`, `12.5%`: greater than 0 and at most 100. */
+function parsePercent(input: string): LimitValue | undefined {
+  const match = /^(\d+(?:\.\d+)?)%$/.exec(input);
+  if (!match) return undefined;
+  const percent = Number(match[1]);
+  if (!(percent > 0 && percent <= 100)) {
+    throw new Error("Percentage must be greater than 0% and at most 100%");
+  }
+  return { kind: "percent", percent };
+}
+
+/** Command form: `300k`, `0.3m`, `300000`, or `80%`. */
+export function parseLimit(input: string): LimitValue {
+  const text = input.trim();
+  const percent = parsePercent(text);
+  if (percent) return percent;
+  const match = /^(\d+(?:\.\d+)?)([km]?)$/i.exec(text);
   if (!match) throw new Error(AUTOCOMPACT_USAGE);
-  const limit = Number(match[1]) * ({ k: 1000, m: 1000000 }[match[2].toLowerCase()] ?? 1);
-  if (!Number.isSafeInteger(limit) || limit <= 0) {
+  const tokens = Number(match[1]) * ({ k: 1000, m: 1000000 }[match[2].toLowerCase()] ?? 1);
+  if (!Number.isSafeInteger(tokens) || tokens <= 0) {
     throw new Error("Threshold must be a positive safe integer number of tokens");
   }
-  return limit;
+  return { kind: "tokens", tokens };
+}
+
+/** Settings form: a positive integer token count or a `"<n>%"` string. */
+export function limitFromSettings(value: unknown, label: string): LimitValue {
+  if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) {
+    return { kind: "tokens", tokens: value };
+  }
+  if (typeof value === "string") {
+    try {
+      const percent = parsePercent(value);
+      if (percent) return percent;
+    } catch {
+      // Reported below with the setting's name.
+    }
+  }
+  throw new Error(
+    `Invalid ${label}: expected a positive integer token count or a percentage such as "80%"`,
+  );
+}
+
+export function limitToSettings(value: LimitValue): number | string {
+  return value.kind === "tokens" ? value.tokens : `${value.percent}%`;
+}
+
+export function describeLimit(value: LimitValue): string {
+  return value.kind === "tokens"
+    ? `${value.tokens.toLocaleString("en-US")} tokens`
+    : `${value.percent}% of the context window`;
+}
+
+export function resolveLimit(value: LimitValue, contextWindow: number): number {
+  return value.kind === "tokens" ? value.tokens : Math.floor((contextWindow * value.percent) / 100);
+}
+
+/** The lowest of the threshold (session override, else model limit), the provider
+ * and global caps, and the context window. Ties keep the more specific level. */
+export function effectiveLimit(
+  levels: LimitLevels,
+  contextWindow: number,
+): EffectiveLimit | undefined {
+  if (levels.session === null) return undefined;
+  const candidates: [LimitSource, LimitValue | undefined][] = [
+    levels.session === undefined ? ["model", levels.model] : ["session", levels.session],
+    ["provider", levels.provider],
+    ["global", levels.global],
+  ];
+  let best: EffectiveLimit | undefined;
+  for (const [source, value] of candidates) {
+    if (value === undefined) continue;
+    const tokens = resolveLimit(value, contextWindow);
+    if (best === undefined || tokens < best.tokens) best = { tokens, source };
+  }
+  if (best === undefined) return undefined;
+  return contextWindow < best.tokens ? { tokens: contextWindow, source: "window" } : best;
+}
+
+/** Why an effective threshold cannot drive plugin compaction, or undefined when it can. */
+export function unusableReason(
+  tokens: number,
+  contextWindow: number,
+  keepRecentTokens: number,
+): string | undefined {
+  if (tokens <= keepRecentTokens) {
+    return `${tokens.toLocaleString("en-US")} tokens does not exceed keepRecentTokens (${keepRecentTokens.toLocaleString("en-US")})`;
+  }
+  if (tokens >= contextWindow) {
+    return `${tokens.toLocaleString("en-US")} tokens is not below the context window (${contextWindow.toLocaleString("en-US")})`;
+  }
+  return undefined;
 }
 
 function tokenValue(value: unknown, label: string): number | undefined {
@@ -85,23 +209,28 @@ export function validateLimit(
   }
 }
 
-/** Optional user defaults. `/autocompact <threshold> --save` writes one entry. */
-export function defaultLimits(settings: Settings): Map<string, number> {
+export function emptyDefaults(): PluginDefaults {
+  return { models: new Map(), providers: new Map(), global: undefined };
+}
+
+/** Optional user defaults: `modelLimits`, `providerLimits`, and `globalLimit`. */
+export function defaultLimits(settings: Settings): PluginDefaults {
   const config = object(settings.piAutocompact, "piAutocompact");
-  const models = object(config.modelLimits, "piAutocompact.modelLimits");
-  return new Map(
-    Object.entries(models).map(([key, value]) => {
-      if (
-        !key.includes("/") ||
-        typeof value !== "number" ||
-        !Number.isSafeInteger(value) ||
-        value <= 0
-      ) {
-        throw new Error(`Invalid piAutocompact.modelLimits entry: ${key}`);
-      }
-      return [key, value];
-    }),
-  );
+  const entries = (field: string, valid: (key: string) => boolean) =>
+    new Map(
+      Object.entries(object(config[field], `piAutocompact.${field}`)).map(([key, value]) => {
+        if (!valid(key)) throw new Error(`Invalid piAutocompact.${field} entry: ${key}`);
+        return [key, limitFromSettings(value, `piAutocompact.${field} entry ${key}`)];
+      }),
+    );
+  return {
+    models: entries("modelLimits", (key) => key.includes("/")),
+    providers: entries("providerLimits", (key) => key.length > 0 && !key.includes("/")),
+    global:
+      config.globalLimit === undefined
+        ? undefined
+        : limitFromSettings(config.globalLimit, "piAutocompact.globalLimit"),
+  };
 }
 
 export async function readSettings(path: string): Promise<Settings> {
@@ -120,52 +249,61 @@ export function parseAutocompactCommand(input: string): AutocompactCommand {
     .filter((token) => token.length > 0);
   if (tokens.length === 0) return { kind: "status" };
 
-  let save = false;
+  let flag: string | undefined;
   const words: string[] = [];
   for (const token of tokens) {
-    if (token.toLowerCase() === "--save") {
-      if (save) throw new Error(`--save may be given once. ${AUTOCOMPACT_USAGE}`);
-      save = true;
+    const lower = token.toLowerCase();
+    if (lower in SAVE_FLAGS) {
+      if (flag === lower) throw new Error(`${flag} may be given once. ${AUTOCOMPACT_USAGE}`);
+      if (flag !== undefined) {
+        throw new Error(
+          `Only one of --save, --save-provider, --save-global may be given. ${AUTOCOMPACT_USAGE}`,
+        );
+      }
+      flag = lower;
       continue;
     }
     if (token.startsWith("-")) throw new Error(`Unknown option: ${token}. ${AUTOCOMPACT_USAGE}`);
     words.push(token);
   }
 
-  if (words.length !== 1) {
-    throw new Error(
-      save
-        ? "--save requires a threshold, for example /autocompact 300k --save"
-        : AUTOCOMPACT_USAGE,
-    );
-  }
+  const missing = () =>
+    new Error(`${flag} requires a threshold, for example /autocompact 300k ${flag}`);
+  if (words.length !== 1) throw flag ? missing() : new Error(AUTOCOMPACT_USAGE);
   const word = words[0].toLowerCase();
   if (word === "off" || word === "default") {
-    if (save) {
-      throw new Error("--save requires a threshold, for example /autocompact 300k --save");
-    }
+    if (flag) throw missing();
     return { kind: word };
   }
-  return { kind: "limit", tokens: parseLimit(word), save };
+  return { kind: "limit", value: parseLimit(word), save: flag ? SAVE_FLAGS[flag] : null };
 }
 
-export function withModelLimit(settings: Settings, modelKey: string, limit: number): Settings {
-  if (!modelKey.includes("/")) throw new Error(`Invalid model key: ${modelKey}`);
-  if (!Number.isSafeInteger(limit) || limit <= 0) {
-    throw new Error("Threshold must be a positive safe integer number of tokens");
-  }
+/** Merge one limit into settings without mutating the input. */
+export function withLimit(
+  settings: Settings,
+  destination: SaveDestination,
+  value: LimitValue,
+): Settings {
+  const stored = limitToSettings(value);
+  limitFromSettings(stored, "limit");
   const config = object(settings.piAutocompact, "piAutocompact");
-  const models = object(config.modelLimits, "piAutocompact.modelLimits");
-  return {
-    ...settings,
-    piAutocompact: {
-      ...config,
-      modelLimits: {
-        ...models,
-        [modelKey]: limit,
-      },
-    },
-  };
+  const merge = (field: string, key: string): Settings => ({
+    ...config,
+    [field]: { ...object(config[field], `piAutocompact.${field}`), [key]: stored },
+  });
+  let next: Settings;
+  if (destination.target === "model") {
+    if (!destination.key.includes("/")) throw new Error(`Invalid model key: ${destination.key}`);
+    next = merge("modelLimits", destination.key);
+  } else if (destination.target === "provider") {
+    if (!destination.provider || destination.provider.includes("/")) {
+      throw new Error(`Invalid provider: ${destination.provider}`);
+    }
+    next = merge("providerLimits", destination.provider);
+  } else {
+    next = { ...config, globalLimit: stored };
+  }
+  return { ...settings, piAutocompact: next };
 }
 
 // Same directory lock Pi's settings manager takes via proper-lockfile: an empty
@@ -210,7 +348,11 @@ async function acquireSettingsLock(lockPath: string): Promise<void> {
   throw new Error("Could not save autocompact settings because the settings file is locked");
 }
 
-async function writeModelLimit(path: string, modelKey: string, limit: number): Promise<void> {
+async function writeLimit(
+  path: string,
+  destination: SaveDestination,
+  value: LimitValue,
+): Promise<void> {
   const target = resolve(path);
   await mkdir(dirname(target), { recursive: true });
   const lockPath = `${target}.lock`;
@@ -223,7 +365,7 @@ async function writeModelLimit(path: string, modelKey: string, limit: number): P
     } catch (error) {
       if (errorCode(error) !== "ENOENT") throw error;
     }
-    const next = withModelLimit(await readSettings(target), modelKey, limit);
+    const next = withLimit(await readSettings(target), destination, value);
     const file = await open(temporary, "wx", mode ?? 0o666);
     try {
       await file.writeFile(JSON.stringify(next, null, 2));
@@ -241,9 +383,13 @@ async function writeModelLimit(path: string, modelKey: string, limit: number): P
 
 let saveQueue: Promise<unknown> = Promise.resolve();
 
-/** Merge one model limit into the user settings file. Saves run one at a time. */
-export function saveModelLimit(path: string, modelKey: string, limit: number): Promise<void> {
-  const save = saveQueue.then(() => writeModelLimit(path, modelKey, limit));
+/** Merge one limit into the user settings file. Saves run one at a time. */
+export function saveLimit(
+  path: string,
+  destination: SaveDestination,
+  value: LimitValue,
+): Promise<void> {
+  const save = saveQueue.then(() => writeLimit(path, destination, value));
   saveQueue = save.catch(() => undefined);
   return save;
 }

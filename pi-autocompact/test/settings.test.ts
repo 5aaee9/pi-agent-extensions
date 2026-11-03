@@ -6,16 +6,29 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   defaultLimits,
   effectiveCompaction,
+  effectiveLimit,
+  limitFromSettings,
   parseAutocompactCommand,
   parseLimit,
   readSettings,
-  saveModelLimit,
+  resolveLimit,
+  saveLimit,
   supportsBoundaries,
+  unusableReason,
   validateLimit,
-  withModelLimit,
+  withLimit,
+  type LimitValue,
+  type SaveDestination,
 } from "../settings.ts";
 
 const key = "provider/model";
+const tokens = (count: number): LimitValue => ({ kind: "tokens", tokens: count });
+const percent = (share: number): LimitValue => ({ kind: "percent", percent: share });
+const model = (modelKey: string): SaveDestination => ({ target: "model", key: modelKey });
+const saveModelLimit = (path: string, modelKey: string, count: number) =>
+  saveLimit(path, model(modelKey), tokens(count));
+const withModelLimit = (settings: Record<string, unknown>, modelKey: string, count: number) =>
+  withLimit(settings, model(modelKey), tokens(count));
 
 let agentDir: string;
 let projectDir: string;
@@ -50,12 +63,37 @@ describe("thresholds", () => {
     ["300000", 300000],
     ["1m", 1000000],
   ])("parses %s as decimal tokens", (text, expected) =>
-    expect(parseLimit(String(text))).toBe(expected),
+    expect(parseLimit(String(text))).toEqual(tokens(expected)),
+  );
+  it.each([
+    ["80%", 80],
+    ["12.5%", 12.5],
+    ["100%", 100],
+  ])("parses %s as a context-window percentage", (text, expected) =>
+    expect(parseLimit(text)).toEqual(percent(expected)),
   );
   it.each(["0", "-1", "NaN", "1e6", "300kb", "300k extra", "0.1", "9007199254740992"])(
     "rejects %s",
     (text) => expect(() => parseLimit(text)).toThrow(/Usage|Threshold/),
   );
+  it.each(["0%", "150%", "100.5%"])("rejects percentage %s", (text) =>
+    expect(() => parseLimit(text)).toThrow(/Percentage/),
+  );
+  it.each(["80 %", "%", "-5%", "k%"])("rejects malformed %j", (text) =>
+    expect(() => parseLimit(text)).toThrow(/Usage/),
+  );
+  it("reads settings values as integers or percentage strings", () => {
+    expect(limitFromSettings(300000, "x")).toEqual(tokens(300000));
+    expect(limitFromSettings("80%", "x")).toEqual(percent(80));
+    for (const bad of ["abc", "300k", "0%", "150%", 0, -1, 1.5, null, true]) {
+      expect(() => limitFromSettings(bad, "globalLimit")).toThrow(/Invalid globalLimit/);
+    }
+  });
+  it("resolves percentages with floor rounding", () => {
+    expect(resolveLimit(percent(80), 200000)).toBe(160000);
+    expect(resolveLimit(percent(33.3), 1000)).toBe(333);
+    expect(resolveLimit(tokens(5), 1000)).toBe(5);
+  });
   it("validates model and retained-context bounds", () => {
     expect(() => validateLimit(300000, 1000000, 20000)).not.toThrow();
     expect(() => validateLimit(20000, 1000000, 20000)).toThrow(/keepRecentTokens/);
@@ -73,14 +111,19 @@ describe("thresholds", () => {
 
 describe("command arguments", () => {
   it.each([
-    ["300k", 300000, false],
-    ["  0.3M  ", 300000, false],
-    ["300000", 300000, false],
-    ["300k --save", 300000, true],
-    ["--save 300k", 300000, true],
-    ["--SAVE 1m", 1000000, true],
-  ])("parses %j", (input, tokens, save) => {
-    expect(parseAutocompactCommand(input)).toEqual({ kind: "limit", tokens, save });
+    ["300k", tokens(300000), null],
+    ["  0.3M  ", tokens(300000), null],
+    ["300000", tokens(300000), null],
+    ["80%", percent(80), null],
+    ["300k --save", tokens(300000), "model"],
+    ["--save 300k", tokens(300000), "model"],
+    ["--SAVE 1m", tokens(1000000), "model"],
+    ["80% --save-provider", percent(80), "provider"],
+    ["--save-provider 200k", tokens(200000), "provider"],
+    ["--save-global 300k", tokens(300000), "global"],
+    ["90% --SAVE-GLOBAL", percent(90), "global"],
+  ])("parses %j", (input, value, save) => {
+    expect(parseAutocompactCommand(input)).toEqual({ kind: "limit", value, save });
   });
   it.each(["", "   "])("treats %j as status", (input) => {
     expect(parseAutocompactCommand(input)).toEqual({ kind: "status" });
@@ -99,8 +142,24 @@ describe("command arguments", () => {
     "300k --save --save",
     "--bogus 300k",
     "300k extra",
+    "off --save-provider",
+    "--save-global default",
+    "--save-provider",
+    "--save-global",
+    "300k --save-global --save-global",
   ])("rejects %j", (input) => {
     expect(() => parseAutocompactCommand(input)).toThrow(/--save|Usage|Unknown option/);
+  });
+  it.each(["300k --save --save-global", "--save-provider --save 300k"])(
+    "rejects two save flags in %j",
+    (input) => {
+      expect(() => parseAutocompactCommand(input)).toThrow(/Only one of/);
+    },
+  );
+  it("names the flag that lacks a threshold", () => {
+    expect(() => parseAutocompactCommand("off --save-provider")).toThrow(
+      /--save-provider requires a threshold/,
+    );
   });
 });
 
@@ -134,7 +193,9 @@ describe("saved model limits", () => {
     });
 
     await writeSettings(globalSettingsPath(), next);
-    expect(defaultLimits(await readSettings(globalSettingsPath())).get(key)).toBe(300000);
+    expect(defaultLimits(await readSettings(globalSettingsPath())).models.get(key)).toEqual(
+      tokens(300000),
+    );
     expect(() => withModelLimit(next, "model", 300000)).toThrow(/model key/);
 
     await writeSettings(globalSettingsPath(), { piAutocompact: { modelLimits: [] } });
@@ -213,10 +274,10 @@ describe("saved model limits", () => {
   it("keeps both keys when two saves overlap", async () => {
     const path = globalSettingsPath();
     await Promise.all([saveModelLimit(path, "a/one", 1000), saveModelLimit(path, "b/two", 2000)]);
-    expect(defaultLimits(await readSettings(path))).toEqual(
+    expect(defaultLimits(await readSettings(path)).models).toEqual(
       new Map([
-        ["a/one", 1000],
-        ["b/two", 2000],
+        ["a/one", tokens(1000)],
+        ["b/two", tokens(2000)],
       ]),
     );
   });
@@ -224,12 +285,44 @@ describe("saved model limits", () => {
 
 describe("read-only configuration", () => {
   it("loads optional global model defaults", async () => {
-    expect(defaultLimits(await readSettings(join(agentDir, "absent.json"))).size).toBe(0);
+    expect(defaultLimits(await readSettings(join(agentDir, "absent.json")))).toEqual({
+      models: new Map(),
+      providers: new Map(),
+      global: undefined,
+    });
 
     await writeSettings(globalSettingsPath(), {
       piAutocompact: { modelLimits: { [key]: 300000 } },
     });
-    expect(defaultLimits(await readSettings(globalSettingsPath())).get(key)).toBe(300000);
+    expect(defaultLimits(await readSettings(globalSettingsPath())).models.get(key)).toEqual(
+      tokens(300000),
+    );
+
+    await writeSettings(globalSettingsPath(), {
+      piAutocompact: {
+        modelLimits: { [key]: "50%" },
+        providerLimits: { provider: 200000 },
+        globalLimit: "80%",
+      },
+    });
+    expect(defaultLimits(await readSettings(globalSettingsPath()))).toEqual({
+      models: new Map([[key, percent(50)]]),
+      providers: new Map([["provider", tokens(200000)]]),
+      global: percent(80),
+    });
+
+    for (const piAutocompact of [
+      { providerLimits: [] },
+      { providerLimits: { "a/b": 1000 } },
+      { providerLimits: { "": 1000 } },
+      { providerLimits: { provider: "abc" } },
+      { globalLimit: "abc" },
+      { globalLimit: 0 },
+    ]) {
+      await writeSettings(globalSettingsPath(), { piAutocompact });
+      const settings = await readSettings(globalSettingsPath());
+      expect(() => defaultLimits(settings)).toThrow(/providerLimits|globalLimit/);
+    }
 
     await writeSettings(globalSettingsPath(), {
       piAutocompact: { modelLimits: { [key]: "300k" } },
@@ -281,5 +374,113 @@ describe("read-only configuration", () => {
     await writeFile(path, "{bad");
     await expect(readSettings(path)).rejects.toThrow(/JSON/);
     expect(await readFile(path, "utf8")).toBe("{bad");
+  });
+});
+
+describe("effective limits", () => {
+  const none = { session: undefined, model: undefined, provider: undefined, global: undefined };
+
+  it("applies a cap on its own", () => {
+    expect(effectiveLimit({ ...none, global: percent(80) }, 200000)).toEqual({
+      tokens: 160000,
+      source: "global",
+    });
+    expect(effectiveLimit(none, 200000)).toBeUndefined();
+  });
+
+  it("takes the lowest level", () => {
+    expect(
+      effectiveLimit(
+        { ...none, global: tokens(300000), provider: tokens(200000), model: tokens(250000) },
+        1000000,
+      ),
+    ).toEqual({ tokens: 200000, source: "provider" });
+    expect(
+      effectiveLimit({ ...none, global: tokens(300000), model: tokens(250000) }, 1000000),
+    ).toEqual({ tokens: 250000, source: "model" });
+  });
+
+  it("caps a session threshold, which replaces the model limit", () => {
+    expect(
+      effectiveLimit(
+        { ...none, session: tokens(300000), model: tokens(100000), provider: tokens(200000) },
+        1000000,
+      ),
+    ).toEqual({ tokens: 200000, source: "provider" });
+    expect(
+      effectiveLimit({ ...none, session: tokens(150000), model: tokens(100000) }, 1000000),
+    ).toEqual({ tokens: 150000, source: "session" });
+  });
+
+  it("ignores every level after off", () => {
+    expect(
+      effectiveLimit(
+        { session: null, model: tokens(1), provider: tokens(1), global: tokens(1) },
+        1000000,
+      ),
+    ).toBeUndefined();
+  });
+
+  it("keeps the more specific level on a tie", () => {
+    expect(
+      effectiveLimit(
+        { ...none, model: tokens(200000), provider: tokens(200000), global: percent(20) },
+        1000000,
+      ),
+    ).toEqual({ tokens: 200000, source: "model" });
+  });
+
+  it("clamps to the context window and reports it unusable", () => {
+    const limit = effectiveLimit({ ...none, global: tokens(1000000) }, 200000);
+    expect(limit).toEqual({ tokens: 200000, source: "window" });
+    expect(unusableReason(200000, 200000, 20000)).toMatch(/context window/);
+    expect(effectiveLimit({ ...none, global: percent(100) }, 200000)).toEqual({
+      tokens: 200000,
+      source: "global",
+    });
+  });
+
+  it("reports a cap at or below keepRecentTokens", () => {
+    const limit = effectiveLimit({ ...none, global: percent(5) }, 128000);
+    expect(limit?.tokens).toBe(6400);
+    expect(unusableReason(6400, 128000, 20000)).toBe(
+      "6,400 tokens does not exceed keepRecentTokens (20,000)",
+    );
+    expect(unusableReason(160000, 200000, 20000)).toBeUndefined();
+  });
+});
+
+describe("saved caps", () => {
+  it("writes provider and global caps next to model limits", async () => {
+    const path = globalSettingsPath();
+    await writeSettings(path, {
+      theme: "dark",
+      piAutocompact: { modelLimits: { [key]: 300000 }, providerLimits: { other: 1000 } },
+    });
+    await saveLimit(path, { target: "provider", provider: "provider" }, percent(80));
+    await saveLimit(path, { target: "global" }, tokens(300000));
+    await saveLimit(path, model("provider/second"), percent(12.5));
+    expect(await readSettings(path)).toEqual({
+      theme: "dark",
+      piAutocompact: {
+        modelLimits: { [key]: 300000, "provider/second": "12.5%" },
+        providerLimits: { other: 1000, provider: "80%" },
+        globalLimit: 300000,
+      },
+    });
+    await expect(stat(`${resolve(path)}.lock`)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects invalid provider keys and non-object provider maps without writing", async () => {
+    expect(() => withLimit({}, { target: "provider", provider: "a/b" }, tokens(1))).toThrow(
+      /provider/,
+    );
+    const path = globalSettingsPath();
+    const invalid = JSON.stringify({ piAutocompact: { providerLimits: [] } });
+    await writeFile(path, invalid);
+    await expect(
+      saveLimit(path, { target: "provider", provider: "provider" }, tokens(1000)),
+    ).rejects.toThrow(/providerLimits/);
+    expect(await readFile(path, "utf8")).toBe(invalid);
   });
 });

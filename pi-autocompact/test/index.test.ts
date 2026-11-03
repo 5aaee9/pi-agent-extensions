@@ -32,7 +32,7 @@ describe("Pi extension loading", () => {
     const real = await plane.startSession();
     const command = real.session.extensionRunner.getCommand("autocompact");
     expect(command?.description).toBe(
-      "Compaction threshold: /autocompact [300k | off | default] [--save]",
+      "Compaction threshold: /autocompact [300k | 80% | off | default] [--save | --save-provider | --save-global]",
     );
     const missing = [
       "session_start",
@@ -136,7 +136,7 @@ describe("session-only commands", () => {
       SettingsManager.create(plane.projectDir, plane.agentDir).getGlobalSettings(),
     ).toMatchObject({ piAutocompact: { modelLimits: { [MODEL]: 300_000 } } });
     expect(lastNotification(real)).toMatchObject({
-      message: expect.stringContaining("Saved as the global default for this model."),
+      message: expect.stringContaining("Saved as the default for this model."),
       type: "info",
     });
     expect(lastNotification(real)?.message).not.toContain("No settings written.");
@@ -144,7 +144,7 @@ describe("session-only commands", () => {
     expect(await real.turn()).toHaveLength(1);
 
     await real.command("default");
-    expect(lastNotification(real)?.message).toContain("global default");
+    expect(lastNotification(real)?.message).toContain("saved model limit 300,000 tokens");
     expect(await real.turn()).toHaveLength(1);
   });
 
@@ -299,5 +299,105 @@ describe("session-only commands", () => {
     expect(warning?.message).toMatch(/local model failure|500/);
     expect(real.statuses.get("autocompact")).toBeUndefined();
     expect(real.autocompactions()).toEqual([]);
+  });
+});
+
+describe("provider and global caps", () => {
+  it("compacts under a global percentage cap with no model limit", async () => {
+    await plane.writeGlobalSettings({ piAutocompact: { globalLimit: "30%" } });
+    const real = await plane.startSession(ACROSS);
+    expect(await real.turn()).toHaveLength(1);
+
+    await real.command("");
+    expect(lastNotification(real)?.message).toContain(
+      "autocompact above 300,000 tokens (global cap 30% of the context window)",
+    );
+  });
+
+  it("lowers a model limit and a session threshold to the provider cap", async () => {
+    await plane.writeGlobalSettings({
+      piAutocompact: { modelLimits: { [MODEL]: 400_000 }, providerLimits: { probe: 300_000 } },
+    });
+    const real = await plane.startSession(ACROSS);
+    expect(await real.turn()).toHaveLength(1);
+
+    await real.command("500k");
+    expect(lastNotification(real)?.message).toContain(
+      "autocompact above 300,000 tokens (provider cap 300,000 tokens for probe)",
+    );
+    expect(await real.turn()).toHaveLength(1);
+  });
+
+  it("off ignores caps until default restores them", async () => {
+    await plane.writeGlobalSettings({
+      piAutocompact: { providerLimits: { probe: 300_000 }, globalLimit: 300_000 },
+    });
+    const real = await plane.startSession(ACROSS);
+    await real.command("off");
+    expect(lastNotification(real)?.message).toContain("plugin thresholds off in this session");
+    expect(await real.turn()).toEqual([]);
+
+    await real.command("default");
+    expect(await real.turn()).toHaveLength(1);
+  });
+
+  it.each([
+    ["above the context window", 2_000_000, /context window/],
+    ["below keepRecentTokens", "1%", /keepRecentTokens/],
+  ])("skips a cap %s without a warning", async (_label, globalLimit, reason) => {
+    await plane.writeGlobalSettings({ piAutocompact: { globalLimit } });
+    const real = await plane.startSession({ tokens: 350_000 });
+    expect(await real.turn()).toEqual([]);
+    expect(plane.server.summaryRequests()).toBe(0);
+    expect(real.notifications.filter((entry) => entry.type !== "info")).toEqual([]);
+
+    await real.command("");
+    expect(lastNotification(real)?.message).toMatch(/not used: /);
+    expect(lastNotification(real)?.message).toMatch(reason);
+  });
+
+  it("saves provider and global caps and applies them at once", async () => {
+    await plane.writeGlobalSettings({ theme: "dark" });
+    const real = await plane.startSession(ACROSS);
+
+    await real.command("30% --save-provider");
+    expect(lastNotification(real)).toMatchObject({
+      message: expect.stringContaining("Saved as the cap for provider probe."),
+      type: "info",
+    });
+    expect(await real.turn()).toHaveLength(1);
+
+    await real.command("--save-global 2m");
+    expect(lastNotification(real)?.message).toContain("Saved as the global cap.");
+    expect(JSON.parse(await plane.readGlobalSettings())).toEqual({
+      theme: "dark",
+      piAutocompact: { providerLimits: { probe: "30%" }, globalLimit: 2_000_000 },
+    });
+
+    // A later session inherits the saved cap without another command.
+    const second = await plane.startSession(ACROSS);
+    await second.command("");
+    expect(lastNotification(second)?.message).toContain("provider cap 30%");
+  });
+
+  it("rejects a cap save when native compaction is disabled or settings are invalid", async () => {
+    const disabled = { compaction: { enabled: false } };
+    await plane.writeGlobalSettings(disabled);
+    const real = await plane.startSession({ tokens: 10 });
+    await real.command("80% --save-global");
+    expect(lastNotification(real)).toMatchObject({
+      message: expect.stringContaining("disabled"),
+      type: "error",
+    });
+    expect(JSON.parse(await plane.readGlobalSettings())).toEqual(disabled);
+
+    await plane.writeGlobalSettings({ piAutocompact: { providerLimits: [] } });
+    const bytes = await plane.readGlobalSettings();
+    await real.command("80% --save-provider");
+    expect(lastNotification(real)).toMatchObject({
+      message: expect.stringContaining("providerLimits"),
+      type: "error",
+    });
+    expect(await plane.readGlobalSettings()).toBe(bytes);
   });
 });

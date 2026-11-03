@@ -10,28 +10,63 @@ import {
 import { summarizeBoundary } from "./compaction.ts";
 import {
   defaultLimits,
+  describeLimit,
   effectiveCompaction,
+  effectiveLimit,
+  emptyDefaults,
   parseAutocompactCommand,
   readSettings,
-  saveModelLimit,
+  resolveLimit,
+  saveLimit,
   supportsBoundaries,
+  unusableReason,
   validateLimit,
+  type EffectiveLimit,
+  type LimitValue,
+  type SaveDestination,
 } from "./settings.ts";
 
 export default function piAutocompact(pi: ExtensionAPI) {
   // Session overrides are not stored in the transcript. null explicitly
   // suppresses a global plugin default for this model until the session ends.
   // Only `/autocompact <threshold> --save` writes user settings.
-  const overrides = new Map<string, number | null>();
-  let defaults = new Map<string, number>();
+  const overrides = new Map<string, LimitValue | null>();
+  let defaults = emptyDefaults();
   let active: AbortController | undefined;
   let shutdown = false;
   let attemptedLeaf: string | null | undefined;
   const supported = supportsBoundaries(VERSION);
 
   const keyOf = (ctx: ExtensionContext) => ctx.model && `${ctx.model.provider}/${ctx.model.id}`;
-  const limitOf = (key: string) =>
-    overrides.has(key) ? (overrides.get(key) ?? undefined) : defaults.get(key);
+  const limitOf = (ctx: ExtensionContext, key: string): EffectiveLimit | undefined => {
+    if (!ctx.model) return undefined;
+    return effectiveLimit(
+      {
+        session: overrides.has(key) ? overrides.get(key) : undefined,
+        model: defaults.models.get(key),
+        provider: defaults.providers.get(ctx.model.provider),
+        global: defaults.global,
+      },
+      ctx.model.contextWindow,
+    );
+  };
+  const sourceLabel = (ctx: ExtensionContext, key: string, limit: EffectiveLimit): string => {
+    const provider = ctx.model?.provider ?? "";
+    const level = (value: LimitValue | null | undefined) =>
+      value ? ` ${describeLimit(value)}` : "";
+    switch (limit.source) {
+      case "session":
+        return "session override";
+      case "model":
+        return `saved model limit${level(defaults.models.get(key))}`;
+      case "provider":
+        return `provider cap${level(defaults.providers.get(provider))} for ${provider}`;
+      case "global":
+        return `global cap${level(defaults.global)}`;
+      case "window":
+        return "context window";
+    }
+  };
 
   const nativeSettings = async (ctx: ExtensionContext, key: string) => {
     const global = await readSettings(join(getAgentDir(), "settings.json"));
@@ -45,7 +80,7 @@ export default function piAutocompact(pi: ExtensionAPI) {
     shutdown = false;
     overrides.clear();
     attemptedLeaf = undefined;
-    defaults.clear();
+    defaults = emptyDefaults();
     try {
       const global = await readSettings(join(getAgentDir(), "settings.json"));
       defaults = defaultLimits(global);
@@ -61,7 +96,7 @@ export default function piAutocompact(pi: ExtensionAPI) {
     shutdown = true;
     active?.abort();
     overrides.clear();
-    defaults.clear();
+    defaults = emptyDefaults();
   });
 
   // Use Pi's actionable boundaries, rather than ctx.compact() inside turn_end
@@ -71,7 +106,7 @@ export default function piAutocompact(pi: ExtensionAPI) {
     if (!supported || shutdown || active || ctx.signal?.aborted) return;
     const key = keyOf(ctx);
     if (!key || !ctx.model) return;
-    const limit = limitOf(key);
+    const limit = limitOf(ctx, key)?.tokens;
     if (limit === undefined) return;
     const tokens = ctx.getContextUsage()?.tokens;
     if (tokens === undefined || tokens === null || tokens <= limit) return;
@@ -81,7 +116,9 @@ export default function piAutocompact(pi: ExtensionAPI) {
     try {
       const settings = await nativeSettings(ctx, key);
       if (!settings.enabled) return;
-      validateLimit(limit, ctx.model.contextWindow, settings.keepRecentTokens);
+      // A cap can be unusable for this model (for example a small percentage of
+      // a small window). Leave it to native compaction without a warning.
+      if (unusableReason(limit, ctx.model.contextWindow, settings.keepRecentTokens)) return;
       const controller = new AbortController();
       active = controller;
       const signal = AbortSignal.any([
@@ -114,13 +151,13 @@ export default function piAutocompact(pi: ExtensionAPI) {
     if (!supported || shutdown || !ctx.isIdle() || active) return;
     const key = keyOf(ctx);
     if (!key || !ctx.model) return;
-    const limit = limitOf(key);
+    const limit = limitOf(ctx, key)?.tokens;
     const tokens = ctx.getContextUsage()?.tokens;
     if (limit === undefined || tokens === undefined || tokens === null || tokens <= limit) return;
     try {
       const settings = await nativeSettings(ctx, key);
       if (!settings.enabled) return;
-      validateLimit(limit, ctx.model.contextWindow, settings.keepRecentTokens);
+      if (unusableReason(limit, ctx.model.contextWindow, settings.keepRecentTokens)) return;
       await new Promise<void>((resolve, reject) => {
         ctx.compact({ onComplete: () => resolve(), onError: reject });
       });
@@ -132,39 +169,82 @@ export default function piAutocompact(pi: ExtensionAPI) {
     }
   });
 
+  const saveDestination = (
+    target: "model" | "provider" | "global",
+    key: string,
+    provider: string,
+  ): SaveDestination =>
+    target === "model"
+      ? { target, key }
+      : target === "provider"
+        ? { target, provider }
+        : { target };
+
   pi.registerCommand("autocompact", {
-    description: "Compaction threshold: /autocompact [300k | off | default] [--save]",
+    description:
+      "Compaction threshold: /autocompact [300k | 80% | off | default] [--save | --save-provider | --save-global]",
     handler: async (args, ctx) => {
       try {
         if (!supported) throw new Error("pi-autocompact requires Pi 0.87.1 or newer");
         await ctx.waitForIdle();
         const key = keyOf(ctx);
-        if (!key || !ctx.model) throw new Error("No model selected");
+        const model = ctx.model;
+        if (!key || !model) throw new Error("No model selected");
         const parsed = parseAutocompactCommand(args);
         const settings = await nativeSettings(ctx, key);
         if (parsed.kind === "off") overrides.set(key, null);
         else if (parsed.kind === "default") overrides.delete(key);
         else if (parsed.kind === "limit") {
-          validateLimit(parsed.tokens, ctx.model.contextWindow, settings.keepRecentTokens);
+          const capOnly = parsed.save === "provider" || parsed.save === "global";
+          // A threshold for this model must be usable as given; a provider or
+          // global cap also serves models with other windows.
+          if (!capOnly) {
+            validateLimit(
+              resolveLimit(parsed.value, model.contextWindow),
+              model.contextWindow,
+              settings.keepRecentTokens,
+            );
+          }
           if (!settings.enabled)
             throw new Error("Automatic compaction is disabled. Enable it via /settings first.");
           if (parsed.save) {
-            await saveModelLimit(join(getAgentDir(), "settings.json"), key, parsed.tokens);
-            defaults.set(key, parsed.tokens);
+            await saveLimit(
+              join(getAgentDir(), "settings.json"),
+              saveDestination(parsed.save, key, model.provider),
+              parsed.value,
+            );
+            if (parsed.save === "model") defaults.models.set(key, parsed.value);
+            else if (parsed.save === "provider")
+              defaults.providers.set(model.provider, parsed.value);
+            else defaults.global = parsed.value;
           }
-          overrides.set(key, parsed.tokens);
+          if (!capOnly) overrides.set(key, parsed.value);
         }
         if (parsed.kind !== "status") attemptedLeaf = undefined;
-        const limit = limitOf(key);
-        const source = overrides.has(key) ? "session" : "global default";
-        const threshold =
-          limit === undefined
-            ? "Pi default compaction (no plugin threshold)"
-            : `autocompact above ${limit.toLocaleString("en-US")} tokens (${source})`;
+        const limit = limitOf(ctx, key);
+        let threshold: string;
+        if (limit === undefined) {
+          threshold =
+            overrides.get(key) === null
+              ? "Pi default compaction (plugin thresholds off in this session)"
+              : "Pi default compaction (no plugin threshold)";
+        } else {
+          threshold = `autocompact above ${limit.tokens.toLocaleString("en-US")} tokens (${sourceLabel(ctx, key, limit)})`;
+          const reason = unusableReason(
+            limit.tokens,
+            model.contextWindow,
+            settings.keepRecentTokens,
+          );
+          if (reason) threshold += `; not used: ${reason}`;
+        }
         const persistence =
-          parsed.kind === "limit" && parsed.save
-            ? "Saved as the global default for this model."
-            : "No settings written.";
+          parsed.kind !== "limit" || !parsed.save
+            ? "No settings written."
+            : parsed.save === "model"
+              ? "Saved as the default for this model."
+              : parsed.save === "provider"
+                ? `Saved as the cap for provider ${model.provider}.`
+                : "Saved as the global cap.";
         ctx.ui.notify(
           `${key}: ${threshold}. Native automatic compaction: ${settings.enabled ? "enabled" : "disabled"}. ${persistence}`,
           "info",
