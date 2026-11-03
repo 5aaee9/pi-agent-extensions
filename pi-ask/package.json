@@ -1,7 +1,7 @@
 {
   "name": "@indexyz/pi-ask",
-  "version": "0.0.0",
-  "description": "Structured interactive questions for the Pi coding agent",
+  "version": "0.1.0",
+  "description": "Structured interactive questions and OSC 7501 status notifications for the Pi coding agent",
   "keywords": [
     "ask",
     "pi",
