@@ -12,6 +12,7 @@ A collection of extensions for the [pi coding agent](https://github.com/earendil
 | [`@indexyz/pi-skill`](./pi-skill)                                                           | Codex-style `$skill-name` invocation anywhere in a prompt.                                                                                              |
 | [`@indexyz/pi-model-trace`](./pi-model-trace)                                               | Attribute the model actually serving pi via ModelTrace numeric fingerprinting (`/model-trace`).                                                         |
 | [`@indexyz/pi-autocompact`](./pi-autocompact)                                               | Per-model context compaction thresholds via `/autocompact 300k`, with `--save` to persist a user-level default.                                         |
+| [`@indexyz/pi-idle-compression`](./pi-idle-compression)                                     | Compact a session's context automatically after it has been idle (default 50 minutes), configurable globally, per provider, and per model.              |
 | [`@indexyz/dsh-autocompact`](./dsh-autocompact)                                             | The same thresholds for dsh: a `/autocompact` command, a Settings section, and a composer status entry.                                                 |
 | [`@indexyz/dsh-custom-provider-reasoning-efforts`](./dsh-custom-provider-reasoning-efforts) | Declare `reasoningEfforts` and `input` modalities for hand-written dsh provider routes the pi-ai catalog does not describe.                             |
 | [`@indexyz/dsh-thread-summary`](./dsh-thread-summary)                                       | Generate a concise session title from the first user prompt with a configurable summary model.                                                          |
@@ -26,6 +27,7 @@ pi install npm:@indexyz/pi-continue
 pi install npm:@indexyz/pi-skill
 pi install npm:@indexyz/pi-model-trace
 pi install npm:@indexyz/pi-autocompact
+pi install npm:@indexyz/pi-idle-compression
 ```
 
 A `dsh-<topic>/` package is installed into a dsh profile instead, and its command line, configuration, and behavior are documented in its own README:

@@ -19,6 +19,7 @@
     "pi-skill",
     "pi-model-trace",
     "pi-autocompact",
+    "pi-idle-compression",
     "dsh-autocompact",
     "dsh-custom-provider-reasoning-efforts",
     "dsh-thread-summary",
@@ -65,7 +66,8 @@
       "./pi-continue/index.ts",
       "./pi-skill/index.ts",
       "./pi-model-trace/index.ts",
-      "./pi-autocompact/index.ts"
+      "./pi-autocompact/index.ts",
+      "./pi-idle-compression/index.ts"
     ]
   }
 }

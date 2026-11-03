@@ -1,0 +1,58 @@
+{
+  "name": "@indexyz/pi-idle-compression",
+  "version": "0.0.0",
+  "description": "Compact a Pi session's context automatically after it has been idle for a configurable time",
+  "keywords": [
+    "compaction",
+    "context",
+    "idle",
+    "pi",
+    "pi-package"
+  ],
+  "homepage": "https://github.com/5aaee9/pi-agent-extensions/tree/main/pi-idle-compression#readme",
+  "bugs": {
+    "url": "https://github.com/5aaee9/pi-agent-extensions/issues"
+  },
+  "license": "MIT",
+  "author": "5aaee9",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/5aaee9/pi-agent-extensions.git",
+    "directory": "pi-idle-compression"
+  },
+  "files": [
+    "index.ts",
+    "settings.ts",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "type": "module",
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm test",
+    "prepack": "npm run check"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.84.0",
+    "@types/node": "^24.0.0",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}

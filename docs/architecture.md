@@ -27,7 +27,7 @@
 └── .oxfmtrc.json                  formatter settings
 ```
 
-The packages today are `pi-provider-sub2api`, `pi-custom-provider`, `pi-continue`, `pi-skill`, `pi-model-trace`, `pi-autocompact`, and the dsh package `dsh-autocompact`; the root `package.json` lists them in `workspaces`.
+The packages today are `pi-provider-sub2api`, `pi-custom-provider`, `pi-continue`, `pi-skill`, `pi-model-trace`, `pi-autocompact`, `pi-idle-compression`, and the dsh package `dsh-autocompact`; the root `package.json` lists them in `workspaces`.
 
 Agent-facing files follow one rule: `AGENTS.md` and `.agents/` are the shared, harness-neutral surface. `.claude` is only a symlink to `.agents`, and `CLAUDE.md` contains nothing but `@AGENTS.md`. No harness gets files of its own.
 
