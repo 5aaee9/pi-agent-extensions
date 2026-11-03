@@ -23,7 +23,8 @@
     "dsh-autocompact",
     "dsh-custom-provider-reasoning-efforts",
     "dsh-thread-summary",
-    "dsh-prompt-suggestions"
+    "dsh-prompt-suggestions",
+    "pi-ask"
   ],
   "type": "module",
   "scripts": {
@@ -67,7 +68,8 @@
       "./pi-skill/index.ts",
       "./pi-model-trace/index.ts",
       "./pi-autocompact/index.ts",
-      "./pi-idle-compression/index.ts"
+      "./pi-idle-compression/index.ts",
+      "./pi-ask/index.ts"
     ]
   }
 }
