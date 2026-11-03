@@ -1,6 +1,6 @@
 {
   "name": "@indexyz/pi-ask",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Structured interactive questions for the Pi coding agent, reported as blocked in the OSC 7501 program status",
   "keywords": [
     "ask",
