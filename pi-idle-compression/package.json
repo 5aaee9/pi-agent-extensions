@@ -1,6 +1,6 @@
 {
   "name": "@indexyz/pi-idle-compression",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Compact a Pi session's context automatically after it has been idle for a configurable time",
   "keywords": [
     "compaction",
