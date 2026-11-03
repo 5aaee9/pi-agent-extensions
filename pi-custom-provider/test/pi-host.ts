@@ -82,6 +82,14 @@ export async function startHostSession(
   return session;
 }
 
+/**
+ * Bind the session's extensions the way Pi's print, RPC, and interactive modes
+ * do; this is where the host emits `session_start`.
+ */
+export async function bindHostSession(session: AgentSession): Promise<void> {
+  await session.bindExtensions({});
+}
+
 export interface RecordedNotification {
   readonly message: string;
   readonly type: "info" | "warning" | "error" | undefined;

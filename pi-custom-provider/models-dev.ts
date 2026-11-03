@@ -1,4 +1,4 @@
-import { writeCache } from "./cache.ts";
+import { trimModelsDevCatalog } from "./cache.ts";
 import { pickCost } from "./model-metadata.ts";
 import {
   extractThinkingValues,
@@ -46,12 +46,38 @@ function modelsDevLookupCandidates(id: string): ModelsDevLookupCandidate[] {
   return candidates;
 }
 
+/** Lowercased key -> value of the first key with that spelling, built once per record. */
+const lowercaseIndexes = new WeakMap<JsonRecord, Map<string, unknown>>();
+
 function lookupRecord(record: JsonRecord | undefined, id: string) {
   if (!record) return undefined;
-  if (asRecord(record[id])) return asRecord(record[id]);
-  const lowerId = id.toLowerCase();
-  const match = Object.entries(record).find(([key]) => key.toLowerCase() === lowerId);
-  return match ? asRecord(match[1]) : undefined;
+  const exact = asRecord(record[id]);
+  if (exact) return exact;
+  let index = lowercaseIndexes.get(record);
+  if (!index) {
+    index = new Map();
+    for (const [key, value] of Object.entries(record)) {
+      const lower = key.toLowerCase();
+      if (!index.has(lower)) index.set(lower, value);
+    }
+    lowercaseIndexes.set(record, index);
+  }
+  return asRecord(index.get(id.toLowerCase()));
+}
+
+const providerModelRecords = new WeakMap<JsonRecord, JsonRecord[]>();
+
+/** Every provider's `models` record in catalog order, computed once per catalog. */
+function allProviderModelRecords(providers: JsonRecord): JsonRecord[] {
+  let records = providerModelRecords.get(providers);
+  if (!records) {
+    records = Object.values(providers).flatMap((value) => {
+      const models = asRecord(asRecord(value)?.models);
+      return models ? [models] : [];
+    });
+    providerModelRecords.set(providers, records);
+  }
+  return records;
 }
 
 function mergeModelsDevRecords(base: JsonRecord | undefined, override: JsonRecord | undefined) {
@@ -80,15 +106,12 @@ function findModelsDevModel(
     (value, index, values): value is string => Boolean(value) && values.indexOf(value) === index,
   );
   const providerRecords = providerIds.flatMap((providerId) => {
-    const entry = lookupRecord(catalog.providers, providerId);
-    return entry?.models ? [asRecord(entry.models)] : [];
+    const models = asRecord(lookupRecord(catalog.providers, providerId)?.models);
+    return models ? [models] : [];
   });
-  const allProviderRecords = Object.values(catalog.providers).flatMap((value) => {
-    const entry = asRecord(value);
-    return entry?.models ? [asRecord(entry.models)] : [];
-  });
+  const searchOrder = [...providerRecords, ...allProviderModelRecords(catalog.providers)];
   for (const candidate of candidates) {
-    for (const models of [...providerRecords, ...allProviderRecords]) {
+    for (const models of searchOrder) {
       const found =
         lookupRecord(models, candidate.fullId) ?? lookupRecord(models, candidate.modelId);
       if (found) {
@@ -223,25 +246,44 @@ export function emptyModelsDevCatalog(): ModelsDevCatalog {
   return { providers: {}, models: {} };
 }
 
+function modelsDevCacheKey(options: ModelsDevOptions) {
+  return JSON.stringify({ apiURL: options.apiURL, modelsURL: options.modelsURL });
+}
+
+/**
+ * The cached catalog, if it is usable for these options, and whether it is past
+ * its TTL. Disabled models.dev yields an empty catalog that never expires.
+ */
+export function cachedModelsDevCatalog(
+  options: ModelsDevOptions,
+  cache: CacheDocument,
+): { catalog: ModelsDevCatalog; expired: boolean } | undefined {
+  if (!options.enabled) return { catalog: emptyModelsDevCatalog(), expired: false };
+  const cached = cache.modelsDev;
+  if (
+    cached === undefined ||
+    (cached.cacheKey !== undefined && cached.cacheKey !== modelsDevCacheKey(options)) ||
+    !Number.isFinite(cached.fetchedAt) ||
+    (Object.keys(cached.providers).length === 0 && Object.keys(cached.models).length === 0)
+  ) {
+    return undefined;
+  }
+  return {
+    catalog: { providers: cached.providers, models: cached.models },
+    expired: Date.now() - cached.fetchedAt > options.ttlSeconds * 1000,
+  };
+}
+
 export async function loadModelsDevCatalog(
   options: ModelsDevOptions,
   cache: CacheDocument,
-  cacheFile: string,
+  persist: () => Promise<void>,
   signal: AbortSignal,
   forceRefresh: boolean,
 ): Promise<ModelsDevCatalog> {
   if (!options.enabled) return emptyModelsDevCatalog();
-  const cached = cache.modelsDev;
-  const key = JSON.stringify({ apiURL: options.apiURL, modelsURL: options.modelsURL });
-  const cacheUsable =
-    cached !== undefined &&
-    (cached.cacheKey === undefined || cached.cacheKey === key) &&
-    ((Number.isFinite(cached.fetchedAt) && Object.keys(cached.providers).length > 0) ||
-      (Number.isFinite(cached.fetchedAt) && Object.keys(cached.models).length > 0));
-  if (!forceRefresh && cacheUsable && Date.now() - cached!.fetchedAt <= options.ttlSeconds * 1000) {
-    return { providers: cached!.providers, models: cached!.models };
-  }
-
+  const usableCached = cachedModelsDevCatalog(options, cache);
+  if (!forceRefresh && usableCached && !usableCached.expired) return usableCached.catalog;
   const [apiResult, modelsResult] = await Promise.allSettled([
     fetchJson(
       options.apiURL,
@@ -256,28 +298,32 @@ export async function loadModelsDevCatalog(
       MAX_MODELS_DEV_RESPONSE_BYTES,
     ),
   ]);
-  const usableCached = cacheUsable ? cached : undefined;
   const providers =
-    apiResult.status === "fulfilled" ? asRecord(apiResult.value) : usableCached?.providers;
+    apiResult.status === "fulfilled" ? asRecord(apiResult.value) : usableCached?.catalog.providers;
   const models =
-    modelsResult.status === "fulfilled" ? asRecord(modelsResult.value) : usableCached?.models;
+    modelsResult.status === "fulfilled"
+      ? asRecord(modelsResult.value)
+      : usableCached?.catalog.models;
   if (!providers && !models) {
     if (usableCached) {
       console.warn("[custom-provider] models.dev refresh failed; using cached metadata");
-      return { providers: usableCached.providers, models: usableCached.models };
+      return usableCached.catalog;
     }
     console.warn("[custom-provider] failed to fetch models.dev metadata");
     return emptyModelsDevCatalog();
   }
 
-  const catalog = { providers: providers ?? {}, models: models ?? {} };
-  if (options.enabled) {
-    cache.modelsDev = { ...catalog, fetchedAt: Date.now(), cacheKey: key };
-    try {
-      await writeCache(cacheFile, cache);
-    } catch (error) {
-      console.warn(`[custom-provider] failed to write models.dev cache ${cacheFile}:`, error);
-    }
+  const catalog = trimModelsDevCatalog({ providers: providers ?? {}, models: models ?? {} });
+  cache.modelsDev = {
+    ...catalog,
+    fetchedAt: Date.now(),
+    cacheKey: modelsDevCacheKey(options),
+    trimmed: true,
+  };
+  try {
+    await persist();
+  } catch (error) {
+    console.warn("[custom-provider] failed to write models.dev cache:", error);
   }
   if (apiResult.status === "rejected" || modelsResult.status === "rejected") {
     console.warn("[custom-provider] models.dev refresh partially failed; using available metadata");

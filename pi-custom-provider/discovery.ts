@@ -1,6 +1,6 @@
 import type { ProviderConfig, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
 
-import { cacheKey, writeCache } from "./cache.ts";
+import { cacheKey } from "./cache.ts";
 import { resolveConfigValue, toProviderValue } from "./config.ts";
 import { parseDiscoveredModel, pickCost, pickInputTypes } from "./model-metadata.ts";
 import {
@@ -309,27 +309,39 @@ export function providerConfig(
   };
 }
 
+/**
+ * The provider's matching cache entry, if any, and whether it is past its TTL.
+ * An entry for another API, base URL, or models URL, or a provider with the
+ * cache disabled, has no usable entry.
+ */
+export function cachedProviderModels(
+  provider: ProviderDefinition,
+  cache: CacheDocument,
+): { models: DiscoveredModel[]; expired: boolean } | undefined {
+  const cached = cache.providers[provider.name];
+  if (
+    !provider.cache.enabled ||
+    cached?.cacheKey !== cacheKey(provider) ||
+    !Array.isArray(cached.models) ||
+    !Number.isFinite(cached.fetchedAt)
+  ) {
+    return undefined;
+  }
+  return {
+    models: cached.models,
+    expired: Date.now() - cached.fetchedAt > provider.cache.ttlSeconds * 1000,
+  };
+}
+
 export async function discoverProvider(
   provider: ProviderDefinition,
   cache: CacheDocument,
-  cacheFile: string,
+  persist: () => Promise<void>,
   signal: AbortSignal,
   forceRefresh: boolean,
 ) {
-  const key = cacheKey(provider);
-  const cached = cache.providers[provider.name];
-  const cacheUsable =
-    provider.cache.enabled &&
-    cached?.cacheKey === key &&
-    Array.isArray(cached.models) &&
-    Number.isFinite(cached.fetchedAt);
-  if (
-    !forceRefresh &&
-    cacheUsable &&
-    Date.now() - cached.fetchedAt <= provider.cache.ttlSeconds * 1000
-  ) {
-    return cached.models;
-  }
+  const cached = cachedProviderModels(provider, cache);
+  if (!forceRefresh && cached && !cached.expired) return cached.models;
 
   try {
     const models = await fetchModels(provider, signal);
@@ -340,12 +352,16 @@ export async function discoverProvider(
       return provider.fallbackModels;
     }
     if (provider.cache.enabled) {
-      cache.providers[provider.name] = { cacheKey: key, fetchedAt: Date.now(), models };
-      await writeCache(cacheFile, cache);
+      cache.providers[provider.name] = {
+        cacheKey: cacheKey(provider),
+        fetchedAt: Date.now(),
+        models,
+      };
+      await persist();
     }
     return models;
   } catch (error) {
-    if (cacheUsable) {
+    if (cached) {
       console.warn(
         `[custom-provider:${provider.name}] model discovery failed; using cached models`,
       );

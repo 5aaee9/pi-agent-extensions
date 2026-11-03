@@ -205,7 +205,7 @@ provider 名称无法自动匹配时，可以指定 models.dev provider：
 
 ## 缓存和刷新
 
-默认缓存有效期为 1 小时。网络请求失败时，只要存在对应 provider 的缓存，就继续使用过期缓存，避免临时网络故障导致模型消失。缓存只包含模型元数据，不包含 API key。
+默认缓存有效期为 1 小时。启动时只要存在匹配的缓存（API、`baseURL`、`modelsURL` 一致），无论是否过期都直接注册缓存中的模型，不等待网络；过期的 provider 缓存和 models.dev 元数据会在会话开始（`session_start`）后于后台刷新，成功后在当前会话中重新注册模型。后台刷新失败时保留已注册的模型和原有缓存。没有可用缓存的 provider（首次启动、修改了端点或禁用缓存）仍会在启动时拉取并等待结果，多个 provider 并发拉取。缓存只包含模型元数据，不包含 API key；models.dev 数据只保存补全所需的字段。
 
 ```json
 {
@@ -223,7 +223,7 @@ provider 名称无法自动匹配时，可以指定 models.dev provider：
 }
 ```
 
-`cache: false` 可对单个 provider 禁用缓存；也可以使用 `/refresh-custom-provider-models` 强制重新拉取所有 provider 的模型列表。缓存文件路径可以是绝对路径，也可以是相对于 `PI_CODING_AGENT_DIR` 的路径。
+`cache: false` 可对单个 provider 禁用缓存；也可以使用 `/refresh-custom-provider-models` 强制重新拉取所有 provider 的模型列表和 models.dev 元数据，该命令会等待刷新完成。缓存文件路径可以是绝对路径，也可以是相对于 `PI_CODING_AGENT_DIR` 的路径。
 
 ## 开发
 

@@ -16,6 +16,7 @@ import {
   type RecordedRequest,
 } from "./local-server.ts";
 import {
+  bindHostSession,
   loadExtensionHost,
   loadInPiProcess,
   recordNotifications,
@@ -47,7 +48,9 @@ afterEach(async () => {
   await rm(agentDir, { recursive: true, force: true });
 });
 
-async function startServer(handle: (request: RecordedRequest) => LocalResponse) {
+async function startServer(
+  handle: (request: RecordedRequest) => LocalResponse | Promise<LocalResponse>,
+) {
   const server = await startLocalServer(handle);
   servers.push(server);
   return server;
@@ -301,6 +304,7 @@ describe("custom provider extension", () => {
 
   it("enriches models from models.dev and caches the catalog separately", async () => {
     let upstream: "ok" | "unavailable" = "ok";
+    let outputLimit = 4096;
     const server = await startServer((request) => {
       if (upstream === "unavailable") return unavailable();
       if (request.path === "/gateway/v1/models") {
@@ -315,7 +319,7 @@ describe("custom provider extension", () => {
               "deepseek-flash": {
                 reasoning: true,
                 reasoning_options: [{ type: "effort", values: ["low", "high"] }],
-                limit: { context: 64000, output: 4096 },
+                limit: { context: 64000, output: outputLimit },
                 cost: { input: 0.1, output: 0.4 },
               },
             },
@@ -369,13 +373,53 @@ describe("custom provider extension", () => {
       cost: { input: 9, output: 0.4 },
     });
     expect(server.requests).toHaveLength(3);
+
+    // The stored catalog keeps only what enrichment reads, and says so.
+    expect(cache.modelsDev.trimmed).toBe(true);
+    expect(cache.modelsDev.providers.deepseek).toEqual({
+      models: {
+        "deepseek-flash": {
+          reasoning: true,
+          reasoning_options: [{ type: "effort", values: ["low", "high"] }],
+          limit: { context: 64000, output: 4096 },
+          cost: { input: 0.1, output: 0.4 },
+        },
+      },
+    });
+
+    // An expired catalog enriches startup from the cache, then refreshes after
+    // session_start and re-registers the provider with the new metadata.
+    const cacheFile = join(agentDir, "custom-provider-models.json");
+    const expiredAt = Date.now() - 2 * 24 * 60 * 60 * 1000;
+    cache.modelsDev.fetchedAt = expiredAt;
+    await writeFile(cacheFile, JSON.stringify(cache));
+    upstream = "ok";
+    outputLimit = 8192;
+    const third = await loadHost();
+    expect(third.registrations[0]!.config.models![0]!.maxTokens).toBe(4096);
+    expect(server.requests).toHaveLength(3);
+
+    const session = await startSession(third);
+    const registry = session.extensionRunner.getModelRegistry();
+    await bindHostSession(session);
+    await vi.waitFor(() =>
+      expect(registry.find("gateway", "deepseek/deepseek-flash-max")?.maxTokens).toBe(8192),
+    );
+    // Only models.dev was expired, so the provider's own models are not refetched.
+    expect(
+      server.requests
+        .slice(3)
+        .map(({ path }) => path)
+        .toSorted(),
+    ).toEqual(["/metadata/api.json", "/metadata/models.json"]);
+    await vi.waitFor(async () => {
+      const refreshed = JSON.parse(await readFile(cacheFile, "utf8"));
+      expect(refreshed.modelsDev.fetchedAt).toBeGreaterThan(expiredAt);
+    });
   });
 
-  it("uses a fresh cache without a network request and falls back to the stale cache on an error status", async () => {
-    let upstream: "ok" | "unavailable" = "ok";
-    const server = await startServer(() =>
-      upstream === "ok" ? jsonResponse({ data: [{ id: "cached-model" }] }) : unavailable(),
-    );
+  it("uses a fresh cache without a network request and registers an expired cache without waiting", async () => {
+    const server = await startServer(() => jsonResponse({ data: [{ id: "cached-model" }] }));
     await writeProviderConfig({
       modelsDev: false,
       providers: {
@@ -401,17 +445,79 @@ describe("custom provider extension", () => {
     expect(second.registrations[0]!.config.models![0]!.id).toBe("cached-model");
     expect(server.requests).toHaveLength(1);
 
-    // Expire the cache and let the real client see HTTP 503: discovery fails and
-    // the stale cached models are used instead.
+    // An expired cache is registered as is; loading alone (no session) never
+    // reaches the network, so the refresh cannot delay startup.
     cache.providers.cached.fetchedAt = Date.now() - 7_200_000;
     await writeFile(cacheFile, JSON.stringify(cache));
-    upstream = "unavailable";
     const third = await loadHost();
     expect(third.registrations[0]!.config.models![0]!.id).toBe("cached-model");
-    expect(server.requests.map(({ path }) => path)).toEqual([
-      "/cached/v1/models",
-      "/cached/v1/models",
+    expect(server.requests).toHaveLength(1);
+  });
+
+  it("refreshes expired caches after session_start and keeps the cache when a refresh fails", async () => {
+    let version = "v1";
+    let failing = false;
+    let releaseRefresh = () => {};
+    const refreshGate = new Promise<void>((resolve) => {
+      releaseRefresh = resolve;
+    });
+    const server = await startServer(async (request) => {
+      if (request.path === "/bad/v1/models" && failing) return unavailable();
+      if (version === "v2") await refreshGate;
+      const name = request.path.split("/")[1];
+      return jsonResponse({ data: [{ id: `${name}-${version}` }] });
+    });
+    await writeProviderConfig({
+      modelsDev: false,
+      providers: {
+        good: { baseURL: `${server.url}/good/v1`, apiKey: "key" },
+        bad: { baseURL: `${server.url}/bad/v1`, apiKey: "key" },
+      },
+    });
+
+    // Both providers fetch on the first load and share the default cache file.
+    await loadHost();
+    const cacheFile = join(agentDir, "custom-provider-models.json");
+    const cache = JSON.parse(await readFile(cacheFile, "utf8"));
+    expect(cache.providers.good.models[0].id).toBe("good-v1");
+    expect(cache.providers.bad.models[0].id).toBe("bad-v1");
+    expect(server.requests).toHaveLength(2);
+
+    const expiredAt = Date.now() - 7_200_000;
+    cache.providers.good.fetchedAt = expiredAt;
+    cache.providers.bad.fetchedAt = expiredAt;
+    await writeFile(cacheFile, JSON.stringify(cache));
+    version = "v2";
+    failing = true;
+
+    const host = await loadHost();
+    expect(host.registrations.map(({ config }) => config.models![0]!.id)).toEqual([
+      "good-v1",
+      "bad-v1",
     ]);
+    expect(server.requests).toHaveLength(2);
+
+    const session = await startSession(host);
+    const registry = session.extensionRunner.getModelRegistry();
+    await bindHostSession(session);
+    // session_start has fired and the refresh is held by the server: the
+    // session already works with the cached models.
+    await vi.waitFor(() => expect(server.requests).toHaveLength(4));
+    expect(registry.find("good", "good-v1")).toBeDefined();
+
+    releaseRefresh();
+    await vi.waitFor(() => expect(registry.find("good", "good-v2")).toBeDefined());
+    expect(registry.find("good", "good-v1")).toBeUndefined();
+    expect(registry.find("bad", "bad-v1")).toBeDefined();
+
+    const refreshed = JSON.parse(await readFile(cacheFile, "utf8"));
+    expect(refreshed.providers.good.models[0].id).toBe("good-v2");
+    expect(refreshed.providers.good.fetchedAt).toBeGreaterThan(expiredAt);
+    expect(refreshed.providers.bad).toEqual(cache.providers.bad);
+
+    // A second session_start in the same extension instance does not refresh again.
+    await bindHostSession(session);
+    expect(server.requests).toHaveLength(4);
   });
 
   it("applies reasoningPattern, modelDefaults, and fallbackModels", async () => {

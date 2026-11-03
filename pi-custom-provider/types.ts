@@ -49,6 +49,8 @@ export interface ModelsDevCatalog {
 export interface ModelsDevCache extends ModelsDevCatalog {
   fetchedAt: number;
   cacheKey?: string;
+  /** Set once the catalog holds only the fields enrichment reads; older caches lack it. */
+  trimmed?: true;
 }
 
 export interface ProviderDefinition {

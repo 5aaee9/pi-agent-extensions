@@ -42,7 +42,7 @@ export function notFound(): LocalResponse {
 }
 
 export async function startLocalServer(
-  handle: (request: RecordedRequest) => LocalResponse,
+  handle: (request: RecordedRequest) => LocalResponse | Promise<LocalResponse>,
 ): Promise<LocalServer> {
   const requests: RecordedRequest[] = [];
   const server = createServer((request, response) => {
@@ -56,9 +56,10 @@ export async function startLocalServer(
         body: Buffer.concat(chunks).toString("utf8"),
       };
       requests.push(recorded);
-      const result = handle(recorded);
-      response.writeHead(result.status ?? 200, result.headers ?? {});
-      response.end(result.body ?? "");
+      void Promise.resolve(handle(recorded)).then((result) => {
+        response.writeHead(result.status ?? 200, result.headers ?? {});
+        response.end(result.body ?? "");
+      });
     });
   });
   await new Promise<void>((resolve, reject) => {
