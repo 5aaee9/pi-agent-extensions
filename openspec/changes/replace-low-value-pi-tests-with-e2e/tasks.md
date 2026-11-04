@@ -24,67 +24,67 @@ Each package group follows the order in `design.md` D6: defect fixes with their 
 
 ## 4. `pi-skill`
 
-- [ ] 4.1 Propose and apply a package change fixing defect 2 with K1's parity assertion failing first, replacing `expands a leading $skill token`; verify `$known` and `/skill:known` produce identical blocks on the wire, and record a `patch` intent.
-- [ ] 4.2 Add the rest of K1 over RPC `steer` and `follow_up` asserting delivery mode only, and K2 in a real terminal; verify the popup lists the skill and the block renders as `[skill]`, and that scratch mutations dropping the delivery mode or removing `triggerCharacters` each fail.
-- [ ] 4.3 Delete the audit's REPLACE and DELETE cases including `test/extension-load.test.ts`; verify the package check passes and no published file changes beyond the fix.
+- [x] 4.1 Propose and apply a package change fixing defect 2 with K1's parity assertion failing first, replacing `expands a leading $skill token`; verify `$known` and `/skill:known` produce identical blocks on the wire, and record a `patch` intent.
+- [x] 4.2 Add the rest of K1 over RPC `steer` and `follow_up` asserting delivery mode only, and K2 in a real terminal; verify the popup lists the skill and the block renders as `[skill]`, and that scratch mutations dropping the delivery mode or removing `triggerCharacters` each fail.
+- [x] 4.3 Delete the audit's REPLACE and DELETE cases including `test/extension-load.test.ts`; verify the package check passes and no published file changes beyond the fix.
 
 ## 5. `pi-model-trace`
 
-- [ ] 5.1 Add T1; verify the installed package answers `/model-trace` and its command forms, and that removing `data/unified_bank.json` from a scratch tarball fails it.
-- [ ] 5.2 Correct `keeps prose numbers out of the sampled sequence`, move the challenge assertion to the wire in `command.test.ts`, and replace `attributes a synthetic sequence...` with a self-attribution check, then delete the audit's DELETE cases; verify the package check passes and that inverting the scoring in a scratch copy now fails.
+- [x] 5.1 Add T1; verify the installed package answers `/model-trace` and its command forms, and that removing `data/unified_bank.json` from a scratch tarball fails it.
+- [x] 5.2 Correct `keeps prose numbers out of the sampled sequence`, move the challenge assertion to the wire in `command.test.ts`, and replace `attributes a synthetic sequence...` with a self-attribution check, then delete the audit's DELETE cases; verify the package check passes and that inverting the scoring in a scratch copy now fails.
 
 ## 6. `pi-autocompact`
 
-- [ ] 6.1 Propose and apply a package change fixing defect 3 with A1's options assertion failing first, confirming the inferred cause; verify the boundary summary request carries `reasoning_effort` and `max_completion_tokens` matching a native compaction, and record a `patch` intent.
-- [ ] 6.2 Add the rest of A1 (RPC boundary, tool-group retention) and A2; verify a compaction entry persists in both, no orphan tool result reaches the model, and that reverting 740a8a5's `entries` merge in a scratch copy fails A1.
-- [ ] 6.3 Compare the effective compaction settings with the real `SettingsManager` and delete the audit's DELETE cases; verify the package check passes.
+- [x] 6.1 Propose and apply a package change fixing defect 3 with A1's options assertion failing first, confirming the inferred cause; verify the boundary summary request carries `reasoning_effort` and `max_completion_tokens` matching a native compaction, and record a `patch` intent.
+- [x] 6.2 Add the rest of A1 (RPC boundary, tool-group retention) and A2; verify a compaction entry persists in both, no orphan tool result reaches the model, and that reverting 740a8a5's `entries` merge in a scratch copy fails A1.
+- [x] 6.3 Compare the effective compaction settings with the real `SettingsManager` and delete the audit's DELETE cases; verify the package check passes.
 
 ## 7. `pi-idle-compression`
 
-- [ ] 7.1 Add I1 and I2 co-installed with `pi-autocompact`; verify exactly one summary per compaction and a bounded print exit with the timer armed, and that removing the guards at `index.ts:59-61` in a scratch copy fails I1.
-- [ ] 7.2 Delete the audit's REPLACE and DELETE cases; verify the package check passes and no published file changes.
+- [x] 7.1 Add I1 and I2 co-installed with `pi-autocompact`; verify exactly one summary per compaction and a bounded print exit with the timer armed, and that removing the guards at `index.ts:59-61` in a scratch copy fails I1.
+- [x] 7.2 Delete the audit's REPLACE and DELETE cases; verify the package check passes and no published file changes.
 
 ## 8. `pi-custom-provider`
 
-- [ ] 8.1 Propose and apply a package change fixing defect 5 with C3 failing first, and add the D5 drift test importing `@earendil-works/pi-ai/api/*` from the package; verify no thinking reaches the second model, a deliberate divergence in the vendored copy fails the drift test naming the fixture, and a resolved `pi-ai` version unequal to the pin fails naming both. Record a `patch` intent.
-- [ ] 8.2 Propose and apply a package change fixing defect 4 for this package with C4 failing first; keeping `modelsDev` enabled with `apiURL` and `modelsURL` at the local server so the assertion exercises the fix rather than the configuration, verify no discovery or enrichment request reaches the server under `--offline` or `PI_OFFLINE=1` on cold start, and that the refresh success path publishes new models. Record a `patch` intent.
-- [ ] 8.3 Add C1 and C2 with `"modelsDev": false` in their configuration; verify all 12 API and key combinations round trip with the affinity header, `compat`, and `{off:null}` default on the wire, Ollama carries tools and system prompts, a second extension's hooks take effect, and that restoring the top-level `tools` read in a scratch copy fails C2.
-- [ ] 8.4 Point `test/pi-host.ts` at `bin.pi`, keeping `does not make an unauthenticated discovery request` on it, correct `awaits raw stream observers`, and delete the affinity-header case and the audit's DELETE cases; verify the package check passes and that removing the observer `await` in a scratch copy now fails.
+- [x] 8.1 Propose and apply a package change fixing defect 5 with C3 failing first, and add the D5 drift test importing `@earendil-works/pi-ai/api/*` from the package; verify no thinking reaches the second model, a deliberate divergence in the vendored copy fails the drift test naming the fixture, and a resolved `pi-ai` version unequal to the pin fails naming both. Record a `patch` intent.
+- [x] 8.2 Propose and apply a package change fixing defect 4 for this package with C4 failing first; keeping `modelsDev` enabled with `apiURL` and `modelsURL` at the local server so the assertion exercises the fix rather than the configuration, verify no discovery or enrichment request reaches the server under `--offline` or `PI_OFFLINE=1` on cold start, and that the refresh success path publishes new models. Record a `patch` intent.
+- [x] 8.3 Add C1 and C2 with `"modelsDev": false` in their configuration; verify all 12 API and key combinations round trip with the affinity header, `compat`, and `{off:null}` default on the wire, Ollama carries tools and system prompts, a second extension's hooks take effect, and that restoring the top-level `tools` read in a scratch copy fails C2.
+- [x] 8.4 Point `test/pi-host.ts` at `bin.pi`, keeping `does not make an unauthenticated discovery request` on it, correct `awaits raw stream observers`, and delete the affinity-header case and the audit's DELETE cases; verify the package check passes and that removing the observer `await` in a scratch copy now fails.
 
 ## 9. `pi-ask`
 
-- [ ] 9.1 Propose and apply a package change fixing defect 6 with Q6 failing first; verify `/answer` works with chat-model-only credentials, a scoped model list, and a keyless provider, and record a `patch` intent.
-- [ ] 9.2 Add Q1, Q2, Q4, Q5, Q7, and Q10; verify a real answer reaches the model, `@` suggestions appear, settings persist, a remote answer arrives over real `pi.events`, RPC commands refuse without a model request, and the bundled skill loads after `pi install`.
-- [ ] 9.3 Add Q3, Q8, and Q9; verify resume after SIGKILL reopens and submits, cancel does not reopen a third time, the dismiss guard protects typed answers, and 12, 20, and 30 column runs with CJK and emoji keep the process alive.
-- [ ] 9.4 Delete the 23 REPLACE cases and 52 DELETE cases, including the six emptied files, leaving the five tracker cases, the legacy PTY cases, and `pi-coding-agent-legacy` untouched; verify the package check passes and no published file changes beyond the fix.
+- [x] 9.1 Propose and apply a package change fixing defect 6 with Q6 failing first; verify `/answer` works with chat-model-only credentials, a scoped model list, and a keyless provider, and record a `patch` intent.
+- [x] 9.2 Add Q1, Q2, Q4, Q5, Q7, and Q10; verify a real answer reaches the model, `@` suggestions appear, settings persist, a remote answer arrives over real `pi.events`, RPC commands refuse without a model request, and the bundled skill loads after `pi install`.
+- [x] 9.3 Add Q3, Q8, and Q9; verify resume after SIGKILL reopens and submits, cancel does not reopen a third time, the dismiss guard protects typed answers, and 12, 20, and 30 column runs with CJK and emoji keep the process alive.
+- [x] 9.4 Delete the 23 REPLACE cases and 52 DELETE cases, including the six emptied files, leaving the five tracker cases, the legacy PTY cases, and `pi-coding-agent-legacy` untouched; verify the package check passes and no published file changes beyond the fix.
 
 ## 10. `pi-provider-sub2api`
 
-- [ ] 10.1 Propose and apply a package change fixing defect 7 with P4 failing first, normalizing `stream_read_error` so Pi retries it; verify all three wire shapes reach a second attempt, overflow recovery still works, and correct the stale README lines. Record a `patch` intent.
-- [ ] 10.2 Propose and apply a package change fixing defect 8 with P5 failing first; verify an API switch sends only the current token through the right handler, and a removed provider is unlisted and receives nothing. Record a `patch` intent.
-- [ ] 10.3 Propose and apply a package change fixing defect 4 for this package with P7's offline assertion failing first; verify no discovery, billing, or usage request reaches the relay under `--offline` or `PI_OFFLINE=1`, including across one prompt from a seeded cache, whose model request still goes through. Record a `patch` intent.
-- [ ] 10.4 Add P1, P2, and P3; verify routing and auth per API, `/openai-compress` plus checkpoint replay in the installed shape, and that renaming a private pi-ai file in a scratch host copy fails P2 rather than passing silently.
-- [ ] 10.5 Add P6, the rest of P7, and P8; verify request modes reach the wire and survive save and restart, a second process reuses the discovery cache, and offline, on a seeded cache with placeholder `OPENAI_API_KEY` and `ANTHROPIC_API_KEY`, metadata matches `models-store.json` and the built-in model reported by RPC `get_available_models`, with no pinned prices.
-- [ ] 10.6 Add P9 and P10; verify the xAI turn and replay, and the footer through a real terminal.
-- [ ] 10.7 Delete the 155 REPLACE cases and 40 DELETE cases, including nine emptied files and `test/chat-models.ts`; swap the 25 KEEP cases that build a fake `pi` for direct `loadRelayConfigs` calls; verify the package check passes and no test in the package references `as unknown as ExtensionAPI` or stubs `fetch`.
+- [x] 10.1 Propose and apply a package change fixing defect 7 with P4 failing first, normalizing `stream_read_error` so Pi retries it; verify all three wire shapes reach a second attempt, overflow recovery still works, and correct the stale README lines. Record a `patch` intent.
+- [x] 10.2 Propose and apply a package change fixing defect 8 with P5 failing first; verify an API switch sends only the current token through the right handler, and a removed provider is unlisted and receives nothing. Record a `patch` intent.
+- [x] 10.3 Propose and apply a package change fixing defect 4 for this package with P7's offline assertion failing first; verify no discovery, billing, or usage request reaches the relay under `--offline` or `PI_OFFLINE=1`, including across one prompt from a seeded cache, whose model request still goes through. Record a `patch` intent.
+- [x] 10.4 Add P1, P2, and P3; verify routing and auth per API, `/openai-compress` plus checkpoint replay in the installed shape, and that renaming a private pi-ai file in a scratch host copy fails P2 rather than passing silently.
+- [x] 10.5 Add P6, the rest of P7, and P8; verify request modes reach the wire and survive save and restart, a second process reuses the discovery cache, and offline, on a seeded cache with placeholder `OPENAI_API_KEY` and `ANTHROPIC_API_KEY`, metadata matches `models-store.json` and the built-in model reported by RPC `get_available_models`, with no pinned prices.
+- [x] 10.6 Add P9 and P10; verify the xAI turn and replay, and the footer through a real terminal.
+- [x] 10.7 Delete the 155 REPLACE cases and 40 DELETE cases, including nine emptied files and `test/chat-models.ts`; swap the 25 KEEP cases that build a fake `pi` for direct `loadRelayConfigs` calls; verify the package check passes and no test in the package references `as unknown as ExtensionAPI` or stubs `fetch`.
 
 ## 11. Testing policy
 
-- [ ] 11.1 Update `docs/conventions.md` "Tests" and `docs/workflow.md` to state the Pi exceptions (pure logic, real host utilities, vendored comparison), the assertion requirement, that Pi stand-in conversions may land in the root suite, and that the `pi-provider-sub2api` conversion is complete with live endpoints still untested; verify no remaining text calls it deferred and DSH guidance is unchanged in meaning.
-- [ ] 11.2 Update the `pi-extension-dev` skill's test and verify steps to point at `test:e2e:pi`; verify `CLAUDE.md` is still exactly `@AGENTS.md`.
+- [x] 11.1 Update `docs/conventions.md` "Tests" and `docs/workflow.md` to state the Pi exceptions (pure logic, real host utilities, vendored comparison), the assertion requirement, that Pi stand-in conversions may land in the root suite, and that the `pi-provider-sub2api` conversion is complete with live endpoints still untested; verify no remaining text calls it deferred and DSH guidance is unchanged in meaning.
+- [x] 11.2 Update the `pi-extension-dev` skill's test and verify steps to point at `test:e2e:pi`; verify `CLAUDE.md` is still exactly `@AGENTS.md`.
 
 ## 12. Upgrade rehearsal
 
-- [ ] 12.1 Add the pin script and `.github/workflows/pi-host-rehearsal.yml` per D4 with `contents: read` and no secrets; verify locally that the script changes only Pi workspace `@earendil-works/*` pins, leaving `pi-ask`'s legacy alias and every `dsh-*` manifest untouched.
-- [ ] 12.2 Prove detection by rehearsing Pi 1.4.0 through the same script in a throwaway checkout; verify at least `pi-model-trace` fails typecheck on `pi.exec`'s `maxBuffer` (added in 1.5.0; the other two `maxBuffer` uses are Node's `exec`), record which other packages and scenarios fail and why, the run reports the version it tested, failures are recorded in `verification.md`, and the real checkout's working tree is unchanged. A run where nothing fails disproves the mechanism.
-- [ ] 12.3 Document the rehearsal, its `pi-version` input, and how to read a failure in `docs/workflow.md` "Upgrade Pi"; verify the documented dispatch command is valid against the workflow file.
+- [x] 12.1 Add the pin script and `.github/workflows/pi-host-rehearsal.yml` per D4 with `contents: read` and no secrets; verify locally that the script changes only Pi workspace `@earendil-works/*` pins, leaving `pi-ask`'s legacy alias and every `dsh-*` manifest untouched.
+- [x] 12.2 Prove detection by rehearsing Pi 1.4.0 through the same script in a throwaway checkout; verify at least `pi-model-trace` fails typecheck on `pi.exec`'s `maxBuffer` (added in 1.5.0; the other two `maxBuffer` uses are Node's `exec`), record which other packages and scenarios fail and why, the run reports the version it tested, failures are recorded in `verification.md`, and the real checkout's working tree is unchanged. A run where nothing fails disproves the mechanism.
+- [x] 12.3 Document the rehearsal, its `pi-version` input, and how to read a failure in `docs/workflow.md` "Upgrade Pi"; verify the documented dispatch command is valid against the workflow file.
 
 ## 13. Final verification
 
 - [ ] 13.1 From a clean `npm ci`, run root `npm run check`, `npm run test:e2e`, and `npm run test:e2e:pi`, which this shared-tooling change needs regardless of `isolate-plugin-systems-in-agent-docs`; verify all pass, then record suite runtime and repeat `test:e2e:pi` three times to expose flakiness.
-- [ ] 13.2 Run the load smoke test from `docs/workflow.md` for each of the eight Pi packages; verify exit 0 and a successful `get_commands` response, and that it lists the commands each package registers unconfigured: `pi-provider-sub2api`, `pi-custom-provider`, and `pi-skill` legitimately list none.
-- [ ] 13.3 Verify scope: `git diff` touches no `dsh-*` path and no DSH requirement, `npm run test:e2e` DSH results are unchanged, and `npm run release:gate -- --base origin/main --head HEAD` passes with a release decision for every package whose published content changed.
-- [ ] 13.4 Confirm every catalog scenario appears in `verification.md` with its observed failure and every audit REPLACE row is covered by a named scenario, kept on a corrected form in the Cleanup table, or listed as an explicit exclusion in `design.md`.
+- [x] 13.2 Run the load smoke test from `docs/workflow.md` for each of the eight Pi packages; verify exit 0 and a successful `get_commands` response, and that it lists the commands each package registers unconfigured: `pi-provider-sub2api`, `pi-custom-provider`, and `pi-skill` legitimately list none.
+- [x] 13.3 Verify scope: `git diff` touches no `dsh-*` path and no DSH requirement, `npm run test:e2e` DSH results are unchanged, and `npm run release:gate -- --base origin/main --head HEAD` passes with a release decision for every package whose published content changed.
+- [x] 13.4 Confirm every catalog scenario appears in `verification.md` with its observed failure and every audit REPLACE row is covered by a named scenario, kept on a corrected form in the Cleanup table, or listed as an explicit exclusion in `design.md`.
 
 ## Workflow follow-up
 

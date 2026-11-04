@@ -32,6 +32,18 @@ scenario(
 );
 
 scenario(
+  "a developer's provider credentials do not reach Pi",
+  { packages: [] },
+  async ({ world }) => {
+    process.env["ANTHROPIC_API_KEY"] = "ambient-secret";
+    const env = world.env();
+    delete process.env["ANTHROPIC_API_KEY"];
+    assert.equal(env["ANTHROPIC_API_KEY"], undefined);
+    await Promise.resolve();
+  },
+);
+
+scenario(
   "the suite runs the Pi version the Pi packages pin",
   { packages: [] },
   async ({ print }) => {

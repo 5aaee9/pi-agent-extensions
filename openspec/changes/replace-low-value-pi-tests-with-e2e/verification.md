@@ -4,8 +4,12 @@ Each scenario's proof that it detects its failure: the regression applied to a s
 
 ## Final runs
 
-- `npm run test:e2e:pi`: 154 scenarios across 36 files, about 25 seconds, passing on three consecutive runs before the host fix and again after it.
+- From a clean `npm ci`, `npm run test:e2e:pi`: 154 scenarios across 36 files, about 25 seconds, passing on three consecutive runs. After isolating the environment from ambient credentials, 155 scenarios pass with `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` set in the calling shell.
 - The 80 `pi-provider-sub2api` scenarios are the catalog's P1 to P10; rows that share a relay inventory collapsed into them.
+
+- `npm run test:e2e`: 12 of 12 plugins pass, DSH included. Eight Pi load smoke tests pass; `pi-provider-sub2api`, `pi-custom-provider`, and `pi-skill` list no commands unconfigured, as expected.
+- `npm run release:gate -- --base origin/main --head HEAD`: passes; every DSH package reports no published changes.
+- `npm run check`: fails only on four `dsh-autocompact/test/client-plane.test.ts` browser cases (`getByRole('button', { name: 'autocompact-workspace' })` times out). The same four fail on untouched `main` on this machine, while CI's run of that same commit, b8c0c39, passed. They are unrelated to this change, and this change does not touch DSH. Task 13.1 stays open until CI runs this branch.
 
 ## Upgrade rehearsal
 

@@ -137,8 +137,10 @@ export interface World {
 }
 
 function worldEnv(root: string, offline: boolean, extra: EnvExtra): NodeJS.ProcessEnv {
+  // Only what a process needs to start: a developer's provider credentials must
+  // not reach Pi, or a scenario about missing credentials would not test that.
   const env: NodeJS.ProcessEnv = {
-    ...process.env,
+    PATH: process.env["PATH"] ?? "",
     HOME: join(root, "home"),
     PI_CODING_AGENT_DIR: join(root, "agent"),
     PI_SKIP_VERSION_CHECK: "1",
@@ -148,7 +150,7 @@ function worldEnv(root: string, offline: boolean, extra: EnvExtra): NodeJS.Proce
     npm_config_update_notifier: "false",
     npm_config_fund: "false",
   };
-  delete env["PI_OFFLINE"];
+  if (process.env["TMPDIR"] !== undefined) env["TMPDIR"] = process.env["TMPDIR"];
   if (offline) env["PI_OFFLINE"] = "1";
   return { ...env, ...extra };
 }

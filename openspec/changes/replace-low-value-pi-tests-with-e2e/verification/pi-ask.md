@@ -90,4 +90,4 @@ After the fix all six pass. A throwaway probe also ran `/answer` to an open form
 
 **Audit deviations:** none in the counts. DELETE 52, to E2E 23, stays 136, as in the Cleanup table; `vitest run` reports 136 passed in 22 files. The six emptied files are removed. `program-status.test.ts` keeps its five tracker cases and its escaping case, and `ask-flow-status.test.ts`, `pi-coding-agent-legacy`, and `pi-ask/package.json` are unchanged.
 
-**Not verified:** `npm run release:gate` reports `@indexyz/pi-ask: no published changes` because it compares commits and this work is uncommitted. `npm run change:status` lists the intent. The orchestrator's commit needs the gate run for task 1.4 of the package change.
+**Release gate:** run by the orchestrator after the commit, `npm run release:gate -- --base origin/main --head HEAD`: `@indexyz/pi-ask: ok (intent added or modified)`.

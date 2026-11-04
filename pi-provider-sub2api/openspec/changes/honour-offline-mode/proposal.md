@@ -18,7 +18,7 @@ Pi documents `--offline` and `PI_OFFLINE=1` as disabling automatic network activ
 
 ### Modified Capabilities
 
-None.
+None by delta. This narrows the background refresh `model-discovery-cache` requires: under offline mode it does not run. Reconcile that spec at archive.
 
 ## Impact
 
