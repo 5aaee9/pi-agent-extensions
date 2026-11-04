@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.45
+
+### Patch Changes
+
+- Update the bundled unified fingerprint bank to the 2026-09-15 build: 30 candidate models, adding Doubao (Seed) candidates and refitting the enrolled providers' reference counts.
+- Enroll claude-opus-5.5 and glm-5.3-flash (32 candidates).
+- Enroll grok-4.7 (33 candidates).
+- Enroll deepseek-v4.1-flash-1017, adding the DeepSeek family (34 candidates).
+- Models added on their own keep the probability calibration fitted on the original reference rows; `robust.incremental_enrollments` records each addition.
+
 ## 0.1.44
 
 ### Patch Changes
