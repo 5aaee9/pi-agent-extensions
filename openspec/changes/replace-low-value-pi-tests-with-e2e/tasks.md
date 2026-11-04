@@ -19,13 +19,13 @@ Each package group follows the order in `design.md` D6: defect fixes with their 
 
 - [x] 3.1 Propose and apply a package change fixing defect 1 with N1 failing first; verify `-p` and `--mode json` each make one model request and exit 0, and record a `patch` intent.
 - [x] 3.2 Add N2 and N3; verify the retried turn resumes from the tool result, that N3 issues no model request until the in-flight compaction ends, and that a second `/continue` after a failed retry succeeds. Check any N3 failure against upstream #10704 first; record a new defect in the register rather than landing a red scenario.
-- [x] 3.3 Point `test/pi-rpc.ts` at `bin.pi` and keep the seven real-process cases on it, moving the context-history case's assertion to the request at the local server; verify all seven pass on the bin, and that regressing 173d51d and 05143b3 in a scratch copy fails them.
+- [x] 3.3 Point `test/pi-rpc.ts` at `bin.pi` and keep the real-process cases on it, moving the context-history case's assertion to the request at the local server (it then passed with the hook disabled and was removed; see `verification.md`); verify the six remaining pass on the bin, and that regressing 173d51d and 05143b3 in a scratch copy fails them.
 - [x] 3.4 Delete the audit's DELETE cases including `test/extension-load.test.ts`, and the marker case now covered by N3; verify `npm run check --workspace @indexyz/pi-continue` passes and `git diff` touches no published file beyond the fix.
 
 ## 4. `pi-skill`
 
 - [x] 4.1 Propose and apply a package change fixing defect 2 with K1's parity assertion failing first, replacing `expands a leading $skill token`; verify `$known` and `/skill:known` produce identical blocks on the wire, and record a `patch` intent.
-- [x] 4.2 Add the rest of K1 over RPC `steer` and `follow_up` asserting delivery mode only, and K2 in a real terminal; verify the popup lists the skill and the block renders as `[skill]`, and that scratch mutations dropping the delivery mode or removing `triggerCharacters` each fail.
+- [x] 4.2 Add the rest of K1 over RPC `steer` and `follow_up`, asserting the block and text arrive together with no extra model turn (the owner's decision, defect 10), and K2 in a real terminal; verify the popup lists the skill and the block renders as `[skill]`, and that scratch mutations dropping the delivery mode or removing `triggerCharacters` each fail.
 - [x] 4.3 Delete the audit's REPLACE and DELETE cases including `test/extension-load.test.ts`; verify the package check passes and no published file changes beyond the fix.
 
 ## 5. `pi-model-trace`
