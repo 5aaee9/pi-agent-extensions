@@ -35,29 +35,13 @@ export function findInterruptedTurn(entries: readonly SessionEntry[]): Interrupt
 
 export default function piContinue(pi: ExtensionAPI) {
   // sendMessage() is the public extension seam for starting a turn without a user message.
-  // Remove its hidden marker and the paired incomplete assistant response before every LLM call,
-  // leaving the original user message or tool result as the retry boundary.
+  // Remove its empty marker before every LLM call: Pi converts it to an empty user message,
+  // which not every adapter drops. Pi itself drops the failed turn the retry replaces.
   pi.on("context", (event) => {
-    const messages: typeof event.messages = [];
-    let changed = false;
-
-    for (const message of event.messages) {
-      if (message.role === "custom" && message.customType === CONTINUATION_TRIGGER_TYPE) {
-        const previous = messages[messages.length - 1];
-        if (
-          previous?.role === "assistant" &&
-          (previous.stopReason === "aborted" || previous.stopReason === "error")
-        ) {
-          messages.pop();
-        }
-        changed = true;
-        continue;
-      }
-
-      messages.push(message);
-    }
-
-    return changed ? { messages } : undefined;
+    const messages = event.messages.filter(
+      (message) => !(message.role === "custom" && message.customType === CONTINUATION_TRIGGER_TYPE),
+    );
+    return messages.length === event.messages.length ? undefined : { messages };
   });
 
   pi.registerCommand("continue", {
