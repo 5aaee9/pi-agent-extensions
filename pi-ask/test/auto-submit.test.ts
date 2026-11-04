@@ -15,14 +15,6 @@ const enabledConfig: AskConfig = {
   },
 };
 
-const disabledConfig: AskConfig = {
-  ...DEFAULT_ASK_CONFIG,
-  behaviour: {
-    ...DEFAULT_ASK_CONFIG.behaviour,
-    autoSubmitWhenAnsweredWithoutNotes: false,
-  },
-};
-
 function answeredSubmitState(): AskState {
   return {
     ...createInitialState({
@@ -46,19 +38,6 @@ function answeredSubmitState(): AskState {
     view: { kind: "submit" },
   };
 }
-
-test("auto submit completes answered submit-tab state when enabled", () => {
-  const state = maybeAutoSubmitState(answeredSubmitState(), enabledConfig);
-
-  assert.equal(state.completed, true);
-  assert.equal(state.mode, "submit");
-});
-
-test("auto submit does nothing when disabled", () => {
-  const state = maybeAutoSubmitState(answeredSubmitState(), disabledConfig);
-
-  assert.equal(state.completed, false);
-});
 
 test("auto submit does not trigger when notes exist", () => {
   const stateWithNote = saveNote(

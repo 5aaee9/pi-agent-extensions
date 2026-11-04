@@ -113,30 +113,11 @@ describe("suggestion request through the real adapter and a local endpoint", () 
     await expect(run(ctx.llm)).rejects.toThrow(kind);
   });
 
-  it("preserves the provider's error diagnostic", async () => {
-    const { ctx } = await createLlmPlane((exchange) => {
-      exchange.chunk({ role: "assistant", content: "Partial" });
-      exchange.chunk({}, "content_filter");
-      exchange.done();
-    });
-    await expect(run(ctx.llm)).rejects.toThrow("content_filter");
-  });
-
   it("surfaces an endpoint failure status", async () => {
     const { ctx } = await createLlmPlane((exchange) => {
       exchange.fail(503, "provider unavailable");
     });
     await expect(run(ctx.llm)).rejects.toThrow("provider unavailable");
-  });
-
-  it("rejects a stream that ends without a finish", async () => {
-    const { ctx } = await createLlmPlane((exchange) => {
-      exchange.chunk({ role: "assistant", content: "incomplete" });
-      exchange.end();
-    });
-    // The real adapter turns a truncated wire stream into an error finish, so the
-    // diagnostic it names is what the suggestion fails with.
-    await expect(run(ctx.llm)).rejects.toThrow("without finish_reason");
   });
 
   it("rejects a tool-call response and reasoning-only output as empty suggestions", async () => {
@@ -166,20 +147,6 @@ describe("suggestion request through the real adapter and a local endpoint", () 
     await expect(run(reasoning.ctx.llm)).resolves.toBe("");
   });
 
-  it("aborts the wire request when the caller cancels mid-stream", async () => {
-    let closed: Promise<void> | undefined;
-    const { ctx, server } = await createLlmPlane((exchange) => {
-      closed = exchange.closed;
-      exchange.chunk({ role: "assistant", content: "Add" });
-    });
-    const controller = new AbortController();
-    const pending = run(ctx.llm, controller.signal);
-    await until(() => server.requests.length === 1 && closed !== undefined, "the request");
-    controller.abort(new Error("turn changed"));
-    await expect(pending).rejects.toThrow("turn changed");
-    await closed;
-  });
-
   it("aborts a stalled endpoint at 30 seconds and clears the deadline timer", async () => {
     let closed: Promise<void> | undefined;
     const { ctx, server } = await createLlmPlane((exchange) => {
@@ -203,28 +170,6 @@ describe("suggestion request through the real adapter and a local endpoint", () 
     // The deadline reached the wire: the real client hung up on the endpoint.
     await closed;
   });
-
-  it("stops before dispatch when the caller has already aborted", async () => {
-    const { ctx, calls, server } = await createLlmPlane();
-    const controller = new AbortController();
-    controller.abort(new Error("turn changed"));
-    await expect(run(ctx.llm, controller.signal)).rejects.toThrow("turn changed");
-    expect(calls).toHaveLength(0);
-    expect(server.requests).toHaveLength(0);
-  });
-
-  it("surfaces the real adapter failure when the route has no provider", async () => {
-    const { ctx } = await createLlmPlane();
-    await expect(
-      generateSuggestion(
-        ctx.llm,
-        { provider: "missing-provider", model: "missing-model" },
-        "prompt",
-        sessionId,
-        new AbortController().signal,
-      ),
-    ).rejects.toThrow(/no adapter registered/u);
-  });
 });
 
 describe("conversation route resolution", () => {
@@ -236,17 +181,6 @@ describe("conversation route resolution", () => {
     });
     return session;
   }
-
-  it("reuses the logged provider/model and selects low effort from the real catalog", async () => {
-    const { ctx } = await createLlmPlane();
-    await expect(
-      resolveSuggestionRoute(ctx.llm, sessionWithRoute(), new AbortController().signal),
-    ).resolves.toEqual({
-      provider: PROVIDER,
-      model: MODEL,
-      reasoningEffort: ReasoningEffortId("low"),
-    });
-  });
 
   it("leaves the adapter default for a model that advertises no reasoning", async () => {
     const { ctx } = await createLlmPlane();

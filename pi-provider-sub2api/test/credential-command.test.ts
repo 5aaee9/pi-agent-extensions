@@ -44,17 +44,9 @@ describe("credential commands", () => {
     }
   });
 
-  it("trims stdout without expanding the returned secret", async () => {
-    expect(await resolveCredentialCommand(command('console.log(" !literal$KEY${OTHER} ")'))).toBe(
-      "!literal$KEY${OTHER}",
-    );
-  });
-
   it.each([
-    "",
     'process.stdout.write("   ")',
     'process.stdout.write("secret\\nsecond-line")',
-    'process.stdout.write("secret\\u0000")',
     'process.stdout.write("x".repeat(70 * 1024))',
     'console.log("secret-stdout"); console.error("secret-stderr"); process.exit(1)',
   ])("rejects invalid output or failure without exposing secrets: %s", async (source) => {

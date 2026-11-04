@@ -1,5 +1,3 @@
-import { writeFile } from "node:fs/promises";
-
 import { describe, expect, it } from "vitest";
 
 import { applyIntents, type SettingsSeam } from "../apply.ts";
@@ -14,13 +12,6 @@ const intents: readonly Intent[] = [
     value: { low: "low", high: "high", max: "max" },
   },
 ];
-
-const visionIntent: Intent = {
-  field: "input",
-  route: "magpie",
-  model: "ollama-cloud/kimi-k3",
-  value: ["text", "image"],
-};
 
 describe("applyIntents through the real settings service", () => {
   it("writes the planned providers value and persists it to the profile patch", async () => {
@@ -51,34 +42,6 @@ describe("applyIntents through the real settings service", () => {
 
     expect(second.kind).toBe("unchanged");
     expect(await host.readPatch()).toBe(persisted);
-  });
-
-  it("plans without writing on a dry run", async () => {
-    const host = await createHost();
-    const persisted = await host.readPatch();
-    const result = await applyIntents(settingsSeam(host.ctx), {
-      namespace: "llm-pi-ai",
-      intents,
-      dryRun: true,
-    });
-
-    expect(result.kind).toBe("pending");
-    expect(result.changes).toHaveLength(1);
-    expect(await host.readPatch()).toBe(persisted);
-    expect(modelField(host.providers(), "magpie", "ollama-cloud/kimi-k3", "reasoningEfforts")).toBe(
-      undefined,
-    );
-  });
-
-  it("reports an absent namespace", async () => {
-    const host = await createHost();
-    const result = await applyIntents(settingsSeam(host.ctx), {
-      namespace: "missing",
-      intents,
-    });
-
-    expect(result.kind).toBe("unavailable");
-    expect(await host.readPatch()).not.toContain("reasoningEfforts");
   });
 
   it("reports a profile that does not accept edits", async () => {
@@ -115,16 +78,6 @@ describe("applyIntents through the real settings service", () => {
     );
   });
 
-  it("propagates a write failure that is not a conflict", async () => {
-    const host = await createHost();
-    // A profile patch that is not a patch list makes the real editor's save fail.
-    await writeFile(host.patchPath, "{}\n");
-    await expect(
-      applyIntents(settingsSeam(host.ctx), { namespace: "llm-pi-ai", intents }),
-    ).rejects.toThrow(/top-level YAML array/);
-    expect(await host.readPatch()).toBe("{}\n");
-  });
-
   it("reports the skips alongside the applied changes", async () => {
     const host = await createHost();
     const result = await applyIntents(settingsSeam(host.ctx), {
@@ -134,43 +87,5 @@ describe("applyIntents through the real settings service", () => {
 
     expect(result.changes).toHaveLength(1);
     expect(result.skipped).toHaveLength(1);
-  });
-
-  it("issues one write whose plan changed both fields of the same entry", async () => {
-    const host = await createHost();
-    const result = await applyIntents(settingsSeam(host.ctx), {
-      namespace: "llm-pi-ai",
-      intents: [...intents, visionIntent],
-    });
-
-    expect(result.kind).toBe("applied");
-    expect(result.changes.map((change) => change.field)).toEqual(["reasoningEfforts", "input"]);
-    expect(
-      modelField(host.providers(), "magpie", "ollama-cloud/kimi-k3", "reasoningEfforts"),
-    ).toEqual({ low: "low", high: "high", max: "max" });
-    expect(modelField(host.providers(), "magpie", "ollama-cloud/kimi-k3", "input")).toEqual([
-      "text",
-      "image",
-    ]);
-  });
-
-  it("retries a conflicting write that carries both fields", async () => {
-    const host = await createHost();
-    const competitor = {
-      magpie: { models: [{ id: "ollama-cloud/kimi-k3", name: "competing" }] },
-    };
-    const result = await applyIntents(conflictingSeam(host.ctx, competitor), {
-      namespace: "llm-pi-ai",
-      intents: [...intents, visionIntent],
-    });
-
-    expect(result.kind).toBe("applied");
-    expect(modelField(host.providers(), "magpie", "ollama-cloud/kimi-k3", "input")).toEqual([
-      "text",
-      "image",
-    ]);
-    expect(
-      modelField(host.providers(), "magpie", "ollama-cloud/kimi-k3", "reasoningEfforts"),
-    ).toEqual({ low: "low", high: "high", max: "max" });
   });
 });

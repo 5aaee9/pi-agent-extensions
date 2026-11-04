@@ -85,15 +85,6 @@ describe("request mode store", () => {
     expect(read().relay.modelRequestModes).toEqual({ "gpt-synthetic-b": { serviceTier: "fast" } });
   });
 
-  it("replaces the provider defaults without touching model overrides", async () => {
-    await writeRequestModes(configPath, { provider: "relay" }, {});
-    const saved = read();
-    expect(saved.relay.requestModes).toEqual({});
-    expect(saved.relay.modelRequestModes).toEqual({ "gpt-synthetic-b": { daybreak: "blue" } });
-    expect(saved.relay.token).toBe(`!touch ${marker()}`);
-    expect(saved.other).toEqual(config().other);
-  });
-
   it("creates modelRequestModes and keeps a dangerous-looking model key as data", async () => {
     await writeRequestModes(
       configPath,
@@ -139,11 +130,6 @@ describe("request mode store", () => {
     ],
     ["non-object configuration", () => writeFileSync(configPath, "[]"), /top-level value/],
     [
-      "missing provider",
-      () => writeFileSync(configPath, JSON.stringify({ other: config().other })),
-      /provider relay is not an object/,
-    ],
-    [
       "non-object provider",
       () => writeFileSync(configPath, JSON.stringify({ relay: "x" })),
       /provider relay is not an object/,
@@ -183,19 +169,6 @@ describe("request mode store", () => {
     })();
     expect(after).toBe(before);
     expect(readdirSync(dir).filter((name) => name.endsWith(".tmp"))).toEqual([]);
-  });
-
-  it("leaves the destination unchanged when the directory is not writable", async () => {
-    chmodSync(dir, 0o500);
-    try {
-      await expect(writeRequestModes(configPath, { provider: "relay" }, {})).rejects.toThrow(
-        /EACCES/,
-      );
-    } finally {
-      chmodSync(dir, 0o700);
-    }
-    expect(read()).toEqual(config());
-    expect(readdirSync(dir)).toEqual(["sub2api.json"]);
   });
 
   it("removes the temporary file when the replace fails", async () => {

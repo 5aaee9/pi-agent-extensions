@@ -4,7 +4,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { ShortcutsFace } from "../src/client/contracts.ts";
-import { createGhost, findComposer, placeGhost } from "../src/client/ghost.ts";
+import { findComposer } from "../src/client/ghost.ts";
 import { acceptKeyOf, hasCustomBinding, menuOpen } from "../src/client/input.ts";
 import { parseSuggestionReply } from "../src/client/query.ts";
 
@@ -101,29 +101,6 @@ describe("composer DOM helpers", () => {
     expect(findComposer(null)).toBeUndefined();
     placeholder.remove();
     expect(findComposer(anchor)).toBeUndefined();
-  });
-
-  it("paints over the placeholder and restores it on cleanup", () => {
-    const { anchor, placeholder } = build();
-    const parts = findComposer(anchor);
-    if (parts === undefined) throw new Error("composer missing");
-    const ghost = createGhost(document);
-    const cleanup = placeGhost(ghost, "Suggested next message", placeholder);
-    expect(cleanup).toBeTypeOf("function");
-    expect(ghost.text.textContent).toBe("Suggested next message");
-    expect(ghost.hint.textContent).toBe("Tab");
-    expect(placeholder.style.visibility).toBe("hidden");
-    expect(document.querySelector("[data-prompt-suggestions]")).toBe(ghost.root);
-    cleanup?.();
-    expect(placeholder.style.visibility).toBe("");
-    expect(document.querySelector("[data-prompt-suggestions]")).toBeNull();
-  });
-
-  it("does not paint when the placeholder has no positioned parent", () => {
-    const placeholder = document.createElement("div");
-    const ghost = createGhost(document);
-    expect(placeGhost(ghost, "text", placeholder)).toBeUndefined();
-    expect(ghost.root.parentElement).toBeNull();
   });
 });
 

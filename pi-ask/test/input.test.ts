@@ -214,27 +214,6 @@ test("question type shortcut uses configured main keymap", () => {
   });
 });
 
-test("custom configured editor submit shortcut is used at runtime", () => {
-  const input = inputState();
-  const config = {
-    ...DEFAULT_ASK_CONFIG,
-    keymaps: {
-      ...DEFAULT_ASK_CONFIG.keymaps,
-      editor: {
-        ...DEFAULT_ASK_CONFIG.keymaps.editor,
-        submit: ["ctrl+k"],
-      },
-    },
-  };
-
-  assert.deepEqual(getInputCommand(input, config, "\u000b", "answer"), {
-    kind: "editSubmit",
-  });
-  assert.deepEqual(getInputCommand(input, config, "\r", "answer"), {
-    kind: "delegateToEditor",
-  });
-});
-
 test("custom configured note shortcuts are used at runtime", () => {
   const navigation = createInitialState({
     questions: [

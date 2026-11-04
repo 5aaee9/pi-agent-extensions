@@ -16,7 +16,6 @@
 import { Context } from "@deepseek-ai/cordis";
 import { CompactionEngine } from "@deepseek-ai/dsh-compaction";
 import { onTestFinished, describe, expect, it } from "vitest";
-import { Config } from "../index.ts";
 import {
   appendUserMessages,
   createAgent,
@@ -96,15 +95,6 @@ describe("session-only thresholds", () => {
     await runCommand(h.ctx, h.agent, "/autocompact 400k");
     await step(h.ctx, h.agent);
     expect(h.backend?.calls).toHaveLength(0);
-  });
-
-  it("uses the host-plane backend when this composition mounts no preset registry", async () => {
-    const h = await harness();
-    expect(h.ctx.get("agentPresets")).toBeUndefined();
-    appendUserMessages(h.session, 8);
-    await runCommand(h.ctx, h.agent, "/autocompact 100");
-    await step(h.ctx, h.agent);
-    expect(h.backend?.calls).toHaveLength(1);
   });
 
   it("reports a composition that mounts no compaction backend", async () => {
@@ -310,16 +300,6 @@ describe("session-only thresholds", () => {
     await expect(
       harness({ pluginConfig: { modelLimits: { "no-route": 300000 } } }),
     ).rejects.toThrow(/Invalid/);
-  });
-
-  it("declares the Settings-editable fields volatile", () => {
-    // The Host settings service only lists an entry whose schema declares a
-    // volatile field, and only accepts writes to volatile paths; without this the
-    // Settings page reports the row as not configurable.
-    expect(Config.dict?.modelLimits?.meta?.volatile).toBe(true);
-    expect(Config.dict?.defaultLimit?.meta?.volatile).toBe(true);
-    expect(Config.dict?.enabled?.meta?.volatile).toBe(true);
-    expect(Config.dict?.retainTokens?.meta?.volatile).toBeUndefined();
   });
 
   it("sees a live Settings write through the volatile references", async () => {

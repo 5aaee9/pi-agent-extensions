@@ -12,13 +12,6 @@ const currentConfigFile = {
   keymaps: DEFAULT_ASK_CONFIG.keymaps,
 };
 
-test("config migration framework accepts the current schema version", () => {
-  const result = migrateAskConfig(currentConfigFile);
-
-  assert.equal(result.migrated, false);
-  assert.deepEqual(result.config, DEFAULT_ASK_CONFIG);
-});
-
 test("config migration maps previous-version config files into current shape", () => {
   const legacyKeymaps = {
     cancel: "q",

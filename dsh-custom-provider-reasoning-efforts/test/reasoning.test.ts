@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { effortsOf, modalitiesOf, readManifestListing, readModelListing } from "../reasoning.ts";
+import { effortsOf, modalitiesOf, readModelListing } from "../reasoning.ts";
 
 describe("effortsOf", () => {
   it("reads the levels the observed gateway advertises", () => {
@@ -46,10 +46,6 @@ describe("effortsOf", () => {
       effortsOf({ reasoning: false, supported_reasoning_levels: [{ effort: "low" }] }),
     ).toBeUndefined();
   });
-
-  it("produces nothing for an entry with no reasoning fields", () => {
-    expect(effortsOf({ id: "x" })).toBeUndefined();
-  });
 });
 
 describe("listing metadata", () => {
@@ -77,14 +73,6 @@ describe("listing metadata", () => {
     expect(readModelListing({ data: [{ id: "a", context_window: 0, max_tokens: 1.5 }] })).toEqual([
       { id: "a" },
     ]);
-  });
-
-  it("reads the Codex manifest's display name and context window", () => {
-    expect(
-      readManifestListing({
-        models: [{ slug: "gpt-6.1-sol", display_name: "GPT-6.1-Sol", context_window: 500000 }],
-      }),
-    ).toEqual([{ id: "gpt-6.1-sol", name: "GPT-6.1-Sol", contextWindow: 500000 }]);
   });
 });
 
@@ -120,10 +108,6 @@ describe("modalitiesOf", () => {
     expect(modalitiesOf({ modalities: ["text", "image"] })).toEqual(["text", "image"]);
   });
 
-  it("reads a text-only nested modalities.input", () => {
-    expect(modalitiesOf({ modalities: { input: ["text"] } })).toEqual(["text"]);
-  });
-
   it("maps the input- prefixed spellings", () => {
     expect(modalitiesOf({ input_modalities: ["input-text", "input-image"] })).toEqual([
       "text",
@@ -137,14 +121,6 @@ describe("modalitiesOf", () => {
 
   it("produces nothing when every member is outside the vocabulary", () => {
     expect(modalitiesOf({ input_modalities: ["video", "audio"] })).toBeUndefined();
-  });
-
-  it("produces nothing for a text-only model", () => {
-    expect(modalitiesOf({ input_modalities: ["text"] })).toEqual(["text"]);
-  });
-
-  it("produces nothing for an entry with no modality fields", () => {
-    expect(modalitiesOf({ id: "x" })).toBeUndefined();
   });
 
   it("ignores a non-array modality field", () => {

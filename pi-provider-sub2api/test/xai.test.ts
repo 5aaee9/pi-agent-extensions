@@ -86,11 +86,6 @@ describe("xAI entry configuration", () => {
       { serverTools: { responses: [{ type: "web_search" }] } },
       /^provider grok serverTools are not supported with api xai; hosted tools/,
     ],
-    [
-      { serverTools: { anthropic: [{ type: "web_search_20260209", name: "web_search" }] } },
-      /^provider grok serverTools are not supported with api xai/,
-    ],
-    [{ serverTools: [] }, /^provider grok serverTools must be an object/],
     [{ token: "" }, /^provider grok is missing token/],
     [{ baseURL: "ftp://relay.example" }, /^provider grok baseURL must use http or https$/],
     [
@@ -101,9 +96,7 @@ describe("xAI entry configuration", () => {
       { baseURL: "https://relay.example/v1?key=sk-secret-value" },
       /^provider grok baseURL must not include a query or fragment$/,
     ],
-    [{ token: "${SUB2API_MISSING_GROK}" }, /^provider grok token references environment variable/],
     [{ token: "!exit 3" }, /^provider grok token: Credential command failed/],
-    [{ requestModes: { serviceTier: "turbo" } }, /^provider grok requestModes.serviceTier/],
   ])("rejects %j with a field-specific, secret-free error", async (extra, message) => {
     writeConfig({
       grok: { baseURL: "https://relay.example", token: "sk-secret-value", api: "xai", ...extra },

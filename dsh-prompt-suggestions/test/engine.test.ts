@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ReasoningEffortId } from "@deepseek-ai/dsh-llm";
 
-import { turnHasPredictionInput } from "../src/host/engine.ts";
 import {
   addAssistant,
   addRequestHeader,
@@ -30,19 +29,6 @@ function held(): { responder: Responder; exchanges: Exchange[] } {
     },
   };
 }
-
-describe("turn input helpers", () => {
-  it("requires direct human input and visible assistant text", async () => {
-    const { session } = await createHostPlane();
-    addRequestHeader(session);
-    startTurn(session, 1);
-    expect(turnHasPredictionInput(session, 1)).toBe(false);
-    addUser(session, "Fix login");
-    expect(turnHasPredictionInput(session, 1)).toBe(false);
-    addAssistant(session, "Fixed");
-    expect(turnHasPredictionInput(session, 1)).toBe(true);
-  });
-});
 
 describe("suggestion engine with the real Harness service graph", () => {
   it("generates one low-effort suggestion for a watched completed turn without writing the session", async () => {

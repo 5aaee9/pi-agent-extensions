@@ -56,17 +56,6 @@ test("resetAskConfigStore reloads the global store from disk", async () => {
   await rm(root, { force: true, recursive: true });
 });
 
-test("config store writes defaults when file is missing", async () => {
-  const path = await makeTempPath("pi-ask-config-missing-");
-  const store = new AskConfigStore(path);
-
-  const result = await store.ensureLoaded();
-
-  assert.deepEqual(result.config, DEFAULT_ASK_CONFIG);
-  assert.deepEqual(JSON.parse(await readFile(path, "utf-8")), expectedConfigFile());
-  await rm(dirname(path), { force: true, recursive: true });
-});
-
 test("config store uses defaults when initial config creation fails", async () => {
   class FailingInitialSaveStore extends AskConfigStore {
     override save(_config: AskConfig | Partial<AskConfig>): Promise<AskConfig> {

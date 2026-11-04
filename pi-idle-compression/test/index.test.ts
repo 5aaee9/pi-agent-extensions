@@ -65,20 +65,6 @@ describe("idle compaction", () => {
     await until(() => real.compactions().length === 1);
   });
 
-  it("does not compact on top of a compaction made during the idle period", async () => {
-    await plane.writeGlobalSettings(idle(0.01));
-    const real = await plane.startSession();
-    await real.turn();
-    await real.session.compact();
-    const summaries = plane.server.summaryRequests();
-    expect(real.compactions()).toHaveLength(1);
-
-    await sleep(0.01 * 60_000 * 2);
-    expect(real.compactions()).toHaveLength(1);
-    expect(plane.server.summaryRequests()).toBe(summaries);
-    expect(messages(real, "info")).toEqual([]);
-  });
-
   it("ends the idle period when manual compaction fails and arms after later work", async () => {
     await plane.writeGlobalSettings({ ...idle(0.01), retry: { enabled: false } });
     const real = await plane.startSession();

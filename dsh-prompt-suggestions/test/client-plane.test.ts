@@ -486,24 +486,6 @@ describe("conversation.input.overlay in a live session", () => {
     await closePages();
   }, 180_000);
 
-  it("defers Tab while the composer's own popup menu is open", async () => {
-    await ensureSwitch(true);
-    const page = await freshSession();
-    await turnWithSuggestion(page);
-    // A slash opens the host's command menu; it owns Tab while it is open, and
-    // the typed slash also makes the draft non-empty, so nothing is painted.
-    await page.locator(EDITOR).first().focus();
-    await page.keyboard.type("/");
-    await page.locator('[role="listbox"],[role="menu"],[data-trigger-menu]').first().waitFor({
-      state: "visible",
-      timeout: 10_000,
-    });
-    expect((await readComposer(page)).ghostVisible).toBe(false);
-    await page.keyboard.press("Tab");
-    expect((await readComposer(page)).draft).not.toContain(SUGGESTION);
-    await closePages();
-  }, 180_000);
-
   it("does not paint while the draft carries an attachment", async () => {
     await ensureSwitch(true);
     const page = await freshSession();

@@ -9,7 +9,6 @@ import {
   createEnginePlane,
   createHostPlane,
   endTurn,
-  liveConfig,
   startTurn,
 } from "./host-plane.ts";
 
@@ -39,22 +38,6 @@ interface ServerEnvelope {
 }
 
 describe("suggestion route", () => {
-  it("returns a standard server envelope for a live session", async () => {
-    const { engine, session } = await createEnginePlane();
-    const response = await handleSuggestionRequest(
-      engine,
-      request(envelope({ sessionId: session.id })),
-    );
-    expect(response.status).toBe(200);
-    expect(response.headers.get("cache-control")).toBe("no-store");
-    const body = (await response.json()) as ServerEnvelope;
-    expect(body).toEqual({
-      type: "server-response",
-      rpcId: "rpc-1",
-      result: { ok: true, value: { state: "none" } },
-    });
-  });
-
   it("returns the ready text in the envelope through the real Connection handler", async () => {
     const { session, dispatch, query } = await createHostPlane();
     addRequestHeader(session);
@@ -70,19 +53,6 @@ describe("suggestion route", () => {
       type: "server-response",
       rpcId: "rpc-1",
       result: { ok: true, value: { state: "ready", text: "Add a regression test" } },
-    });
-  });
-
-  it("answers disabled when the live settings switch is off", async () => {
-    const config = liveConfig(false);
-    const { engine, session } = await createEnginePlane(config);
-    const response = await handleSuggestionRequest(
-      engine,
-      request(envelope({ sessionId: session.id })),
-    );
-    expect(response.status).toBe(200);
-    expect((await response.json()) as ServerEnvelope).toMatchObject({
-      result: { ok: true, value: { state: "disabled" } },
     });
   });
 

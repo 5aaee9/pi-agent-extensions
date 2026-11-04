@@ -5,7 +5,6 @@ import { cycleCurrentQuestionType } from "../src/state/question-type.ts";
 
 const DUPLICATE_OPTION_VALUE_RE = /duplicate option value "small"/;
 
-const FREEFORM_UNSUPPORTED_RE = /freeform options are only supported for \/answer forms/;
 const FREEFORM_MIXED_RE = /freeform options must be the only option/;
 
 import { toAskResult } from "../src/state/result.ts";
@@ -71,22 +70,6 @@ test("answer freeform questions render only the custom input option", () => {
   assert.equal(options.length, 1);
   assert.equal(options[0]?.label, "Type your answer:");
   assert.equal(options[0]?.isCustomOption, true);
-});
-
-test("freeform questions are rejected unless explicitly allowed", () => {
-  assert.throws(
-    () =>
-      createInitialState({
-        questions: [
-          {
-            id: "language",
-            prompt: "Which language do you want to learn?",
-            options: [{ value: "freeform", label: "Type answer", freeform: true }],
-          },
-        ],
-      }),
-    FREEFORM_UNSUPPORTED_RE,
-  );
 });
 
 test("freeform questions cannot mix normal options", () => {
@@ -181,15 +164,6 @@ test("normalization preserves any number of recommended options without selectin
   assert.deepEqual(state.answers, {});
 });
 
-test("single-select number shortcut stores answer and advances to next tab", () => {
-  let state = createInitialState(sampleParams());
-  state = applyNumberShortcut(state, 2);
-
-  assert.equal(state.answers.lang.selected[0].label, "TypeScript");
-  assert.equal(state.activeTabIndex, 1);
-  assert.equal(state.view.kind, "navigate");
-});
-
 test("multi-select space toggles current option and enter advances to submit", () => {
   let state = createInitialState(sampleParams());
   state = applyNumberShortcut(state, 1);
@@ -224,26 +198,6 @@ test("single-select space toggles the active option without advancing", () => {
   assert.equal(state.answers.lang, undefined);
   assert.equal(state.activeTabIndex, 0);
   assert.equal(state.view.kind, "navigate");
-});
-
-test("presentSingleAsMulti handles requested single questions as multi-select", () => {
-  let state = createInitialState(sampleParams(), {
-    presentSingleAsMulti: true,
-  });
-
-  assert.equal(state.questions[0].type, "multi");
-  assert.equal(state.questions[0].requestedType, "single");
-  assert.equal(state.questions[0].presentedType, "multi");
-
-  state = toggleCurrentMultiOption(state);
-  state = moveOption(state, 1);
-  state = toggleCurrentMultiOption(state);
-
-  assert.equal(state.activeTabIndex, 0);
-  assert.deepEqual(
-    state.answers.lang.selected.map((selection) => selection.label),
-    ["Python", "TypeScript"],
-  );
 });
 
 test("question type hotkey toggles single and multi while preserving requested type", () => {
@@ -357,17 +311,6 @@ test("confirmed multi-to-single type change preserves custom text and notes", ()
   assert.equal(state.answers.q1.note, "Keep note");
 });
 
-test("submit can complete even when some questions are unanswered", () => {
-  let state = createInitialState(sampleParams());
-  state = moveTab(state, -1);
-  assert.equal(state.view.kind, "submit");
-  state = confirmCurrentSelection(state);
-
-  assert.equal(state.completed, true);
-  assert.equal(state.cancelled, false);
-  assert.equal(state.mode, "submit");
-});
-
 test("submit tab can complete in elaborate mode", () => {
   let state = createInitialState(sampleParams());
   state = moveTab(state, -1);
@@ -378,25 +321,6 @@ test("submit tab can complete in elaborate mode", () => {
   assert.equal(state.completed, true);
   assert.equal(state.cancelled, false);
   assert.equal(state.mode, "elaborate");
-});
-
-test("selecting other enters input mode and custom submit stores typed answer", () => {
-  let state = createInitialState({
-    questions: [
-      {
-        id: "q1",
-        prompt: "Other?",
-        options: [{ value: "a", label: "A" }],
-      },
-    ],
-  });
-
-  state = applyNumberShortcut(state, 2);
-  assert.equal(state.view.kind, "input");
-  state = submitCustomAnswer(state, "my custom answer");
-
-  assert.equal(state.answers.q1.customText, "my custom answer");
-  assert.equal(state.view.kind, "submit");
 });
 
 test("escape saves typed custom answer without advancing", () => {

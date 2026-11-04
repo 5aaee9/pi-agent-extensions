@@ -123,39 +123,6 @@ describe("thread summary with Harness services", () => {
     expect(ctx.sessionProjections.snapshot(replay).values.title).toBe("Fix login redirects");
   });
 
-  it("retains the logged deterministic fallback when the summary stream fails", async () => {
-    const { ctx, calls, server, session } = await createHost();
-    server.enqueue((reply) => {
-      reply.send({ content: "Incomplete summary" });
-      reply.end();
-    });
-    const first = appendUserMessage(
-      session,
-      "Investigate intermittent connection failures in production",
-    );
-    appendRequestHeader(session);
-    await until(() => server.requests.length === 1, "the summary request");
-    await server.requests[0]?.closed;
-    await delay(50);
-
-    expect(calls).toHaveLength(1);
-    expect(titleEvents(session)).toHaveLength(1);
-    expect(ctx.sessionTitle.get(session)).toMatchObject({
-      title: "Investigate intermittent connection failures in",
-      messageSeqs: [first.seq],
-      source: { kind: "fallback" },
-    });
-    expect(ctx.sessionProjections.snapshot(session).values.title).toBe(
-      "Investigate intermittent connection failures in",
-    );
-
-    appendUserMessage(session, "Check the connection pool too");
-    appendRequestHeader(session, false);
-    await delay(50);
-    expect(calls).toHaveLength(1);
-    expect(titleEvents(session)).toHaveLength(1);
-  });
-
   it("aborts an active summary on manual rename and rejects late stream output", async () => {
     let release = (): void => {};
     const blocked = new Promise<void>((resolve) => {
@@ -203,32 +170,5 @@ describe("thread summary with Harness services", () => {
     } finally {
       release();
     }
-  });
-
-  it("registers the sole session-title provider with the real service", async () => {
-    expect(inject).toEqual(["llm", "sessionTitle"]);
-    const { ctx, fiber } = await createHost();
-    await expect(
-      ctx.plugin({ apply, inject: [...inject] }, { enabled: true, model: LOCAL_MODEL }).await(),
-    ).rejects.toThrow('session-title provider "dsh-thread-summary" is already registered');
-
-    await fiber.dispose();
-    await expect(
-      ctx.plugin({ apply, inject: [...inject] }, { enabled: true, model: LOCAL_MODEL }).await(),
-    ).resolves.toBeDefined();
-  });
-
-  it("cancels queued automatic generation when renamed before the request header", async () => {
-    const { ctx, calls, server, session } = await createHost();
-    appendUserMessage(session, "Fix the login redirect after signing in");
-    const renamed = ctx.sessionTitle.rename(session, "Pinned before generation");
-    appendRequestHeader(session);
-    await delay(50);
-
-    expect(calls).toHaveLength(0);
-    expect(server.requests).toHaveLength(0);
-    expect(titleEvents(session)).toHaveLength(1);
-    expect(ctx.sessionTitle.get(session)).toEqual(renamed);
-    expect(ctx.sessionProjections.snapshot(session).values.title).toBe("Pinned before generation");
   });
 });

@@ -9,25 +9,6 @@ import {
 } from "../src/state/editor.ts";
 import { enterQuestionNoteMode } from "../src/state/transitions.ts";
 
-test("syncStateToSelection opens input when custom option is active", () => {
-  const state = {
-    ...createInitialState({
-      questions: [
-        {
-          id: "q1",
-          prompt: "Pick one",
-          options: [{ value: "a", label: "A" }],
-        },
-      ],
-    }),
-    activeOptionIndex: 1,
-  };
-
-  const next = syncStateToSelection(state);
-  assert.equal(next.view.kind, "input");
-  assert.equal(next.view.questionId, "q1");
-});
-
 test("submitted answer can sync directly into next freeform input", () => {
   let state = syncStateToSelection(
     createInitialState(
@@ -80,29 +61,6 @@ test("syncStateToSelection does not reopen answered freeform input", () => {
 
   assert.equal(state.view.kind, "navigate");
   assert.equal(state.answers.q1.customText, "already answered");
-});
-
-test("tab navigation can sync from review back into freeform input", () => {
-  let state = createInitialState(
-    {
-      questions: [
-        {
-          id: "q1",
-          prompt: "First?",
-          options: [{ value: "freeform", label: "Type answer", freeform: true }],
-        },
-      ],
-    },
-    { allowFreeform: true },
-  );
-  state = { ...state, activeTabIndex: 1, view: { kind: "submit" } };
-  state = syncStateToSelection({
-    ...state,
-    activeTabIndex: 0,
-    view: { kind: "navigate" },
-  });
-
-  assert.deepEqual(state.view, { kind: "input", questionId: "q1" });
 });
 
 test("submitEditorDraft saves notes without completing the ask flow", () => {

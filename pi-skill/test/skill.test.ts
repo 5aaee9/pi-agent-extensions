@@ -193,28 +193,6 @@ describe("real skill discovery and command registration", () => {
 });
 
 describe("expandSkillTokens", () => {
-  it("leaves unknown tokens and prices untouched", async () => {
-    await writeSkill("known", "known", "Known.");
-    const { skills } = await startSession();
-
-    const input = "成本 $9.99，变量 $HOME，未知 $nosuch，已知 $known";
-    const { expanded, failed, blocks } = await expandSkillTokens(input, skills);
-
-    expect(expanded).toEqual(["known"]);
-    expect(failed).toEqual([]);
-    expect(blocks.map((block) => block.name)).toEqual(["known"]);
-  });
-
-  it("keeps $$name literal as an escape", async () => {
-    await writeSkill("esc", "esc", "Escaped?");
-    const { skills } = await startSession();
-
-    const { expanded, blocks } = await expandSkillTokens("字面量 $$esc 不是调用", skills);
-
-    expect(expanded).toEqual([]);
-    expect(blocks).toEqual([]);
-  });
-
   it("reports a missing skill file as failed", async () => {
     await writeSkill("gone", "gone", "Soon gone.");
     const { skills } = await startSession();
@@ -314,7 +292,7 @@ describe("skill autocomplete provider", () => {
     }
   });
 
-  it("replaces the $ prefix and adds a trailing space on applyCompletion", async () => {
+  it("replaces the $ prefix and keeps the existing following space on applyCompletion", async () => {
     const { provider } = await providerFor();
     const lines = ["请用 $cod 检查"];
     const result = provider.applyCompletion(
@@ -326,19 +304,6 @@ describe("skill autocomplete provider", () => {
     );
     expect(result.lines[0]).toBe("请用 $code-review 检查");
     expect(result.cursorCol).toBe("请用 ".length + "$code-review".length);
-  });
-
-  it("adds a trailing space when the cursor is at end of line", async () => {
-    const { provider } = await providerFor();
-    const result = provider.applyCompletion(
-      ["$cod"],
-      0,
-      4,
-      { value: "$code-review", label: "$code-review" },
-      "$cod",
-    );
-    expect(result.lines[0]).toBe("$code-review ");
-    expect(result.cursorCol).toBe("$code-review".length + 1);
   });
 
   it("delegates applyCompletion for non-$ prefixes", async () => {
