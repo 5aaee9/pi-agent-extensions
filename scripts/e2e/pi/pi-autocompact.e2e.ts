@@ -88,6 +88,36 @@ scenario(
 );
 
 scenario(
+  "a failed turn sends no paid summary, and the next successful turn compacts",
+  PACKAGES,
+  async ({ world, probeServer, rpc }) => {
+    world.mergeSettings({
+      retry: { enabled: false },
+      compaction: { keepRecentTokens: KEEP_RECENT_TOKENS },
+    });
+    let failing = true;
+    const server = await probeServer((request): ChatReply => {
+      if (isSummaryRequest(request)) return { text: SUMMARY };
+      if (failing) return { failure: { status: 500, message: "upstream down" } };
+      return { text: ANSWER, promptTokens: OVER_LIMIT_TOKENS };
+    });
+    const client = rpc(["--session", join(world.root, "failed.jsonl"), ...PROBE_ARGS]);
+    const threshold = client.next(
+      (event) => event["method"] === "notify" && String(event["message"]).includes("above"),
+      "the threshold notice",
+    );
+    await client.send({ type: "prompt", message: "/autocompact 10k" });
+    await threshold;
+    await client.prompt(LARGE_PROMPT);
+    assert.equal(summaries(server.requests).length, 0, "a failed turn must not be summarized");
+    failing = false;
+    await client.prompt("try again");
+    assert.equal(summaries(server.requests).length, 1, "the next success compacts");
+    assert.deepEqual(client.extensionErrors(), []);
+  },
+);
+
+scenario(
   "a boundary after a tool call keeps the group, the other extension's entry, and no orphan",
   PACKAGES,
   async ({ world, probeServer, rpc }) => {

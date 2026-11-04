@@ -177,7 +177,8 @@ Verification column: **wire** means reproduced by this proposal's author through
 
 | 9 | `pi-ask` | With auto-submit on, a digit answer leaves the form on review and the model waiting; Enter submits. Found while writing Q4 | Wire: scenario timed out before the fix | `finish: true` from the number shortcut |
 
-**Recorded, not fixed here** (no scenario asserts either way, awaiting the owner's decision): a queued `$skill` takes its own model turn, where a probe showed that embedding the block in the queued text delivers both in one turn and `deliverAs: "nextTurn"` silently loses the block; and autocompact sends a paid summary after a failed turn because `checkBoundary` ignores `event.outcome`.
+| 10 | `pi-skill` | A `$skill` queued during a turn takes a model turn of its own, contrary to the README. A probe showed `deliverAs: "nextTurn"` silently loses the block; the owner chose embedding it in the queued text | Wire | `action: "transform"` while streaming |
+| 11 | `pi-autocompact` | A failed or aborted turn over the threshold sends a paid summary, because `checkBoundary` ignores `event.outcome`. Owner's decision | Wire | Skip unless `completed`, consuming no attempt |
 
 **Found during implementation, left in place** because they are runtime changes beyond this plan: `pi-continue`'s `context` hook has no effect on the wire on Pi 1.5.0, and `pi-custom-provider`'s `!printf` authorization wrapper is no longer needed. Each package's `verification/` record lists regressions that turned out to be equivalent.
 

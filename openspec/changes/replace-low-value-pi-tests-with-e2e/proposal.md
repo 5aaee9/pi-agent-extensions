@@ -2,7 +2,7 @@
 
 ## Why
 
-Every Pi package test passes while real user-facing failures ship: an audit of all 720 Pi test cases, and the work it led to, confirmed nine live defects that a green `npm run check` cannot see. The suites spend their effort on the wrong things. No test exercises what users actually run (a packed tarball installed by `pi install`, no host packages on disk, the bundled `pi` bin), and most `pi-provider-sub2api` tests assert against a hand-built host.
+Every Pi package test passes while real user-facing failures ship: an audit of all 720 Pi test cases, and the work it led to, confirmed eleven live defects that a green `npm run check` cannot see. The suites spend their effort on the wrong things. No test exercises what users actually run (a packed tarball installed by `pi install`, no host packages on disk, the bundled `pi` bin), and most `pi-provider-sub2api` tests assert against a hand-built host.
 
 Pi also moves faster than the pins: 14 releases in the last six weeks, several with breaking changes, while every package declares its host peers as `"*"`. A user's Pi is routinely newer than the version the package was tested against, and nothing in the repository looks at that gap.
 
@@ -22,10 +22,10 @@ The audit does not support deleting tests wholesale. Its verdicts are in `audit/
 - **Rewrite 186 stand-in cases** as about 37 scenarios, then remove the originals. This includes converting `pi-provider-sub2api` to a local relay, which ends the earlier deferral of that package's conversion by explicit owner decision. Live endpoints stay untested and no credential is added.
 - **Change the load check** in `npm run test:e2e` for Pi packages from a checkout, where host packages resolve from the workspace, to the installed tarball. **BREAKING for the check, not for users:** a package missing a file from `files` now fails it.
 - **Add a scheduled upgrade rehearsal** that moves the Pi pins to `latest` in a throwaway CI checkout and runs typecheck, package tests, and the E2E suite, so a breaking Pi release is found before users report it.
-- **Fix the nine confirmed defects**, each in a package-scoped OpenSpec change with a `patch` intent (one per affected package for the offline defect, so ten changes), and each landing with the scenario that failed before the fix:
+- **Fix the eleven confirmed defects**, each in a package-scoped OpenSpec change with a `patch` intent (one per affected package for the offline defect, so twelve changes), and each landing with the scenario that failed before the fix:
   - `pi-continue`: `/continue` makes no model request in print and JSON modes.
-  - `pi-skill`: `$skill` tells the model the wrong reference directory.
-  - `pi-autocompact`: boundary summaries drop reasoning effort and the output limit.
+  - `pi-skill`: `$skill` tells the model the wrong reference directory, and a queued `$skill` takes a model turn of its own.
+  - `pi-autocompact`: boundary summaries drop reasoning effort and the output limit, and a failed turn sends a paid summary.
   - `pi-custom-provider`: cross-model thinking leaks into Ollama's visible history.
   - `pi-custom-provider` and `pi-provider-sub2api`: network requests at startup ignore `--offline`.
   - `pi-ask`: `/answer` fails on the default configuration without Anthropic credentials, and a digit answer does not auto-submit.

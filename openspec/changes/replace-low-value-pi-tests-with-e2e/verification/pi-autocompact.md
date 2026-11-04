@@ -28,3 +28,11 @@ Kept package test, corrected in place: `resolves compaction settings as Pi does 
 - The 740a8a5 revert is only observable with a preceding proposal, since `event.entries` is otherwise empty. The scenario loads a fixture with `-e`, which `resource-loader.js` merges ahead of installed packages; the `custom` entry directly before `compaction` in the session file shows that order.
 - Boundaries on a failed turn (`event.outcome`): no scenario asserts either way, pending the owner's decision.
 - Audit deviation in count only. Verdicts stand: 13 DELETE (10 declarations), 0 to E2E, 89 stay. The one REPLACE-cheap case became a table of seven rows, so vitest reports 95 cases: 88 unchanged plus 7.
+
+## Failed turns (owner's decision, after the sections above)
+
+| Scenario                                 | Regression applied                | Observed                                                                               |
+| ---------------------------------------- | --------------------------------- | -------------------------------------------------------------------------------------- |
+| "a failed turn sends no paid summary..." | Removed the `event.outcome` guard | Fails: "a failed turn must not be summarized". Also failed the same way before the fix |
+
+Finding: consuming `attemptedLeaf` on a skipped boundary is not detected, and is equivalent: the next turn has a different leaf, so the guard cannot match it. The next-success half of the scenario holds either way.
