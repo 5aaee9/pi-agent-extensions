@@ -276,14 +276,6 @@ export function providerConfig(
   const hasAuthorizationHeader = Object.keys(headers).some(
     (key) => key.toLowerCase() === "authorization",
   );
-  // A `!command` apiKey needs the Bearer prefix inside the executed command so
-  // pi interpolates the command stdout. pi's authHeader would wrap the literal
-  // command instead, so keep the header form for that case only.
-  const needsCommandWrapper =
-    usesAuthorizationHeader && provider.apiKey?.startsWith("!") === true && !hasAuthorizationHeader;
-  if (needsCommandWrapper && provider.apiKey) {
-    headers.Authorization = `!printf 'Bearer %s' "$(${provider.apiKey.slice(1)})"`;
-  }
   return {
     name: provider.name,
     baseUrl:
@@ -299,9 +291,7 @@ export function providerConfig(
     // clobber a user-configured Authorization header, so skip it there).
     apiKey: registeredApiKey(provider.apiKey),
     api: provider.api,
-    ...(usesAuthorizationHeader && !needsCommandWrapper && !hasAuthorizationHeader
-      ? { authHeader: true }
-      : {}),
+    ...(usesAuthorizationHeader && !hasAuthorizationHeader ? { authHeader: true } : {}),
     headers,
     models: configs,
     ...(provider.api === "ollama-chat" ? { streamSimple: streamOllamaChatSimple } : {}),

@@ -6,6 +6,13 @@ import { join } from "node:path";
 import { isRecord } from "../../release/json.ts";
 import { modelKeys } from "./pi.ts";
 import { scenario } from "./scenario.ts";
+import {
+  OLLAMA_DONE,
+  isOllamaChat,
+  ndjson,
+  ollamaHandler,
+  ollamaText,
+} from "./servers-custom-provider.ts";
 import type { Scenario } from "./scenario.ts";
 import { chatReply, isChatRequest, json } from "./servers.ts";
 import type { LocalServer } from "./servers.ts";
@@ -72,6 +79,33 @@ scenario(
     await client.send({ type: "prompt", message: "/refresh-custom-provider-models" });
     await refreshed;
     assert.ok(gateway.requests.length > 0, "the explicit refresh must reach upstream");
+  },
+);
+
+scenario(
+  "a command-sourced key reaches Ollama as a bearer token when authHeader asks for it",
+  ONLINE,
+  async ({ world, server, rpc }) => {
+    const ollama = await server(
+      ollamaHandler(["m"], () => ndjson([ollamaText("answer"), OLLAMA_DONE])),
+    );
+    world.writeAgentFile("custom-provider.json", {
+      modelsDev: false,
+      providers: {
+        ollama: {
+          baseURL: ollama.baseUrl,
+          api: "ollama",
+          apiKey: "!printf %s cmd-key",
+          authHeader: "authorization",
+        },
+      },
+    });
+    const client = rpc(["--no-session", "--provider", "ollama", "--model", "m", "--approve"]);
+    await client.prompt("hello");
+    const chat = ollama.requests.find(isOllamaChat);
+    assert.ok(chat !== undefined);
+    assert.equal(chat.headers["authorization"], "Bearer cmd-key");
+    assert.deepEqual(client.extensionErrors(), []);
   },
 );
 

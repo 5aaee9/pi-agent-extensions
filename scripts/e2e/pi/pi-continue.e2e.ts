@@ -7,7 +7,14 @@ import { setTimeout as delay } from "node:timers/promises";
 
 import { scenario } from "./scenario.ts";
 import type { ChatReply } from "./servers.ts";
-import { isChatRequest, isSummaryRequest, messagesOf, rolesOf } from "./servers.ts";
+import { isChatRequest, isSummaryRequest, json, messagesOf, rolesOf } from "./servers.ts";
+import {
+  OLLAMA_DONE,
+  isOllamaChat,
+  ndjson,
+  ollamaHandler,
+  ollamaText,
+} from "./servers-custom-provider.ts";
 import { PROBE_ARGS } from "./world.ts";
 
 const PACKAGES = { packages: ["pi-continue"] };
@@ -15,6 +22,7 @@ const FAILURE: ChatReply = { failure: { status: 400, message: "bad request" } };
 const RETRIED = "retried answer";
 const LARGE_CONTEXT_TOKENS = 100_000;
 const HOLD_MS = 300;
+const OLLAMA_MODEL = "local-model";
 
 scenario(
   "/continue in print and JSON modes retries the failed turn and exits 0",
@@ -143,6 +151,45 @@ scenario(
       restarted.notifications().some((notice) => notice.message.startsWith("Retrying")),
       JSON.stringify(restarted.notifications()),
     );
+  },
+);
+
+scenario(
+  "the retry marker never reaches a provider as an empty message",
+  { packages: ["pi-continue", "pi-custom-provider"], offline: false },
+  async ({ world, server, print, rpc }) => {
+    world.mergeSettings({ retry: { enabled: false } });
+    let failing = true;
+    const ollama = await server(
+      ollamaHandler([OLLAMA_MODEL], () =>
+        failing ? json({ error: "bad request" }, 400) : ndjson([ollamaText(RETRIED), OLLAMA_DONE]),
+      ),
+    );
+    world.writeAgentFile("custom-provider.json", {
+      modelsDev: false,
+      providers: { local: { baseURL: ollama.baseUrl, apiKey: "local", api: "ollama" } },
+    });
+    const session = join(world.root, "marker.jsonl");
+    const args = [
+      "--session",
+      session,
+      "--provider",
+      "local",
+      "--model",
+      OLLAMA_MODEL,
+      "--approve",
+    ];
+    await print(["-p", ...args, "hello"]);
+    failing = false;
+    const client = rpc(args);
+    await client.prompt("/continue");
+    const retry = ollama.requests.findLast(isOllamaChat);
+    assert.ok(retry !== undefined);
+    assert.deepEqual(
+      messagesOf(retry).filter((message) => message.role !== "system"),
+      [{ role: "user", text: "hello" }],
+    );
+    assert.deepEqual(client.extensionErrors(), []);
   },
 );
 

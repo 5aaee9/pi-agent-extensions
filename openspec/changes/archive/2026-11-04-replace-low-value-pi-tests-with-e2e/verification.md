@@ -29,6 +29,10 @@ The `@file` move itself broke an assertion, found in the second review round: Pi
 
 **Abort is guarded three times, so a single regression cannot show.** Removing the outcome check, or the `ctx.signal` check, or both, still sends no summary, because the summarizer's request is bound to the same signal. Only removing the signal from both places fails "aborting a running tool over the threshold...", which proves the scenario reaches the code. Pi reports the aborted tool's turn as `completed` with the signal aborted, then a second `turn_end` as `error`, and an abort mid-stream as `aborted`.
 
+## Correction after archive
+
+The `pi-continue` record says disabling the `context` hook leaves the request identical. That was observed on `openai-completions` only and is too broad. A later comparison across four APIs showed `ollama-chat` then sends an extra empty user message, so the hook's marker removal is needed. Only its removal of the failed turn is redundant, and that alone was removed, in the package change `remove-redundant-retry-cleanup`.
+
 ## Upgrade rehearsal
 
 `node scripts/e2e/pi/rehearse.ts --throwaway --version 1.4.0` in a throwaway worktree:
