@@ -2,7 +2,7 @@
 
 ## Purpose
 
-TBD - created by archiving change fast-cached-startup. Update Purpose after archive.
+Define when this extension contacts upstream model catalogs at startup and in the background, and how Pi's offline mode limits it.
 
 ## Requirements
 
