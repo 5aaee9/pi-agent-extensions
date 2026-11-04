@@ -4,12 +4,13 @@ Each scenario's proof that it detects its failure: the regression applied to a s
 
 ## Final runs
 
-- `npm run test:e2e:pi`: 159 scenarios across 36 files, about 26 seconds. From a clean `npm ci`, the 154 at that point passed on three consecutive runs; the scenarios added since passed on each later full run, including with `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` set in the calling shell.
+- `npm run test:e2e:pi`: 159 scenarios across 36 files, about 25 seconds, passing on three consecutive runs at 8f38ade (24.6, 24.2, 24.2 s), and with `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` set in the calling shell.
+- CI run 41825362176 at 8f38ade, from a clean `npm ci` on Linux: `npm run check` including DSH, `npm run test:e2e`, `npm run test:e2e:pi`, and the release gate all pass.
 - The 80 `pi-provider-sub2api` scenarios are the catalog's P1 to P10; rows that share a relay inventory collapsed into them.
 
 - `npm run test:e2e`: 12 of 12 plugins pass, DSH included. Eight Pi load smoke tests pass; `pi-provider-sub2api`, `pi-custom-provider`, and `pi-skill` list no commands unconfigured, as expected.
 - `npm run release:gate -- --base origin/main --head HEAD`: passes; every DSH package reports no published changes.
-- `npm run check`: CI's run on the draft pull request passes it, DSH included. On this machine it fails only on four `dsh-autocompact/test/client-plane.test.ts` browser cases, which fail the same way on untouched `main`, so they are local to this machine and unrelated to this change.
+- `npm run check` on this machine it fails only on four `dsh-autocompact/test/client-plane.test.ts` browser cases, which fail the same way on untouched `main`, so they are local to this machine and unrelated to this change.
 
 ## Found by the implementation review and CI
 

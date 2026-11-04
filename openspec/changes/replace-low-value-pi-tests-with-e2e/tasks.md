@@ -81,7 +81,7 @@ Each package group follows the order in `design.md` D6: defect fixes with their 
 
 ## 13. Final verification
 
-- [ ] 13.1 From a clean `npm ci`, run root `npm run check`, `npm run test:e2e`, and `npm run test:e2e:pi`, which this shared-tooling change needs regardless of `isolate-plugin-systems-in-agent-docs`; verify all pass, then record suite runtime and repeat `test:e2e:pi` three times to expose flakiness.
+- [x] 13.1 From a clean `npm ci`, run root `npm run check`, `npm run test:e2e`, and `npm run test:e2e:pi`, which this shared-tooling change needs regardless of `isolate-plugin-systems-in-agent-docs`; verify all pass, then record suite runtime and repeat `test:e2e:pi` three times to expose flakiness.
 - [x] 13.2 Run the load smoke test from `docs/workflow.md` for each of the eight Pi packages; verify exit 0 and a successful `get_commands` response, and that it lists the commands each package registers unconfigured: `pi-provider-sub2api`, `pi-custom-provider`, and `pi-skill` legitimately list none.
 - [x] 13.3 Verify scope: `git diff` touches no `dsh-*` path and no DSH requirement, `npm run test:e2e` DSH results are unchanged, and `npm run release:gate -- --base origin/main --head HEAD` passes with a release decision for every package whose published content changed.
 - [x] 13.4 Confirm every catalog scenario appears in `verification.md` with its observed failure and every audit REPLACE row is covered by a named scenario, kept on a corrected form in the Cleanup table, or listed as an explicit exclusion in `design.md`.

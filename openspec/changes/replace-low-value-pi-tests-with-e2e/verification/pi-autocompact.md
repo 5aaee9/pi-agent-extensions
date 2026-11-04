@@ -26,13 +26,15 @@ Kept package test, corrected in place: `resolves compaction settings as Pi does 
 
 - **Defect 3 cause confirmed.** The summarizer sets provider-neutral options (`reasoning`, no `maxTokens`). `ctx.modelRegistry.streamSimple` is what maps them: pi-ai 1.5.0 `api/openai-completions.js` `streamSimple` calls `buildBaseOptions`, which fills `maxTokens` from the model, and turns `reasoning` into `reasoningEffort`. `stream` takes API-specific options and uses neither. Swapping the call made both fields appear, and restoring it fails the scenario. The fix is package change `pi-autocompact/openspec/changes/fix-boundary-summary-options`.
 - The 740a8a5 revert is only observable with a preceding proposal, since `event.entries` is otherwise empty. The scenario loads a fixture with `-e`, which `resource-loader.js` merges ahead of installed packages; the `custom` entry directly before `compaction` in the session file shows that order.
-- Boundaries on a failed turn (`event.outcome`): no scenario asserts either way, pending the owner's decision.
+- Boundaries on a failed turn (`event.outcome`) were pending the owner's decision at this point; see "Failed turns" below.
 - Audit deviation in count only. Verdicts stand: 13 DELETE (10 declarations), 0 to E2E, 89 stay. The one REPLACE-cheap case became a table of seven rows, so vitest reports 95 cases: 88 unchanged plus 7.
 
 ## Failed turns (owner's decision, after the sections above)
 
-| Scenario                                 | Regression applied                | Observed                                                                               |
-| ---------------------------------------- | --------------------------------- | -------------------------------------------------------------------------------------- |
-| "a failed turn sends no paid summary..." | Removed the `event.outcome` guard | Fails: "a failed turn must not be summarized". Also failed the same way before the fix |
+| Scenario                                        | Regression applied                                                         | Observed                                                                                                                                                 |
+| ----------------------------------------------- | -------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| "a failed turn sends no paid summary..."        | Removed the `event.outcome` guard                                          | Fails: "a failed turn must not be summarized". Also failed the same way before the fix                                                                   |
+| "aborting a running tool over the threshold..." | Removed the `ctx.signal` check and the signal bound to the summary request | Fails: "an aborted turn must not be summarized". Removing either, or the outcome check, alone does not fail: three guards overlap, see `verification.md` |
+| "print mode with a saved limit..."              | `firstKeptEntryId` set to the earliest entry                               | Fails on the history assertion, after the `@file` move made the old `startsWith` unable to fail                                                          |
 
 Finding: consuming `attemptedLeaf` on a skipped boundary is not detected, and is equivalent: the next turn has a different leaf, so the guard cannot match it. The next-success half of the scenario holds either way.
