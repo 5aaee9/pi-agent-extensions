@@ -6,7 +6,7 @@
 
 ## What Changes
 
-- The command handler waits for the retried run to finish after starting it.
+- In print and JSON modes, the command handler waits for the retried run to finish after starting it. RPC and interactive modes are unchanged, so an RPC `prompt` still responds at once.
 
 ## Capabilities
 

@@ -124,6 +124,27 @@ function worldEnv(root: string, offline: boolean, extra: EnvExtra): NodeJS.Proce
   return { ...env, ...extra };
 }
 
+function mergeSettingsFile(agentDir: string, settings: Readonly<Record<string, unknown>>): void {
+  const target = join(agentDir, "settings.json");
+  const current = existsSync(target) ? readJsonRecord(target) : {};
+  writeFileSync(target, JSON.stringify({ ...current, ...settings }));
+}
+
+function piInstall(
+  name: string,
+  tarball: string,
+  cwd: string,
+  env: Readonly<NodeJS.ProcessEnv>,
+): void {
+  const result = spawnSync(
+    process.execPath,
+    [piBin(), "install", `npm:@indexyz/${name}@file:${tarball}`],
+    { cwd, encoding: "utf8", timeout: INSTALL_TIMEOUT_MS, env },
+  );
+  if (result.status !== 0)
+    throw new Error(`pi install failed for ${name}\n${result.stdout}\n${result.stderr}`);
+}
+
 export function createWorld(options: WorldOptions): World {
   const root = mkdtempSync(join(tmpdir(), "pi-e2e-"));
   assertNoNodeModulesAncestor(root);
@@ -136,21 +157,10 @@ export function createWorld(options: WorldOptions): World {
     rmSync(root, { recursive: true, force: true });
   };
   process.once("exit", remove);
-  const env = (extra: EnvExtra = {}): NodeJS.ProcessEnv =>
-    worldEnv(root, options.offline ?? true, extra);
+  const offline = options.offline ?? true;
+  const env = (extra: EnvExtra = {}): NodeJS.ProcessEnv => worldEnv(root, offline, extra);
   const install = (name: string, tarball = tarballFor(name)): void => {
-    const result = spawnSync(
-      process.execPath,
-      [piBin(), "install", `npm:@indexyz/${name}@file:${tarball}`],
-      {
-        cwd,
-        encoding: "utf8",
-        timeout: INSTALL_TIMEOUT_MS,
-        env: env({ npm_config_offline: "true", PI_OFFLINE: "1" }),
-      },
-    );
-    if (result.status !== 0)
-      throw new Error(`pi install failed for ${name}\n${result.stdout}\n${result.stderr}`);
+    piInstall(name, tarball, cwd, env({ npm_config_offline: "true", PI_OFFLINE: "1" }));
   };
   for (const name of options.packages) install(name);
   return {
@@ -168,10 +178,8 @@ export function createWorld(options: WorldOptions): World {
       writeFileSync(target, typeof content === "string" ? content : JSON.stringify(content));
       return target;
     },
-    mergeSettings(settings) {
-      const target = join(agentDir, "settings.json");
-      const current = existsSync(target) ? readJsonRecord(target) : {};
-      writeFileSync(target, JSON.stringify({ ...current, ...settings }));
+    mergeSettings: (settings) => {
+      mergeSettingsFile(agentDir, settings);
     },
     dispose() {
       process.removeListener("exit", remove);

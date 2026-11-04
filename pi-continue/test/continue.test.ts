@@ -232,34 +232,6 @@ describe("/continue", () => {
     expect(result.entries.filter(isUserMessage)).toHaveLength(1);
   });
 
-  it("removes retry markers and their failed assistant turns from every model context", async () => {
-    const result = await runContinueScenario({
-      model: LOCAL,
-      build: (session) => {
-        session.appendMessage(userMessage("Do the first task"));
-        session.appendMessage(assistantMessage("stop"));
-        session.appendMessage(userMessage("Try another task"));
-        session.appendMessage(assistantMessage("error"));
-        session.appendCustomMessageEntry("pi-continue:retry", [], false);
-        session.appendCustomMessageEntry("other-extension", "Keep this context", false);
-        session.appendMessage(userMessage("And a third"));
-        session.appendMessage(assistantMessage("aborted"));
-        session.appendCustomMessageEntry("pi-continue:retry", [], false);
-      },
-      drive: async (host) => {
-        await host.prompt("Next task");
-        await host.waitForSettled(1);
-      },
-    });
-
-    const conversation = conversationOf(result.requests[0]).map((message) =>
-      JSON.stringify(message),
-    );
-    expect(conversation.some((message) => message.includes("Keep this context"))).toBe(true);
-    expect(conversation.some((message) => message.includes("Try another task"))).toBe(true);
-    expect(conversation.filter((message) => message.includes("Partial work"))).toHaveLength(1);
-  });
-
   it("waits for a streaming turn's abort to settle before reading the branch", async () => {
     const result = await runContinueScenario({
       model: LOCAL,

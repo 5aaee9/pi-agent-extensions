@@ -107,6 +107,8 @@ export interface RpcClient {
   readonly extensionErrors: () => readonly RpcEvent[];
   /** Ends stdin and resolves with the exit code, killing the group on a hang. */
   readonly close: () => Promise<number | null>;
+  /** Kills the process group, leaving the session as a crash would. */
+  readonly kill: () => Promise<void>;
 }
 
 interface Waiter {
@@ -237,6 +239,10 @@ export function startRpc(
     ...commands,
     notifications: () => notificationsOf(log.events),
     extensionErrors: () => log.events.filter((event) => event["type"] === "extension_error"),
+    async kill() {
+      killGroup(child.pid);
+      await closed;
+    },
     async close() {
       child.stdin.end();
       const timer = setTimeout(() => {

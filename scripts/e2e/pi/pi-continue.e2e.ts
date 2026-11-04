@@ -1,7 +1,7 @@
 // `/continue` from the outside: a failed turn resumes in every mode a user or a
 // script can run it in, and only once the session is really idle.
 import assert from "node:assert/strict";
-import { copyFileSync } from "node:fs";
+import { copyFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
@@ -106,6 +106,47 @@ scenario(
 );
 
 scenario(
+  "a retry killed in flight can still be continued after a restart",
+  PACKAGES,
+  async ({ world, probeServer, print, rpc }) => {
+    world.mergeSettings({ retry: { enabled: false } });
+    const session = join(world.root, "killed.jsonl");
+    const args = ["--session", session, ...PROBE_ARGS];
+    const inFlight = Promise.withResolvers<void>();
+    const { promise: never } = Promise.withResolvers<void>();
+    let mode: "fail" | "hang" | "answer" = "fail";
+    const server = await probeServer((): ChatReply => {
+      if (mode === "fail") return FAILURE;
+      if (mode === "answer") return { text: RETRIED };
+      inFlight.resolve();
+      return {
+        gate: async (): Promise<void> => {
+          await never;
+        },
+      };
+    });
+    await print(["-p", ...args, "hello"]);
+    mode = "hang";
+    const crashed = rpc(args);
+    await crashed.send({ type: "prompt", message: "/continue" });
+    await inFlight.promise;
+    await crashed.kill();
+    const lastEntry = readFileSync(session, "utf8").trim().split("\n").at(-1) ?? "";
+    assert.ok(lastEntry.includes("pi-continue:retry"), "the crash leaves the marker last");
+    mode = "answer";
+    const restarted = rpc(args);
+    await restarted.prompt("/continue");
+    const retry = server.requests.at(-1);
+    assert.ok(retry !== undefined);
+    assert.deepEqual(rolesOf(retry), ["user"]);
+    assert.ok(
+      restarted.notifications().some((notice) => notice.message.startsWith("Retrying")),
+      JSON.stringify(restarted.notifications()),
+    );
+  },
+);
+
+scenario(
   "/continue waits out an in-flight idle compaction before retrying",
   { packages: ["pi-continue", "pi-idle-compression"] },
   async ({ world, probeServer, print, rpc }) => {
@@ -113,7 +154,13 @@ scenario(
     const { promise: release, resolve: releaseSummary } = Promise.withResolvers<void>();
     let failing = false;
     const server = await probeServer((request) => {
-      if (isSummaryRequest(request)) return { text: "summary", gate: async () => release };
+      if (isSummaryRequest(request))
+        return {
+          text: "summary",
+          gate: async (): Promise<void> => {
+            await release;
+          },
+        };
       if (failing) return { failure: { status: 500, message: "upstream down" } };
       return { text: RETRIED, promptTokens: LARGE_CONTEXT_TOKENS };
     });
