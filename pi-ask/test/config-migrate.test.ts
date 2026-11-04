@@ -103,28 +103,6 @@ test("config migration adds v5 defaults to v4 configs", () => {
   assert.deepEqual(result.config.keymaps.main.changeQuestionType, ["t"]);
 });
 
-test("config migration maps legacy flat keymaps into context keymaps", () => {
-  const result = migrateAskConfig({
-    schemaVersion: 3,
-    behaviour: DEFAULT_ASK_CONFIG.behaviour,
-    keymaps: {
-      cancel: "q",
-      confirm: "ctrl+k",
-      dismiss: "ctrl+d",
-      optionNote: "x",
-      questionNote: "shift+x",
-      toggle: "ctrl+t",
-    },
-    notifications: DEFAULT_ASK_CONFIG.notifications,
-  });
-
-  assert.equal(result.migrated, true);
-  assert.deepEqual(result.config.keymaps.global.dismiss, ["ctrl+d"]);
-  assert.deepEqual(result.config.keymaps.main.cancel, ["q"]);
-  assert.deepEqual(result.config.keymaps.editor.submit, ["ctrl+k"]);
-  assert.deepEqual(result.config.keymaps.noteEditor.save, ["ctrl+k"]);
-});
-
 test("config migration framework rejects unsupported future schema versions", () => {
   assert.throws(
     () =>

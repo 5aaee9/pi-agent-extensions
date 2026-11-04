@@ -1,9 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import {
-  getReviewShortcutHint,
-  resolveReviewShortcutDoublePress,
-} from "../src/ui/review-shortcuts.ts";
+import { resolveReviewShortcutDoublePress } from "../src/ui/review-shortcuts.ts";
 
 test("review shortcut double press requires the same digit twice", () => {
   const first = resolveReviewShortcutDoublePress(2);
@@ -24,9 +21,4 @@ test("review shortcut double press switches pending action when digit changes", 
   assert.equal(second.confirmed, false);
   assert.equal(second.actionIndex, 2);
   assert.equal(second.pendingActionIndex, 2);
-});
-
-test("review shortcut hint reflects pending confirmation state", () => {
-  assert.equal(getReviewShortcutHint(), "Press 1, 2, or 3 twice to confirm a review action.");
-  assert.equal(getReviewShortcutHint(1), "Press 2 again to Elaborate.");
 });

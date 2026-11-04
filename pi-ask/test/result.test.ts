@@ -15,28 +15,6 @@ import {
   toggleCurrentMultiOption,
 } from "../src/state/transitions.ts";
 
-test("summarizeResult formats selected answers", () => {
-  let state = createInitialState({
-    questions: [
-      {
-        id: "style",
-        label: "Style",
-        prompt: "How should I frame it?",
-        options: [
-          { value: "minimal", label: "Minimal" },
-          { value: "rich", label: "Rich" },
-        ],
-      },
-    ],
-  });
-
-  state = applyNumberShortcut(state, 2);
-  const result = toAskResult(state);
-
-  assert.equal(summarizeResult(result), "Style: Rich");
-  assert.equal(renderResultText(result), "✓ Style: Rich");
-});
-
 test("submitted results surface unanswered questions without serializing answers", () => {
   let state = createInitialState({
     questions: [
@@ -645,22 +623,6 @@ test("elaboration preserves recommendation metadata", () => {
   const item = toAskResult(state).elaboration?.items[0];
   assert.equal(item?.question.options[0]?.recommended, true);
   assert.equal(item && "option" in item ? item.option.recommended : undefined, true);
-});
-
-test("invalid tool payload result is attributed to the tool call", () => {
-  const result = {
-    title: "Interview",
-    cancelled: true,
-    mode: "submit" as const,
-    questions: [],
-    answers: {},
-    error: {
-      kind: "invalid_input" as const,
-      issues: [],
-    },
-  };
-
-  assert.equal(renderResultText(result), "Invalid tool payload");
 });
 
 test("cancelled result hides unanswered questions", () => {

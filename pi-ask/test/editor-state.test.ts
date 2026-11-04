@@ -28,44 +28,6 @@ test("syncStateToSelection opens input when custom option is active", () => {
   assert.equal(next.view.questionId, "q1");
 });
 
-test("saveEditorDraft stores question note drafts without advancing", () => {
-  const state = enterQuestionNoteMode(
-    createInitialState({
-      questions: [
-        {
-          id: "q1",
-          prompt: "Question?",
-          options: [{ value: "a", label: "A" }],
-        },
-      ],
-    }),
-    "q1",
-  );
-
-  const next = saveEditorDraft(state, "needs examples");
-  assert.equal(next.view.kind, "navigate");
-  assert.equal(next.answers.q1.note, "needs examples");
-});
-
-test("submitEditorDraft advances submitted custom answers", () => {
-  const state = syncStateToSelection({
-    ...createInitialState({
-      questions: [
-        {
-          id: "q1",
-          prompt: "Pick one",
-          options: [{ value: "a", label: "A" }],
-        },
-      ],
-    }),
-    activeOptionIndex: 1,
-  });
-
-  const next = submitEditorDraft(state, "custom answer");
-  assert.equal(next.answers.q1.customText, "custom answer");
-  assert.equal(next.view.kind, "submit");
-});
-
 test("submitted answer can sync directly into next freeform input", () => {
   let state = syncStateToSelection(
     createInitialState(

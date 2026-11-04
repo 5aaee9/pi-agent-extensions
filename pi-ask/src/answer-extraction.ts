@@ -64,8 +64,7 @@ export async function selectExtractionModel(
     if (!(model && isModelInScope(model, ctx.scopedModels))) {
       continue;
     }
-    const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-    if (auth.ok) {
+    if (await hasUsableCredentials(ctx.modelRegistry, model)) {
       return { model, usedFallback: false };
     }
   }
@@ -82,14 +81,26 @@ export async function selectExtractionModel(
     };
   }
 
-  const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
-  if (!auth.ok) {
+  if (!(await hasUsableCredentials(ctx.modelRegistry, ctx.model))) {
     return {
       error: `No auth for fallback chat model: ${ctx.model.provider}/${ctx.model.id}.`,
     };
   }
 
   return { model: ctx.model, usedFallback: true };
+}
+
+// getApiKeyAndHeaders answers ok for a provider with no credentials unless it requires an
+// auth header, so only hasConfiguredAuth tells whether a request can be sent at all.
+async function hasUsableCredentials(
+  registry: ExtensionContext["modelRegistry"],
+  model: Model<Api>,
+): Promise<boolean> {
+  if (!registry.hasConfiguredAuth(model)) {
+    return false;
+  }
+  const auth = await registry.getApiKeyAndHeaders(model);
+  return auth.ok;
 }
 
 function isModelInScope(
