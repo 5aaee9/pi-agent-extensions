@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.1
+
+### Patch Changes
+
+- Preserve entries proposed by other extensions when automatic boundary compaction appends a summary. Verify against Pi 1.5.0.
+
 ## 0.3.0
 
 ### Minor Changes

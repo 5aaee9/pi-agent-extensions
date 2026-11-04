@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.0
+
+### Minor Changes
+
+- Require Pi 1.5.0 and restore Ollama tool declarations and current system prompt updates. Forward raw Ollama stream events to request observers and align provider types with the host.
+
 ## 0.2.0
 
 ### Minor Changes

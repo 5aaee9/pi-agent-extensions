@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.44
+
+### Patch Changes
+
+- Run ModelTrace probes with the current Pi host, preserve thinking off, and cancel bounded probe processes when the session closes. Discard failed or truncated probe output instead of attributing incomplete responses.
+
 ## 0.1.43 - 2026-10-11
 
 - Synchronize the package version with the provider packages for coordinated workspace releases.

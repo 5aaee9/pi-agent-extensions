@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.1
+
+### Patch Changes
+
+- Cancel idle compaction timers when native compaction starts, including failed or cancelled attempts, and document interaction with idle cache warming. Verify against Pi 1.5.0.
+
 ## 0.1.0
 
 ### Minor Changes
