@@ -10,7 +10,7 @@ Each scenario's proof that it detects its failure: the regression applied to a s
 
 - `npm run test:e2e`: 12 of 12 plugins pass, DSH included. Eight Pi load smoke tests pass; `pi-provider-sub2api`, `pi-custom-provider`, and `pi-skill` list no commands unconfigured, as expected.
 - `npm run release:gate -- --base origin/main --head HEAD`: passes; every DSH package reports no published changes.
-- `npm run check` on this machine it fails only on four `dsh-autocompact/test/client-plane.test.ts` browser cases, which fail the same way on untouched `main`, so they are local to this machine and unrelated to this change.
+- `npm run check` on this machine fails only on four `dsh-autocompact/test/client-plane.test.ts` browser cases, which fail the same way on untouched `main`, so they are local to this machine and unrelated to this change.
 
 ## Found by the implementation review and CI
 
