@@ -20,6 +20,7 @@ const LARGE_PROMPT = "x ".repeat(100_000);
 const TOOL_OUTPUT_CHARS = 8000;
 const KEEP_RECENT_TOKENS = 1000;
 const PROBE_ENTRY = "boundary-probe";
+const FIRST_PROMPT_MARKER = "FIRST-PROMPT-MARKER";
 /** An extension Pi loads before installed packages, proposing an entry at every boundary. */
 const PRECEDING_EXTENSION = `export default function (pi) {
   pi.on("turn_end", (event) => ({
@@ -208,7 +209,7 @@ scenario(
     );
     const session = join(world.root, "print.jsonl");
     const args = ["-p", "--session", session, ...PROBE_ARGS];
-    await print([...args, world.largePromptArg(`first ${LARGE_PROMPT}`)]);
+    await print([...args, world.largePromptArg(`${FIRST_PROMPT_MARKER} ${LARGE_PROMPT}`)]);
     promptTokens = OVER_LIMIT_TOKENS;
     const crossed = await print([...args, world.largePromptArg(LARGE_PROMPT)]);
     assert.equal(crossed.code, 0, crossed.stderr);
@@ -225,6 +226,6 @@ scenario(
     assert.ok(next !== undefined);
     const sent = messagesOf(next);
     assert.ok(sent.some((message) => message.text.includes(SUMMARY)));
-    assert.ok(!sent.some((message) => message.text.startsWith("first")));
+    assert.ok(!sent.some((message) => message.text.includes(FIRST_PROMPT_MARKER)));
   },
 );

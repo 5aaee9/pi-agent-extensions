@@ -197,13 +197,14 @@ function piInstall(
 }
 
 export function createWorld(options: WorldOptions): World {
+  assertCleanTemporaryRoot(tmpdir());
   const root = mkdtempSync(join(tmpdir(), "pi-e2e-"));
-  assertCleanTemporaryRoot(root);
   const agentDir = join(root, "agent");
   const sessionDir = join(root, "sessions");
   const cwd = join(root, "cwd");
   for (const dir of [agentDir, sessionDir, join(root, "home"), cwd])
     mkdirSync(dir, { recursive: true });
+  let promptFiles = 0;
   const remove = (): void => {
     rmSync(root, { recursive: true, force: true });
   };
@@ -230,7 +231,8 @@ export function createWorld(options: WorldOptions): World {
       return target;
     },
     largePromptArg(text) {
-      const path = join(root, `prompt-${String(text.length)}.txt`);
+      promptFiles += 1;
+      const path = join(root, `prompt-${String(promptFiles)}.txt`);
       writeFileSync(path, text);
       return `@${path}`;
     },

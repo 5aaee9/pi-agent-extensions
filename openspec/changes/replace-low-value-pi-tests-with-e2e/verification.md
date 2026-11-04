@@ -24,6 +24,8 @@ Each scenario's proof that it detects its failure: the regression applied to a s
 | Custom-provider refresh under offline had no scenario                                                                                      | The command gated on offline                                                | Fails: "the explicit refresh must reach upstream"                                           |
 | A temporary root under a project would load its skills                                                                                     | Reviewer's run with `TMPDIR` inside the checkout                            | The harness refuses it, naming the marker                                                   |
 
+The `@file` move itself broke an assertion, found in the second review round: Pi wraps a file's content in `<file>`, so A2's `startsWith("first")` could no longer fail. It now looks for a marker inside the text; a boundary that keeps all history fails it (`firstKeptEntryId` set to the earliest entry). A refused temporary root also left an empty directory; the check now runs before the directory exists, confirmed with `TMPDIR` under a project: refused, nothing left behind.
+
 **Abort is guarded three times, so a single regression cannot show.** Removing the outcome check, or the `ctx.signal` check, or both, still sends no summary, because the summarizer's request is bound to the same signal. Only removing the signal from both places fails "aborting a running tool over the threshold...", which proves the scenario reaches the code. Pi reports the aborted tool's turn as `completed` with the signal aborted, then a second `turn_end` as `error`, and an abort mid-stream as `aborted`.
 
 ## Upgrade rehearsal
