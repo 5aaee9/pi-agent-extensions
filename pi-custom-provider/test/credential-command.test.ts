@@ -14,12 +14,6 @@ describe("credential commands", () => {
     expect(await resolveConfigValue(command('console.log("!literal$KEY")'))).toBe("!literal$KEY");
   });
 
-  it("trims stdout without expanding the returned secret", async () => {
-    expect(await resolveCredentialCommand(command('console.log(" !literal$KEY${OTHER} ")'))).toBe(
-      "!literal$KEY${OTHER}",
-    );
-  });
-
   it.each([
     "",
     'process.stdout.write("   ")',

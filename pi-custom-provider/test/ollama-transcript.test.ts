@@ -203,7 +203,15 @@ describe("Ollama normalized transcripts", () => {
       if (event.type === "text_delta") order.push("delta");
       if (event.type === "done") order.push("done");
     }
-    expect(observed).toBe(2);
+    // Every step ran, so the ordering below compares real positions.
+    expect(order.toSorted()).toEqual([
+      "delta",
+      "done",
+      "observed-1",
+      "observed-2",
+      "observing-1",
+      "observing-2",
+    ]);
     expect(order.indexOf("observed-1")).toBeLessThan(order.indexOf("delta"));
     expect(order.indexOf("observed-1")).toBeLessThan(order.indexOf("observing-2"));
     expect(order.indexOf("observed-2")).toBeLessThan(order.indexOf("done"));

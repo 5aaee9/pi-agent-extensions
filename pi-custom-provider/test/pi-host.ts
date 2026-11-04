@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { findPackageJSON } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -20,9 +22,12 @@ import {
  * registry, command context, and provider-header dispatch are the host's own.
  */
 export const extensionPath = fileURLToPath(new URL("../index.ts", import.meta.url));
+/** The published bin, whose module resolution is the one users get. */
+const hostManifest = findPackageJSON("@earendil-works/pi-coding-agent", import.meta.url);
+if (hostManifest === undefined) throw new Error("Pi is not installed; run npm install");
 const piCliPath = join(
-  dirname(fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"))),
-  "cli.js",
+  dirname(hostManifest),
+  (JSON.parse(readFileSync(hostManifest, "utf8")) as { bin: { pi: string } }).bin.pi,
 );
 
 export interface ProviderRegistration {

@@ -5,8 +5,9 @@
 // Pi's extension module mapping exposes selected public entrypoints,
 // including transcript helpers, but the `api/*` submodules cannot be
 // imported at extension runtime (static, dynamic, or `import.meta.resolve` all
-// fail under the compiled pi binary). Keep this file aligned with upstream when
-// bumping the pinned pi-ai version.
+// fail under the compiled pi binary). `test/vendored-drift.test.ts` compares this
+// file with the pinned host's on the same fixtures, so a pin bump that changes
+// upstream fails there until it is ported here.
 // ---------------------------------------------------------------------------
 
 import type {
@@ -34,7 +35,7 @@ import { clampThinkingLevel, getSystemMessageText } from "@earendil-works/pi-ai"
 // utils/estimate.js
 // ---------------------------------------------------------------------------
 
-const CHARS_PER_TOKEN = 4;
+const CHARS_PER_TOKEN = 3.5;
 const ESTIMATED_IMAGE_CHARS = 4800;
 
 function calculateContextTokens(usage: Usage): number {
@@ -167,20 +168,49 @@ export function clampMaxTokensToContext(
   return Math.min(maxTokens, Math.max(MIN_MAX_TOKENS, available));
 }
 
+function resolveSamplingParams(
+  model: Model<Api>,
+  thinkingLevel: NonNullable<SimpleStreamOptions["reasoning"]> | "off",
+  requestParams: StreamOptions["samplingParams"],
+): StreamOptions["samplingParams"] {
+  const effectiveThinkingLevel = clampThinkingLevel(model, thinkingLevel);
+  const thinkingLevelParams = model.samplingParamsByThinkingLevel?.[effectiveThinkingLevel];
+  return model.samplingParams || thinkingLevelParams || requestParams
+    ? { ...model.samplingParams, ...thinkingLevelParams, ...requestParams }
+    : undefined;
+}
+
 export function buildBaseOptions(
   model: Model<Api>,
   context: TranscriptContext,
   options?: SimpleStreamOptions,
 ): StreamOptions {
-  const level = clampThinkingLevel(model, options?.reasoning ?? "off");
   return {
-    ...options,
-    samplingParams: {
-      ...model.samplingParams,
-      ...model.samplingParamsByThinkingLevel?.[level],
-      ...options?.samplingParams,
-    },
+    temperature: options?.temperature,
+    samplingParams: resolveSamplingParams(
+      model,
+      options?.reasoning ?? "off",
+      options?.samplingParams,
+    ),
     maxTokens: clampMaxTokensToContext(model, context, options?.maxTokens ?? model.maxTokens),
+    signal: options?.signal,
+    telemetry: options?.telemetry,
+    apiKey: options?.apiKey,
+    fetch: options?.fetch,
+    transport: options?.transport,
+    cacheRetention: options?.cacheRetention,
+    sessionId: options?.sessionId,
+    headers: options?.headers,
+    identity: options?.identity,
+    onPayload: options?.onPayload,
+    onResponse: options?.onResponse,
+    onProviderStreamEvent: options?.onProviderStreamEvent,
+    timeoutMs: options?.timeoutMs,
+    websocketConnectTimeoutMs: options?.websocketConnectTimeoutMs,
+    maxRetries: options?.maxRetries,
+    maxRetryDelayMs: options?.maxRetryDelayMs,
+    metadata: options?.metadata,
+    env: options?.env,
   };
 }
 
@@ -274,23 +304,15 @@ export function transformMessages(
       const transformedContent = assistantMsg.content.flatMap(
         (block): (TextContent | ThinkingContent | ToolCall)[] => {
           if (block.type === "thinking") {
-            // Redacted thinking is opaque encrypted content, only valid for the same model.
-            // Drop it for cross-model to avoid API errors.
-            if (block.redacted) {
-              return isSameModel ? [block] : [];
-            }
-            // For same model: keep thinking blocks with signatures (needed for replay)
-            // even if the thinking text is empty (OpenAI encrypted reasoning)
-            if (isSameModel && block.thinkingSignature) return [block];
-            // Skip empty thinking blocks, convert others to plain text
+            // Thinking from another model is dropped. Signatures and encrypted reasoning are
+            // only valid for the model that produced them, and sending readable thinking as
+            // plain text makes the new model treat it as part of the visible reply.
+            if (!isSameModel) return [];
+            // Keep redacted and signed blocks even if the thinking text is empty
+            // (OpenAI encrypted reasoning); they are needed for replay.
+            if (block.redacted || block.thinkingSignature) return [block];
             if (!block.thinking || block.thinking.trim() === "") return [];
-            if (isSameModel) return [block];
-            return [
-              {
-                type: "text" as const,
-                text: block.thinking,
-              },
-            ];
+            return [block];
           }
           if (block.type === "text") {
             if (isSameModel) return [block];

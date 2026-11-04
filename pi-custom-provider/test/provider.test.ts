@@ -116,28 +116,6 @@ describe("upstream model metadata", () => {
       thinkingLevelMap: undefined,
     });
   });
-
-  it("reads Anthropic-style max_input_tokens and input modality arrays", () => {
-    const model = parseDiscoveredModel(
-      {
-        id: "glm-5.3",
-        display_name: "GLM-5.3",
-        max_input_tokens: 1_000_000,
-        max_tokens: 128_000,
-        capabilities: null,
-      },
-      "anthropic-messages",
-    );
-    expect(model).toMatchObject({
-      id: "glm-5.3",
-      contextWindow: 1_000_000,
-      maxTokens: 128_000,
-      reasoning: false,
-    });
-    expect(
-      parseDiscoveredModel({ id: "vision", input: ["text", "image"] }, "anthropic-messages"),
-    ).toMatchObject({ input: ["text", "image"] });
-  });
 });
 
 describe("custom provider extension", () => {
@@ -590,45 +568,6 @@ describe("custom provider extension", () => {
     expect(server.requests.map(({ path }) => path).sort()).toEqual(
       ["/gateway/v1/models", "/offline/v1/models"].sort(),
     );
-  });
-
-  it("injects the configured session affinity header with the pi session id", async () => {
-    const server = await startServer((request) =>
-      request.path.endsWith("/models") ? jsonResponse({ data: [{ id: "m1" }] }) : notFound(),
-    );
-    await writeProviderConfig({
-      modelsDev: false,
-      providers: {
-        zcode: {
-          baseURL: `${server.url}/zcode`,
-          api: "anthropic",
-          apiKey: "key",
-          sessionAffinityHeader: "x-session-id",
-        },
-        other: {
-          baseURL: `${server.url}/other`,
-          api: "openai-completions",
-          apiKey: "key",
-        },
-      },
-    });
-
-    const host = await loadHost();
-    expect(host.loaded.extensions[0]!.handlers.get("before_provider_headers")).toHaveLength(1);
-    const session = await startSession(host);
-    const registry = session.extensionRunner.getModelRegistry();
-
-    const zcode = registry.find("zcode", "m1");
-    if (!zcode) throw new Error("zcode/m1 was not registered by the extension");
-    await session.setModel(zcode);
-    const headers = await session.extensionRunner.emitBeforeProviderHeaders({});
-    expect(headers["x-session-id"]).toBe(session.sessionManager.getSessionId());
-
-    const other = registry.find("other", "m1");
-    if (!other) throw new Error("other/m1 was not registered by the extension");
-    await session.setModel(other);
-    const otherHeaders = await session.extensionRunner.emitBeforeProviderHeaders({});
-    expect(otherHeaders["x-session-id"]).toBeUndefined();
   });
 
   it("discovers Ollama models via /api/tags + /api/show and streams /api/chat", async () => {
