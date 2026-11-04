@@ -107,33 +107,67 @@ function parseRpcResponse(output: string): JsonRecord | undefined {
     })
     .find((value) => value["type"] === "response" && value["command"] === "get_commands");
 }
+function packAndInstallPi(
+  pkg: PluginPackage,
+  pi: string,
+  tempRoot: string,
+  environment: Readonly<NodeJS.ProcessEnv>,
+  timeoutMs: number,
+): void {
+  const packDir = join(tempRoot, "pack");
+  mkdirSync(packDir, { recursive: true });
+  const pack = runCommand(
+    "npm",
+    ["pack", "--ignore-scripts", "--pack-destination", packDir, "--json"],
+    new CommandOptions(pkg.dir, timeoutMs, environment),
+  );
+  if (pack.code !== 0 || pack.timedOut) throw new Error(commandFailure(pack));
+  const tarball = readdirSync(packDir).find((entry) => entry.endsWith(".tgz"));
+  if (tarball === undefined)
+    throw new Error(`npm pack produced no tarball\n${shorten(pack.stdout)}`);
+  const install = runCommand(
+    process.execPath,
+    [pi, "install", `npm:${pkg.name}@file:${join(packDir, tarball)}`],
+    new CommandOptions(join(tempRoot, "cwd"), timeoutMs, {
+      ...environment,
+      npm_config_offline: "true",
+    }),
+  );
+  if (install.code !== 0 || install.timedOut) throw new Error(commandFailure(install));
+}
 function checkPi(pkg: PluginPackage, timeoutMs: number): void {
-  const configDir = mkdtempSync(join(tmpdir(), "pi-e2e-config-"));
-  const sessionDir = mkdtempSync(join(tmpdir(), "pi-e2e-session-"));
+  const pi = piBinary(pkg.dir);
+  const tempRoot = mkdtempSync(join(tmpdir(), "pi-e2e-load-"));
+  for (const dir of ["agent", "home", "cwd"]) mkdirSync(join(tempRoot, dir), { recursive: true });
+  const environment = {
+    ...npmEnvironment(),
+    HOME: join(tempRoot, "home"),
+    PI_CODING_AGENT_DIR: join(tempRoot, "agent"),
+    PI_OFFLINE: "1",
+    npm_config_cache: join(tempRoot, "npm-cache"),
+    npm_config_logs_dir: join(tempRoot, "npm-logs"),
+  };
   try {
-    const args = [
-      piBinary(pkg.dir),
-      "--mode",
-      "rpc",
-      "--no-session",
-      "--session-dir",
-      sessionDir,
-      "--no-skills",
-      "--no-prompt-templates",
-      "--no-themes",
-      "--no-context-files",
-      "--approve",
-      "--offline",
-      "--no-builtin-tools",
-      ...pkg.extensions.flatMap((extension) => ["--extension", resolve(pkg.dir, extension)]),
-    ];
+    packAndInstallPi(pkg, pi, tempRoot, environment, timeoutMs);
     const result = runCommand(
       process.execPath,
-      args,
+      [
+        pi,
+        "--mode",
+        "rpc",
+        "--no-session",
+        "--no-skills",
+        "--no-prompt-templates",
+        "--no-themes",
+        "--no-context-files",
+        "--approve",
+        "--offline",
+        "--no-builtin-tools",
+      ],
       new CommandOptions(
-        pkg.dir,
+        join(tempRoot, "cwd"),
         timeoutMs,
-        { ...npmEnvironment(), PI_CODING_AGENT_DIR: configDir, PI_OFFLINE: "1" },
+        environment,
         '{"type":"get_commands"}\n',
       ),
     );
@@ -143,8 +177,7 @@ function checkPi(pkg: PluginPackage, timeoutMs: number): void {
         `Pi RPC did not return a successful get_commands response\n${commandFailure(result)}`,
       );
   } finally {
-    rmSync(configDir, { recursive: true, force: true });
-    rmSync(sessionDir, { recursive: true, force: true });
+    rmSync(tempRoot, { recursive: true, force: true });
   }
 }
 function checkDsh(pkg: PluginPackage, timeoutMs: number): void {
@@ -208,10 +241,15 @@ function checkPackage(pkg: PluginPackage, timeoutMs: number): PackageResult {
     return { package: pkg, passed: false, durationMs };
   }
 }
-function options(): { readonly packageName: string | undefined; readonly timeoutMs: number } {
+function options(): {
+  readonly packageName: string | undefined;
+  readonly kind: PluginPackage["kind"] | undefined;
+  readonly timeoutMs: number;
+} {
   const parsed = parseArgs({
     options: {
       package: { type: "string" },
+      kind: { type: "string" },
       "timeout-ms": { type: "string", default: String(DEFAULT_TIMEOUT_MS) },
     },
     strict: true,
@@ -219,19 +257,23 @@ function options(): { readonly packageName: string | undefined; readonly timeout
   const timeoutMs = Number(parsed.values["timeout-ms"]);
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1)
     throw new Error("--timeout-ms must be a positive integer");
-  return { packageName: parsed.values.package, timeoutMs };
+  const kind = parsed.values.kind;
+  if (kind !== undefined && kind !== "pi" && kind !== "dsh")
+    throw new Error("--kind must be pi or dsh");
+  return { packageName: parsed.values.package, kind, timeoutMs };
 }
 function main(): void {
   const selected = options();
   const discovered = discoverPackages();
-  const packages =
-    selected.packageName === undefined
-      ? discovered
-      : discovered.filter((pkg) => pkg.name === selected.packageName);
+  const packages = discovered.filter(
+    (pkg) =>
+      (selected.packageName === undefined || pkg.name === selected.packageName) &&
+      (selected.kind === undefined || pkg.kind === selected.kind),
+  );
   if (packages.length === 0)
     throw new Error(
       selected.packageName === undefined
-        ? "no Pi or DSH packages discovered"
+        ? `no ${selected.kind ?? "Pi or DSH"} packages discovered`
         : `package not discovered: ${selected.packageName}`,
     );
   console.log(

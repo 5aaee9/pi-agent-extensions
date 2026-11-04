@@ -35,7 +35,7 @@ Do not use `@ts-ignore` or `@ts-expect-error`, and do not weaken a package's `ts
 - Host packages (`@earendil-works/pi-coding-agent`, `@earendil-works/pi-ai`, `@earendil-works/pi-tui`): `peerDependencies` with `"*"`, plus an exact pin in the package's `devDependencies` for types and tests. Never `dependencies`, never bundled.
 - Each package pins its own Pi version. Keep a package's `@earendil-works/*` dev dependencies on one version. Raise a package's pin when it needs a newer host API, and say in its README which Pi version it requires (as `pi-autocompact` does); the upgrade procedure is in `docs/workflow.md`.
 - Prefer Node built-ins and the host packages before adding a dependency. Add a runtime dependency only when it removes real complexity, add it to the package (never the root), and run `npm install` so `package-lock.json` updates.
-- Per-package dev tooling (`typescript`, `vitest`, `@types/node`) lives in each package's `devDependencies`; the root `devDependencies` hold only repository tooling (oxlint, oxfmt, changesets).
+- Per-package dev tooling (`typescript`, `vitest`, `@types/node`) lives in each package's `devDependencies`; the root `devDependencies` hold only repository tooling (oxlint, oxfmt, changesets, and `node-pty` for the Pi E2E suite's real terminals).
 
 ## Extension design
 

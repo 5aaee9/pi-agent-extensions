@@ -259,7 +259,16 @@ Every change ends with all of these, run from the repository root:
    npm run test:e2e
    ```
 
-   It resolves the Pi host from each package, rejects an installed version that differs from its exact development pin with an `npm install` hint, and runs Pi packages through RPC with `PI_OFFLINE=1` and isolated config/session directories. DSH packages are built, packed, installed into a temporary directory without peer resolution, and checked with their declared `release.smoke` script. The run makes no model or business API calls, applies a 120-second per-package timeout by default, continues after an individual failure, and exits non-zero after printing the full summary. Use `npm run test:e2e -- --package @indexyz/pi-skill` to focus on one package or `--timeout-ms <milliseconds>` to adjust the local timeout. Failure sections include the command, exit status, stdout, and stderr.
+   It resolves the Pi host from each package, rejects an installed version that differs from its exact development pin with an `npm install` hint, packs each Pi package, installs the tarball with `pi install` into an isolated agent directory (so no host package sits beside it, as for a user), and loads it through RPC with `PI_OFFLINE=1`. A package that imports a file its `files` allowlist does not ship, or a host path Pi does not map, fails here. DSH packages are built, packed, installed into a temporary directory without peer resolution, and checked with their declared `release.smoke` script. The run makes no model or business API calls, applies a 120-second per-package timeout by default, continues after an individual failure, and exits non-zero after printing the full summary. Use `npm run test:e2e -- --package @indexyz/pi-skill` to focus on one package, `--kind pi` to skip the dsh packages, or `--timeout-ms <milliseconds>` to adjust the local timeout. Failure sections include the command, exit status, stdout, and stderr.
+
+   Pi packages also have scenarios that exercise them as users run them, in `scripts/e2e/pi/`:
+
+   ```bash
+   npm run test:e2e:pi
+   node --test scripts/e2e/pi/pi-skill.e2e.ts
+   ```
+
+   Each scenario installs the packed tarball and drives the published `pi` bin over RPC, print, JSON, or a real terminal against local protocol servers, with no credential. A scenario must name the failure it guards and be seen detecting it once (`openspec/specs/pi-package-e2e/spec.md`). The suite does not touch `dsh-*` packages.
 
    A `dsh-<topic>/` package has no Pi load to run. Its equivalent is the script its manifest declares, which the release engine also runs against the packed and installed tarball:
 
@@ -286,7 +295,7 @@ A running Pi session keeps the extension code it loaded at startup. After editin
 
 ## Remove an extension
 
-Delete `<name>/` (its OpenSpec root goes with it), remove it from the root `package.json` `workspaces` and `pi.extensions`, remove its row from the root README, delete any pending intent naming it from `.changeset/`, run `npm install` to update the lockfile, and commit as `chore(repo): remove <name>`. Versions already on npm stay there; never unpublish them.
+Delete `<name>/` (its OpenSpec root goes with it), remove it from the root `package.json` `workspaces` and `pi.extensions`, delete its `scripts/e2e/pi/<name>.e2e.ts` and its entry in `scripts/e2e/pi/registrations.ts`, remove its row from the root README, delete any pending intent naming it from `.changeset/`, run `npm install` to update the lockfile, and commit as `chore(repo): remove <name>`. Versions already on npm stay there; never unpublish them.
 
 ## Release
 

@@ -44,6 +44,9 @@ jobs:
       - name: Load every plugin through its host
         run: npm run test:e2e
 
+      - name: Exercise installed Pi packages end to end
+        run: npm run test:e2e:pi
+
       - name: Check release impact
         if: github.event_name == 'pull_request'
         env:
