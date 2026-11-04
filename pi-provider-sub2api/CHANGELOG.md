@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.1
+
+### Patch Changes
+
+- Under `--offline` or `PI_OFFLINE=1` the extension no longer sends discovery, billing, or usage requests by itself. Cached models stay available, and model requests and `/sub2api-refresh` still reach the relay.
+- `/reload` no longer keeps a previous registration: after an API switch only the current token is sent through the right handler, and a relay removed from `sub2api.json` is unlisted and receives nothing. `/sub2api-refresh` also drops the Codex handler when a relay's last Codex model disappears.
+- A relayed `stream_read_error` is now retried by Pi instead of ending the turn after one attempt. The README's retry and compaction timeout statements are corrected.
+
 ## 0.5.0
 
 ### Minor Changes

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.44
+
+### Patch Changes
+
+- A `$skill` typed while the model is answering now arrives together with your words, instead of taking a model turn of its own first.
+- `$skill` now tells the model that a skill's references are relative to the skill's own directory, matching `/skill:name`. It previously named the agent directory, which pointed relative references at the wrong files.
+
 ## 0.1.43 - 2026-10-11
 
 - Synchronize the package version with the provider packages for coordinated workspace releases.
