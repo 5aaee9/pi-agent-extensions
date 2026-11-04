@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.1
+
+### Patch Changes
+
+- A `!command` key with `authHeader: "authorization"` now goes through Pi's own authorization handling, so the command no longer runs a second time for each request.
+- Ollama requests no longer send another model's thinking as visible assistant text after a model switch, and token limits now use the same estimate as Pi.
+- `--offline` and `PI_OFFLINE=1` now stop the extension's automatic model discovery, models.dev fetches, and background refreshes: it registers cached models or `fallbackModels` instead. `/refresh-custom-provider-models` still works.
+
 ## 0.3.0
 
 ### Minor Changes

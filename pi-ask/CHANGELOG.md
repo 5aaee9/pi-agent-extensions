@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.2
+
+### Patch Changes
+
+- `/answer` now falls back to the chat model when the configured extraction models have no credentials, where it previously failed with `Provider is not configured`. The settings overlay and configuration docs name `@indexyz/pi-ask`.
+- With auto-submit on, answering with a number key now submits the form, as confirming with Enter already did.
+
 ## 0.2.1
 
 ### Patch Changes

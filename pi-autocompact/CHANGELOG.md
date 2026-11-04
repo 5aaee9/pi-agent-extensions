@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.2
+
+### Patch Changes
+
+- Automatic boundary summaries now send the session's reasoning effort and the model's output limit, matching a native compaction's request.
+- A failed or aborted turn no longer sends a paid summary request; the next successful turn compacts instead.
+
 ## 0.3.1
 
 ### Patch Changes

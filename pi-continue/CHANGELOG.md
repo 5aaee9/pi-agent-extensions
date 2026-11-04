@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.44
+
+### Patch Changes
+
+- `/continue` now retries the turn in print and JSON modes, where it previously exited without sending a model request.
+- Simplify how `/continue` cleans up after itself. A retry sends the same request as before.
+- `/continue` now reports "No model selected" instead of retrying with Pi's placeholder `unknown/unknown` model when no model is selected.
+
 ## 0.1.43 - 2026-10-11
 
 - Synchronize the package version with the provider packages for coordinated workspace releases.
