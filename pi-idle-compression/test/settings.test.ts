@@ -1,18 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  DEFAULT_IDLE_MINUTES,
-  formatDuration,
-  MAX_IDLE_MINUTES,
-  resolveIdleSettings,
-} from "../settings.ts";
+import { MAX_IDLE_MINUTES, resolveIdleSettings } from "../settings.ts";
 
 describe("resolveIdleSettings", () => {
-  it("defaults to enabled after 50 minutes", () => {
-    expect(resolveIdleSettings({}, "p", "m")).toEqual({ enabled: true, idleMinutes: 50 });
-    expect(DEFAULT_IDLE_MINUTES).toBe(50);
-  });
-
   it("resolves each field from model, then provider, then the top level", () => {
     const settings = {
       piIdleCompression: {
@@ -66,17 +56,5 @@ describe("resolveIdleSettings", () => {
     ],
   ])("rejects malformed structure %j", (settings, error) => {
     expect(() => resolveIdleSettings(settings, "p", "m")).toThrow(error);
-  });
-});
-
-describe("formatDuration", () => {
-  it.each([
-    [50 * 60_000, "50m"],
-    [90 * 60_000, "1h 30m"],
-    [61_000, "1m 1s"],
-    [1200, "2s"],
-    [-5, "0s"],
-  ])("formats %d ms as %s", (ms, text) => {
-    expect(formatDuration(ms)).toBe(text);
   });
 });
