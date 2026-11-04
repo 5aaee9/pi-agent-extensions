@@ -55,7 +55,7 @@ autocomplete popup listing every loaded skill with its description, just like
 - Each context message uses the same `<skill name="…" location="…">` format pi emits for `/skill:name`, so relative references inside the skill keep working.
 - The original user prompt stays readable instead of being replaced by the full skill bodies.
 - A token that matches no loaded skill is left untouched, so `$HOME` or `$9.99` in prose is safe.
-- Write `$$name` for a literal `$name`.
+- `$$name` does not invoke a skill. The prompt is never rewritten, so the model receives `$$name` with both dollar signs.
 
 ## Development
 

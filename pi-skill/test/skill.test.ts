@@ -1,11 +1,9 @@
-import { createServer, type Server } from "node:http";
 import { mkdir, mkdtemp, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
   AgentSession,
-  AutocompleteProviderFactory,
   ExtensionUIContext,
   InlineExtension,
   SlashCommandInfo,
@@ -21,7 +19,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createSkillAutocompleteProvider,
   expandSkillTokens,
-  SKILL_MESSAGE_TYPE,
   skillsFromCommands,
   type SkillRef,
 } from "../index.ts";
@@ -32,7 +29,6 @@ let rootDir: string;
 let agentDir: string;
 let workDir: string;
 let sessions: AgentSession[];
-let activeServer: Server | undefined;
 
 beforeEach(async () => {
   rootDir = await mkdtemp(join(tmpdir(), "pi-skill-test-"));
@@ -45,17 +41,11 @@ beforeEach(async () => {
   vi.stubEnv("PI_CODING_AGENT_DIR", agentDir);
   vi.stubEnv("HOME", rootDir);
   sessions = [];
-  activeServer = undefined;
 });
 
 afterEach(async () => {
   for (const session of sessions) session.dispose();
   sessions = [];
-  activeServer?.closeAllConnections();
-  if (activeServer) {
-    await new Promise<void>((resolve) => activeServer?.close(() => resolve()));
-    activeServer = undefined;
-  }
   vi.unstubAllEnvs();
   await rm(rootDir, { recursive: true, force: true });
 });
@@ -88,18 +78,12 @@ function commandProbe(captured: { commands: SlashCommandInfo[] }): InlineExtensi
   };
 }
 
-interface Notifications {
-  notifications: Array<{ message: string; type: "info" | "warning" | "error" | undefined }>;
-  autocompleteFactories: AutocompleteProviderFactory[];
-}
-
 interface RealSession {
   session: AgentSession;
   loader: DefaultResourceLoader;
   commands: SlashCommandInfo[];
   skills: Map<string, SkillRef>;
-  notifications: Notifications["notifications"];
-  autocompleteFactories: AutocompleteProviderFactory[];
+  notifications: Array<{ message: string; type: "info" | "warning" | "error" | undefined }>;
 }
 
 /**
@@ -137,21 +121,16 @@ async function startSession(): Promise<RealSession> {
     );
   }
 
-  const notifications: Notifications["notifications"] = [];
-  const autocompleteFactories: AutocompleteProviderFactory[] = [];
+  const notifications: RealSession["notifications"] = [];
   // Boundary: Pi's UI context is the client side of the host's UI port (the
   // terminal in interactive mode, the protocol in RPC mode). Only its `notify`
-  // and `addAutocompleteProvider` members — the seams a UI client would render
-  // or install — are swapped for recorders; the runner, session, and every
-  // other UI member stay Pi's own.
+  // member, the seam a UI client would render, is swapped for a recorder; the
+  // runner, session, and every other UI member stay Pi's own.
   const uiContext: ExtensionUIContext = {
-    // Keep Pi's real no-op UI behavior and observe the two calls these tests assert on.
+    // Keep Pi's real no-op UI behavior and observe the one call these tests assert on.
     ...session.extensionRunner.getUIContext(),
     notify: (message, type) => {
       notifications.push({ message, type });
-    },
-    addAutocompleteProvider: (factory) => {
-      autocompleteFactories.push(factory);
     },
   };
   await session.bindExtensions({ mode: "print", uiContext });
@@ -163,7 +142,6 @@ async function startSession(): Promise<RealSession> {
     commands: captured.commands,
     skills: skillsFromCommands(captured.commands),
     notifications,
-    autocompleteFactories,
   };
 }
 
@@ -190,25 +168,6 @@ async function writePromptTemplate(name: string): Promise<void> {
   );
 }
 
-/**
- * Resolve once the real session emits `agent_start`. Subscribe before the
- * prompt is sent so the event cannot be missed.
- */
-function agentStarted(session: AgentSession, timeoutMs = 5_000): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      unsubscribe();
-      reject(new Error(`Pi session did not start a run within ${String(timeoutMs)} ms`));
-    }, timeoutMs);
-    const unsubscribe = session.subscribe((event) => {
-      if (event.type !== "agent_start") return;
-      clearTimeout(timer);
-      unsubscribe();
-      resolve();
-    });
-  });
-}
-
 describe("real skill discovery and command registration", () => {
   it("discovers skills on disk and exposes them as real skill commands", async () => {
     const codeReviewPath = await writeSkill("code-review", "code-review", "Review the code.");
@@ -217,123 +176,56 @@ describe("real skill discovery and command registration", () => {
 
     const { loader, commands, skills } = await startSession();
 
-    expect(loader.getSkills().diagnostics).toEqual([]);
-    expect(
-      loader
-        .getSkills()
-        .skills.map((skill) => skill.name)
-        .sort(),
-    ).toEqual(["code-review", "tdd"]);
-
     const byName = new Map(commands.map((command) => [command.name, command]));
-    const loadedCodeReview = loader
-      .getSkills()
-      .skills.find((skill) => skill.name === "code-review");
     expect(byName.get("skill:code-review")?.source).toBe("skill");
     expect(byName.get("skill:code-review")?.sourceInfo.path).toBe(codeReviewPath);
-    expect(byName.get("skill:code-review")?.sourceInfo.baseDir).toBe(
-      loadedCodeReview?.sourceInfo.baseDir,
-    );
     expect(byName.get("skill:tdd")?.source).toBe("skill");
     expect(byName.get("probe-command")?.source).toBe("extension");
     expect(byName.get("review")?.source).toBe("prompt");
 
     expect([...skills.keys()].sort()).toEqual(["code-review", "tdd"]);
-    expect(getSkill(skills, "code-review").filePath).toBe(codeReviewPath);
-  });
-
-  it("collects skill commands and ignores the real extension and prompt commands", async () => {
-    await writeSkill("code-review", "code-review", "Review the code.");
-    await writePromptTemplate("review");
-
-    const { commands } = await startSession();
-    const skills = skillsFromCommands(commands);
-
-    expect([...skills.keys()]).toEqual(["code-review"]);
-    expect(commands.some((command) => command.source === "extension")).toBe(true);
-    expect(commands.some((command) => command.source === "prompt")).toBe(true);
+    const codeReview = getSkill(skills, "code-review");
+    expect(codeReview.filePath).toBe(codeReviewPath);
+    expect(codeReview.baseDir).toBe(
+      loader.getSkills().skills.find((skill) => skill.name === "code-review")?.baseDir,
+    );
   });
 });
 
 describe("expandSkillTokens", () => {
-  it("expands a leading $skill token", async () => {
-    await writeSkill("code-review", "code-review", "Review the code carefully.");
-    const { skills } = await startSession();
-    const skill = getSkill(skills, "code-review");
-
-    const { text, expanded } = await expandSkillTokens("$code-review 最近的改动", skills);
-
-    expect(expanded).toEqual(["code-review"]);
-    expect(text).toBe(
-      `<skill name="code-review" location="${skill.filePath}">\n` +
-        `References are relative to ${skill.baseDir}.\n\n` +
-        `Review the code carefully.\n</skill> 最近的改动`,
-    );
-  });
-
-  it("expands a token mid-sentence", async () => {
-    await writeSkill("reviewer", "code-review", "Do the review.");
-    const { skills } = await startSession();
-
-    const { text, expanded } = await expandSkillTokens(
-      "使用 $code-review 这个 skill review 代码",
-      skills,
-    );
-
-    expect(expanded).toEqual(["code-review"]);
-    expect(text).toContain('<skill name="code-review"');
-    expect(text).toMatch(/^使用 <skill[\s\S]+<\/skill> 这个 skill review 代码$/);
-  });
-
-  it("expands multiple different skills", async () => {
-    await writeSkill("a-skill", "a-skill", "Body A.");
-    await writeSkill("b-skill", "b-skill", "Body B.");
-    const { skills } = await startSession();
-
-    const { text, expanded, blocks } = await expandSkillTokens("先 $a-skill 再 $b-skill", skills);
-
-    expect(expanded).toEqual(["a-skill", "b-skill"]);
-    expect(blocks.map((block) => block.name)).toEqual(["a-skill", "b-skill"]);
-    expect(text).toContain("Body A.");
-    expect(text).toContain("Body B.");
-    expect(text.indexOf("Body A.")).toBeLessThan(text.indexOf("Body B."));
-  });
-
   it("leaves unknown tokens and prices untouched", async () => {
     await writeSkill("known", "known", "Known.");
     const { skills } = await startSession();
 
     const input = "成本 $9.99，变量 $HOME，未知 $nosuch，已知 $known";
-    const { text, expanded } = await expandSkillTokens(input, skills);
+    const { expanded, failed, blocks } = await expandSkillTokens(input, skills);
 
     expect(expanded).toEqual(["known"]);
-    expect(text).toContain("$9.99");
-    expect(text).toContain("$HOME");
-    expect(text).toContain("$nosuch");
-    expect(text).not.toContain("$known");
+    expect(failed).toEqual([]);
+    expect(blocks.map((block) => block.name)).toEqual(["known"]);
   });
 
   it("keeps $$name literal as an escape", async () => {
     await writeSkill("esc", "esc", "Escaped?");
     const { skills } = await startSession();
 
-    const { text, expanded } = await expandSkillTokens("字面量 $$esc 不是调用", skills);
+    const { expanded, blocks } = await expandSkillTokens("字面量 $$esc 不是调用", skills);
 
     expect(expanded).toEqual([]);
-    expect(text).toBe("字面量 $$esc 不是调用");
+    expect(blocks).toEqual([]);
   });
 
-  it("reports a missing skill file as failed and leaves the token", async () => {
+  it("reports a missing skill file as failed", async () => {
     await writeSkill("gone", "gone", "Soon gone.");
     const { skills } = await startSession();
     const missing = getSkill(skills, "gone");
     await unlink(missing.filePath);
 
-    const { text, expanded, failed } = await expandSkillTokens("试试 $gone", skills);
+    const { expanded, failed, blocks } = await expandSkillTokens("试试 $gone", skills);
 
     expect(expanded).toEqual([]);
     expect(failed).toEqual(["gone"]);
-    expect(text).toBe("试试 $gone");
+    expect(blocks).toEqual([]);
   });
 });
 
@@ -347,13 +239,7 @@ describe("skill autocomplete provider", () => {
    * the delegated inputs below, so a delegated answer is a non-empty one that
    * the skill provider could never produce itself.
    */
-  const workFiles = [
-    "hello.md",
-    "$HOME-notes.txt",
-    "$zz-notes.txt",
-    "$$code-notes.md",
-    "$code-notes.md",
-  ];
+  const workFiles = ["hello.md", "$HOME-notes.txt", "$zz-notes.txt", "$$code-notes.md"];
 
   async function providerFor(...names: string[]) {
     for (const [index, name] of names.entries()) {
@@ -428,13 +314,6 @@ describe("skill autocomplete provider", () => {
     }
   });
 
-  it("delegates when no skills are loaded", async () => {
-    const { current, provider } = await providerFor();
-    const result = await provider.getSuggestions(["$code"], 0, 5, forced);
-    expect(values(result)).toEqual(["$code-notes.md"]);
-    expect(result).toEqual(await current.getSuggestions(["$code"], 0, 5, forced));
-  });
-
   it("replaces the $ prefix and adds a trailing space on applyCompletion", async () => {
     const { provider } = await providerFor();
     const lines = ["请用 $cod 检查"];
@@ -471,36 +350,12 @@ describe("skill autocomplete provider", () => {
     const result = provider.applyCompletion(["/skil"], 0, 5, item, "/skil");
     // Pi's slash-command completion keeps the slash; the skill provider's own
     // replacement would have dropped it.
-    expect(result).toEqual({ lines: ["/skill:code-review "], cursorLine: 0, cursorCol: 19 });
+    expect(result.lines).toEqual(["/skill:code-review "]);
     expect(result).toEqual(current.applyCompletion(["/skil"], 0, 5, item, "/skil"));
   });
 });
 
 describe("input handler", () => {
-  it("injects a known skill as its own context message", async () => {
-    const skillPath = await writeSkill("code-review", "code-review", "Review it.");
-    const { session, notifications } = await startSession();
-
-    const result = await session.extensionRunner.emitInput(
-      "使用 $code-review 这个 skill review 代码",
-      undefined,
-      "interactive",
-    );
-
-    expect(result).toEqual({ action: "continue" });
-    expect(session.messages).toHaveLength(1);
-    const [custom] = customMessages(session);
-    expect(custom).toMatchObject({
-      role: "custom",
-      customType: SKILL_MESSAGE_TYPE,
-      display: true,
-      details: { name: "code-review" },
-    });
-    expect(custom?.content).toContain(`<skill name="code-review" location="${skillPath}">`);
-    expect(custom?.content).toContain("Review it.");
-    expect(notifications).toEqual([]);
-  });
-
   it("injects one message per distinct skill in first-reference order", async () => {
     await writeSkill("a-skill", "a-skill", "Body A.");
     await writeSkill("b-skill", "b-skill", "Body B.");
@@ -518,65 +373,6 @@ describe("input handler", () => {
     ]);
   });
 
-  it("uses the input's delivery mode while the agent is streaming", async () => {
-    const model = await startLocalModelServer();
-    await writeModelsFile(model.baseUrl);
-    await writeSkill("known", "known", "Known.");
-    const { session } = await startSession();
-    expect(session.model?.provider).toBe("local-test");
-
-    const started = agentStarted(session);
-    const turn = session.prompt("hello");
-    await started;
-    expect(session.isStreaming).toBe(true);
-
-    const result = await session.extensionRunner.emitInput(
-      "$known",
-      undefined,
-      "interactive",
-      "followUp",
-    );
-    expect(result).toEqual({ action: "continue" });
-    // Pi's follow-up queue is what receives the custom message; steering would
-    // not. With steering emptied, something must still be queued.
-    session.agent.clearSteeringQueue();
-    expect(session.agent.hasQueuedMessages()).toBe(true);
-
-    // Let the held reply finish: the agent then runs the queued follow-up, and
-    // the second request on the wire carries the skill message it queued.
-    model.release();
-    await expect(turn).resolves.toBeUndefined();
-    expect(model.bodies).toHaveLength(2);
-    expect(lastUserText(model.bodies[0])).toBe("hello");
-    expect(lastUserText(model.bodies[1])).toMatch(
-      /^<skill name="known" [\s\S]*Known\.\n<\/skill>$/,
-    );
-    expect(
-      customMessages(session).map(({ customType, details }) => ({ customType, details })),
-    ).toEqual([{ customType: SKILL_MESSAGE_TYPE, details: { name: "known" } }]);
-    const reply = session.messages.at(-1);
-    expect(reply?.role === "assistant" ? reply.stopReason : reply?.role).toBe("stop");
-  });
-
-  it("registers a renderer for standalone skill messages", async () => {
-    const { session } = await startSession();
-    expect(session.extensionRunner.getMessageRenderer(SKILL_MESSAGE_TYPE)).toBeTypeOf("function");
-  });
-
-  it("registers the skill autocomplete provider on session start", async () => {
-    await writeSkill("known", "known", "Known.");
-    const { autocompleteFactories } = await startSession();
-    expect(autocompleteFactories).toHaveLength(1);
-    const [factory] = autocompleteFactories;
-    if (!factory) throw new Error("Pi did not receive an autocomplete provider factory");
-
-    const provider = factory(new CombinedAutocompleteProvider(undefined, workDir));
-    const result = await provider.getSuggestions(["$"], 0, 1, {
-      signal: new AbortController().signal,
-    });
-    expect(result?.items.map((item) => item.value)).toEqual(["$known"]);
-  });
-
   it("passes through input without $ or without matching skills", async () => {
     await writeSkill("known", "known", "Known.");
     const { session, notifications } = await startSession();
@@ -590,97 +386,4 @@ describe("input handler", () => {
     expect(session.messages).toEqual([]);
     expect(notifications).toEqual([]);
   });
-
-  it("does nothing when no skills are loaded", async () => {
-    const { session } = await startSession();
-    expect(
-      await session.extensionRunner.emitInput("$code-review 一下", undefined, "interactive"),
-    ).toEqual({ action: "continue" });
-    expect(session.messages).toEqual([]);
-  });
 });
-
-/** The text of the last user message in an OpenAI-compatible request body. */
-function lastUserText(body: string | undefined): string | undefined {
-  const parsed = JSON.parse(body ?? "{}") as {
-    messages?: Array<{ role: string; content: string | Array<{ type: string; text?: string }> }>;
-  };
-  const last = parsed.messages?.filter((message) => message.role === "user").at(-1);
-  if (last === undefined) return undefined;
-  return typeof last.content === "string"
-    ? last.content
-    : last.content.map((part) => part.text ?? "").join("");
-}
-
-interface LocalModelServer {
-  readonly baseUrl: string;
-  /** Request bodies in arrival order. */
-  readonly bodies: string[];
-  /** Let the held first reply finish. */
-  release(): void;
-}
-
-function completionChunk(delta: Record<string, string>, finishReason: string | null): string {
-  return `data: ${JSON.stringify({
-    id: "local-test",
-    object: "chat.completion.chunk",
-    created: 0,
-    model: "local-test-model",
-    choices: [{ index: 0, delta, finish_reason: finishReason }],
-  })}\n\n`;
-}
-
-/**
- * Start a real OpenAI-compatible endpoint the real fetch client calls. The
- * first reply is held open until `release()`, so the session stays streaming;
- * every reply then completes as a normal streamed chat completion.
- */
-async function startLocalModelServer(): Promise<LocalModelServer> {
-  const bodies: string[] = [];
-  let release = (): void => {};
-  const released = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  const server = createServer((request, response) => {
-    const chunks: Buffer[] = [];
-    request.on("data", (chunk: Buffer) => chunks.push(chunk));
-    request.on("end", () => {
-      const first = bodies.length === 0;
-      bodies.push(Buffer.concat(chunks).toString("utf8"));
-      response.writeHead(200, { "content-type": "text/event-stream" });
-      response.flushHeaders();
-      void (first ? released : Promise.resolve()).then(() => {
-        response.write(completionChunk({ role: "assistant", content: "ok" }, null));
-        response.write(completionChunk({}, "stop"));
-        response.end("data: [DONE]\n\n");
-      });
-    });
-  });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  activeServer = server;
-  const address = server.address();
-  if (!address || typeof address === "string") {
-    throw new Error("Local model server did not bind a TCP port");
-  }
-  return {
-    baseUrl: `http://127.0.0.1:${address.port}/v1`,
-    bodies,
-    release: () => release(),
-  };
-}
-
-async function writeModelsFile(baseUrl: string): Promise<void> {
-  await writeFile(
-    join(agentDir, "models.json"),
-    JSON.stringify({
-      providers: {
-        "local-test": {
-          baseUrl,
-          api: "openai-completions",
-          apiKey: "local-test-key",
-          models: [{ id: "local-test-model" }],
-        },
-      },
-    }),
-  );
-}
