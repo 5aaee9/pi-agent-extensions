@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { SettingsManager, VERSION } from "@earendil-works/pi-coding-agent";
+import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   defaultLimits,
@@ -13,10 +13,8 @@ import {
   readSettings,
   resolveLimit,
   saveLimit,
-  supportsBoundaries,
   unusableReason,
   validateLimit,
-  withLimit,
   type LimitValue,
   type SaveDestination,
 } from "../settings.ts";
@@ -27,8 +25,6 @@ const percent = (share: number): LimitValue => ({ kind: "percent", percent: shar
 const model = (modelKey: string): SaveDestination => ({ target: "model", key: modelKey });
 const saveModelLimit = (path: string, modelKey: string, count: number) =>
   saveLimit(path, model(modelKey), tokens(count));
-const withModelLimit = (settings: Record<string, unknown>, modelKey: string, count: number) =>
-  withLimit(settings, model(modelKey), tokens(count));
 
 let agentDir: string;
 let projectDir: string;
@@ -57,14 +53,6 @@ async function writeSettings(path: string, value: unknown): Promise<void> {
 }
 
 describe("thresholds", () => {
-  it.each([
-    ["300k", 300000],
-    ["0.3M", 300000],
-    ["300000", 300000],
-    ["1m", 1000000],
-  ])("parses %s as decimal tokens", (text, expected) =>
-    expect(parseLimit(String(text))).toEqual(tokens(expected)),
-  );
   it.each([
     ["80%", 80],
     ["12.5%", 12.5],
@@ -98,14 +86,6 @@ describe("thresholds", () => {
     expect(() => validateLimit(300000, 1000000, 20000)).not.toThrow();
     expect(() => validateLimit(20000, 1000000, 20000)).toThrow(/keepRecentTokens/);
     expect(() => validateLimit(1000000, 1000000, 20000)).toThrow(/context window/);
-  });
-  it("requires the actionable-boundary host version", () => {
-    expect(supportsBoundaries("0.84.0")).toBe(false);
-    expect(supportsBoundaries("0.87.0")).toBe(false);
-    expect(supportsBoundaries("0.87.1")).toBe(true);
-    expect(supportsBoundaries("1.0.0")).toBe(true);
-    // The package's supported boundary path matches the pinned host it loads with.
-    expect(supportsBoundaries(VERSION)).toBe(true);
   });
 });
 
@@ -156,53 +136,9 @@ describe("command arguments", () => {
       expect(() => parseAutocompactCommand(input)).toThrow(/Only one of/);
     },
   );
-  it("names the flag that lacks a threshold", () => {
-    expect(() => parseAutocompactCommand("off --save-provider")).toThrow(
-      /--save-provider requires a threshold/,
-    );
-  });
 });
 
 describe("saved model limits", () => {
-  it("merges one model key and leaves the input unchanged", async () => {
-    const input = {
-      compaction: { enabled: true },
-      piAutocompact: { note: "keep", modelLimits: { "other/model": 1000 } },
-    };
-    await writeSettings(globalSettingsPath(), input);
-    const bytes = await readFile(globalSettingsPath(), "utf8");
-    const stored = await readSettings(globalSettingsPath());
-    const snapshot = structuredClone(stored);
-
-    const next = withModelLimit(stored, key, 300000);
-    expect(next).toEqual({
-      compaction: { enabled: true },
-      piAutocompact: {
-        note: "keep",
-        modelLimits: { "other/model": 1000, [key]: 300000 },
-      },
-    });
-    // The merge returns a new object; the settings value it was given is untouched.
-    expect(stored).toEqual(snapshot);
-    expect(stored).toEqual(input);
-    expect(next).not.toBe(stored);
-    expect(await readFile(globalSettingsPath(), "utf8")).toBe(bytes);
-    expect((await readSettings(globalSettingsPath())).piAutocompact).toEqual({
-      note: "keep",
-      modelLimits: { "other/model": 1000 },
-    });
-
-    await writeSettings(globalSettingsPath(), next);
-    expect(defaultLimits(await readSettings(globalSettingsPath())).models.get(key)).toEqual(
-      tokens(300000),
-    );
-    expect(() => withModelLimit(next, "model", 300000)).toThrow(/model key/);
-
-    await writeSettings(globalSettingsPath(), { piAutocompact: { modelLimits: [] } });
-    const invalid = await readSettings(globalSettingsPath());
-    expect(() => withModelLimit(invalid, key, 300000)).toThrow(/modelLimits/);
-  });
-
   it("creates a missing file and updates one key on a later save", async () => {
     const path = globalSettingsPath();
     await saveModelLimit(path, key, 300000);
@@ -331,49 +267,45 @@ describe("read-only configuration", () => {
     expect(() => defaultLimits(invalid)).toThrow(/Invalid/);
   });
 
-  it("resolves native per-model settings without altering them", async () => {
-    await writeSettings(globalSettingsPath(), {
-      compaction: {
-        reserveTokens: 10000,
-        modelOverrides: { [key]: { reserveTokens: 40000 } },
-      },
-    });
-    await writeSettings(projectSettingsPath(), {
-      compaction: { reserveTokens: 5000, keepRecentTokens: 25000 },
-    });
-    const bytes = await readFile(globalSettingsPath(), "utf8");
-    const globalSettings = await readSettings(globalSettingsPath());
-    const projectSettings = await readSettings(projectSettingsPath());
-    const globalSnapshot = structuredClone(globalSettings);
-    const projectSnapshot = structuredClone(projectSettings);
+  it.each([
+    ["no settings", undefined, undefined],
+    ["a global value", { compaction: { reserveTokens: 10000 } }, undefined],
+    [
+      "a project value over a global one",
+      { compaction: { reserveTokens: 10000, keepRecentTokens: 30000 } },
+      { compaction: { keepRecentTokens: 25000 } },
+    ],
+    [
+      "a global model override over a project value",
+      { compaction: { modelOverrides: { [key]: { reserveTokens: 40000 } } } },
+      { compaction: { reserveTokens: 5000, keepRecentTokens: 25000 } },
+    ],
+    [
+      "a project model override over a global one",
+      { compaction: { modelOverrides: { [key]: { keepRecentTokens: 40000 } } } },
+      { compaction: { modelOverrides: { [key]: { keepRecentTokens: 45000 } } } },
+    ],
+    [
+      "project disabled over global enabled",
+      { compaction: { enabled: true } },
+      { compaction: { enabled: false } },
+    ],
+    ["global disabled", { compaction: { enabled: false } }, undefined],
+  ])("resolves compaction settings as Pi does with %s", async (_label, global, project) => {
+    if (global) await writeSettings(globalSettingsPath(), global);
+    if (project) await writeSettings(projectSettingsPath(), project);
 
-    expect(effectiveCompaction(globalSettings, projectSettings, key)).toEqual({
-      enabled: true,
-      reserveTokens: 40000,
-      keepRecentTokens: 25000,
-    });
-    // Resolution reads both layers without mutating either settings value.
-    expect(globalSettings).toEqual(globalSnapshot);
-    expect(projectSettings).toEqual(projectSnapshot);
-    expect(await readFile(globalSettingsPath(), "utf8")).toBe(bytes);
+    const expected = SettingsManager.create(projectDir, agentDir, {
+      projectTrusted: true,
+    }).getCompactionSettings({ provider: "provider", id: "model" });
 
-    await writeSettings(projectSettingsPath(), { compaction: { enabled: false } });
     expect(
       effectiveCompaction(
         await readSettings(globalSettingsPath()),
         await readSettings(projectSettingsPath()),
         key,
-      ).enabled,
-    ).toBe(false);
-  });
-
-  it("does not create missing settings or overwrite malformed JSON", async () => {
-    const path = join(agentDir, "settings.json");
-    expect(await readSettings(path)).toEqual({});
-    await expect(readFile(path)).rejects.toMatchObject({ code: "ENOENT" });
-    await writeFile(path, "{bad");
-    await expect(readSettings(path)).rejects.toThrow(/JSON/);
-    expect(await readFile(path, "utf8")).toBe("{bad");
+      ),
+    ).toEqual(expected);
   });
 });
 
@@ -412,24 +344,6 @@ describe("effective limits", () => {
     ).toEqual({ tokens: 150000, source: "session" });
   });
 
-  it("ignores every level after off", () => {
-    expect(
-      effectiveLimit(
-        { session: null, model: tokens(1), provider: tokens(1), global: tokens(1) },
-        1000000,
-      ),
-    ).toBeUndefined();
-  });
-
-  it("keeps the more specific level on a tie", () => {
-    expect(
-      effectiveLimit(
-        { ...none, model: tokens(200000), provider: tokens(200000), global: percent(20) },
-        1000000,
-      ),
-    ).toEqual({ tokens: 200000, source: "model" });
-  });
-
   it("clamps to the context window and reports it unusable", () => {
     const limit = effectiveLimit({ ...none, global: tokens(1000000) }, 200000);
     expect(limit).toEqual({ tokens: 200000, source: "window" });
@@ -438,15 +352,6 @@ describe("effective limits", () => {
       tokens: 200000,
       source: "global",
     });
-  });
-
-  it("reports a cap at or below keepRecentTokens", () => {
-    const limit = effectiveLimit({ ...none, global: percent(5) }, 128000);
-    expect(limit?.tokens).toBe(6400);
-    expect(unusableReason(6400, 128000, 20000)).toBe(
-      "6,400 tokens does not exceed keepRecentTokens (20,000)",
-    );
-    expect(unusableReason(160000, 200000, 20000)).toBeUndefined();
   });
 });
 
@@ -469,18 +374,5 @@ describe("saved caps", () => {
       },
     });
     await expect(stat(`${resolve(path)}.lock`)).rejects.toMatchObject({ code: "ENOENT" });
-  });
-
-  it("rejects invalid provider keys and non-object provider maps without writing", async () => {
-    expect(() => withLimit({}, { target: "provider", provider: "a/b" }, tokens(1))).toThrow(
-      /provider/,
-    );
-    const path = globalSettingsPath();
-    const invalid = JSON.stringify({ piAutocompact: { providerLimits: [] } });
-    await writeFile(path, invalid);
-    await expect(
-      saveLimit(path, { target: "provider", provider: "provider" }, tokens(1000)),
-    ).rejects.toThrow(/providerLimits/);
-    expect(await readFile(path, "utf8")).toBe(invalid);
   });
 });

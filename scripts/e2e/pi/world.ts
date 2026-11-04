@@ -27,6 +27,15 @@ export function readJsonRecord(path: string): Readonly<Record<string, unknown>> 
   return value;
 }
 
+/** The entries a session file holds, in the order Pi wrote them. */
+export function sessionEntries(path: string): readonly Readonly<Record<string, unknown>>[] {
+  const entries: unknown[] = readFileSync(path, "utf8")
+    .trim()
+    .split("\n")
+    .map((line): unknown => JSON.parse(line));
+  return entries.filter((entry) => isRecord(entry));
+}
+
 /** The published `pi` bin of the host this checkout resolves. */
 export function piBin(): string {
   const manifestPath = findPackageJSON(

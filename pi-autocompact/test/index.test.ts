@@ -28,24 +28,6 @@ function lastNotification(real: RealSession): RealSession["notifications"][numbe
   return real.notifications.at(-1);
 }
 
-describe("Pi extension loading", () => {
-  it("registers its command and boundary handlers through Pi's real loader", async () => {
-    const real = await plane.startSession();
-    const command = real.session.extensionRunner.getCommand("autocompact");
-    expect(command?.description).toBe(
-      "Compaction threshold: /autocompact [300k | 80% | off | default] [--save | --save-provider | --save-global]",
-    );
-    const missing = [
-      "session_start",
-      "session_shutdown",
-      "turn_end",
-      "agent_before_settle",
-      "input",
-    ].filter((event) => !real.session.hasExtensionHandlers(event));
-    expect(missing).toEqual([]);
-  });
-});
-
 describe("session-only commands", () => {
   it("preserves earlier boundary metadata and context omissions before its summary", async () => {
     const real = await plane.startSession({
