@@ -1,6 +1,25 @@
 # Verification
 
-Each scenario's proof that it detects its failure: the regression applied to a scratch copy, never committed, and what was observed. `design.md` D7 explains why this is recorded rather than automated. Record only what a run printed; a regression a scenario did not detect is recorded as such, with what that showed.
+Each scenario's proof that it detects its failure: the regression applied to a scratch copy, never committed, and what was observed. `design.md` D7 explains why this is recorded rather than automated. Record only what a run printed; a regression a scenario did not detect is recorded as such, with what that showed. Per-package records are in `verification/`.
+
+## Final runs
+
+- `npm run test:e2e:pi`: 154 scenarios across 36 files, about 25 seconds, passing on three consecutive runs before the host fix and again after it.
+- The 80 `pi-provider-sub2api` scenarios are the catalog's P1 to P10; rows that share a relay inventory collapsed into them.
+
+## Upgrade rehearsal
+
+`node scripts/e2e/pi/rehearse.ts --throwaway --version 1.4.0` in a throwaway worktree:
+
+| Step                 | Result on Pi 1.4.0                                                                                                | Evidence                                                                                                                                                                                   |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Manifests            | Only the eight Pi `package.json` files and the lockfile change; `pi-ask`'s legacy alias and `dsh-*` are untouched | `git status`, `git diff -- 'dsh-*'` empty                                                                                                                                                  |
+| typecheck            | FAILED                                                                                                            | `pi-model-trace/index.ts(76,5)`: `maxBuffer` not in `ExecOptions`; `pi-ask/src/ui/controller.ts(141,13)`: `blocked` unknown; `pi-provider-sub2api` and `pi-custom-provider` provider types |
+| package tests        | FAILED                                                                                                            | `pi-custom-provider` 1 of 54, `pi-model-trace` 2 of 12                                                                                                                                     |
+| load check           | Passed                                                                                                            | All eight load on 1.4.0                                                                                                                                                                    |
+| end-to-end scenarios | FAILED, 1 of 154                                                                                                  | "aborting a running tool and continuing...": Pi 1.4.0 records that turn differently                                                                                                        |
+
+**The first run proved nothing.** All 153 scenarios passed, which looked wrong given what typecheck had found. The harness resolved `pi` from the workspace root, which keeps its own 1.5.0 copy while the pins move the packages' nested copies, so the rehearsal's scenarios ran the old Pi and would have done so against `latest` too. The harness now resolves the host from a Pi package, refuses a version that differs from the pin, and has a scenario for it; the rehearsal prints the host it ran (`1.4.0`).
 
 ## Harness and cross-package
 
