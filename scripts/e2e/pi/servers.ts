@@ -22,6 +22,8 @@ export interface Reply {
   readonly gate?: () => Promise<void>;
   /** Resolves when a streamed reply may end, to hold a stream open mid-way. */
   readonly holdOpen?: () => Promise<void>;
+  /** Called when the client abandons the request before the reply finishes. */
+  readonly onClientClose?: () => void;
 }
 
 export type Handler = (request: RecordedRequest) => Promise<Reply> | Reply;
@@ -57,15 +59,21 @@ function portOf(address: unknown): number {
   return address["port"];
 }
 
+const onAbandon = (finished: () => boolean, reply: Reply) => (): void => {
+  if (!finished()) reply.onClientClose?.();
+};
+
+function eventArgs(args: unknown): readonly unknown[] {
+  return Array.isArray(args) ? args : [];
+}
+
 export async function startServer(handler: Handler, port = 0): Promise<LocalServer> {
   const server = createServer();
   const stop = new AbortController();
   const requests: RecordedRequest[] = [];
   const serve = async (): Promise<void> => {
     for await (const args of on(server, "request", { signal: stop.signal })) {
-      const pair: unknown = args;
-      const items: readonly unknown[] = Array.isArray(pair) ? pair : [];
-      const [request, response] = items;
+      const [request, response] = eventArgs(args);
       if (!(request instanceof IncomingMessage && response instanceof ServerResponse)) continue;
       void (async (): Promise<void> => {
         const raw = await buffer(request);
@@ -78,6 +86,8 @@ export async function startServer(handler: Handler, port = 0): Promise<LocalServ
         };
         requests.push(recorded);
         const reply = await handler(recorded);
+        const abandoned = onAbandon(() => response.writableFinished, reply);
+        response.once("close", abandoned);
         await reply.gate?.();
         if (response.destroyed) return;
         response.writeHead(reply.status ?? 200, reply.headers);
