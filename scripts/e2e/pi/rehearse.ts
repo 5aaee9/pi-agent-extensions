@@ -11,6 +11,7 @@ import { ROOT_DIR, readJsonRecord } from "./world.ts";
 
 const HOST_SCOPE = "@earendil-works/";
 const CODING_AGENT = "@earendil-works/pi-coding-agent";
+const HOST_VERSION_PROBE = `import("./scripts/e2e/pi/world.ts").then((world) => console.log(world.piHost().version))`;
 
 interface Step {
   readonly label: string;
@@ -83,6 +84,7 @@ function main(): void {
     { label: "end-to-end scenarios", command: "npm", args: ["run", "test:e2e:pi"] },
   ];
   const failed = steps.filter((step) => !runStep(step)).map((step) => step.label);
+  console.log(`[rehearsal] host the scenarios ran: ${capture("node", ["-e", HOST_VERSION_PROBE])}`);
   console.log(`\n[rehearsal] summary for Pi ${version}`);
   console.log(
     failed.length === 0 ? "[rehearsal]   all passed" : `[rehearsal]   FAILED: ${failed.join(", ")}`,

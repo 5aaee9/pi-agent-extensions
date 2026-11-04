@@ -4,8 +4,15 @@ import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
+import { isRecord } from "../../release/json.ts";
 import { scenario } from "./scenario.ts";
-import { assertNoNodeModulesAncestor, PROBE_ARGS } from "./world.ts";
+import {
+  assertNoNodeModulesAncestor,
+  PROBE_ARGS,
+  ROOT_DIR,
+  piHost,
+  readJsonRecord,
+} from "./world.ts";
 import { isChatRequest } from "./servers.ts";
 
 scenario(
@@ -21,6 +28,18 @@ scenario(
     assert.equal(server.requests.filter(isChatRequest).length, 1);
     assert.deepEqual(client.extensionErrors(), []);
     assert.equal(await client.close(), 0);
+  },
+);
+
+scenario(
+  "the suite runs the Pi version the Pi packages pin",
+  { packages: [] },
+  async ({ print }) => {
+    const run = await print(["--version"]);
+    assert.equal(run.stdout.trim(), piHost().version);
+    const pins = readJsonRecord(join(ROOT_DIR, "pi-skill", "package.json"))["devDependencies"];
+    assert.ok(isRecord(pins));
+    assert.equal(pins["@earendil-works/pi-coding-agent"], piHost().version);
   },
 );
 

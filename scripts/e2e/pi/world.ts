@@ -36,17 +36,37 @@ export function sessionEntries(path: string): readonly Readonly<Record<string, u
   return entries.filter((entry) => isRecord(entry));
 }
 
-/** The published `pi` bin of the host this checkout resolves. */
-export function piBin(): string {
-  const manifestPath = findPackageJSON(
-    "@earendil-works/pi-coding-agent",
-    pathToFileURL(join(ROOT_DIR, "package.json")),
-  );
+const CODING_AGENT = "@earendil-works/pi-coding-agent";
+// A Pi package pins the host the suite must run. The workspace root can hold a
+// different copy, so resolving from the root would test the wrong Pi.
+const HOST_WORKSPACE = "pi-continue";
+
+export interface PiHost {
+  readonly bin: string;
+  readonly version: string;
+}
+
+/** The published `pi` the Pi packages pin, refused when the installed copy differs. */
+export function piHost(): PiHost {
+  const workspace = join(ROOT_DIR, HOST_WORKSPACE, "package.json");
+  const manifestPath = findPackageJSON(CODING_AGENT, pathToFileURL(workspace));
   if (manifestPath === undefined) throw new Error("Pi is not installed; run npm install");
-  const bin = readJsonRecord(manifestPath)["bin"];
+  const manifest = readJsonRecord(manifestPath);
+  const bin = manifest["bin"];
   const entry = isRecord(bin) ? bin["pi"] : undefined;
   if (typeof entry !== "string") throw new Error(`${manifestPath} does not declare bin.pi`);
-  return resolve(dirname(manifestPath), entry);
+  const pins = readJsonRecord(workspace)["devDependencies"];
+  const pinned = isRecord(pins) ? pins[CODING_AGENT] : undefined;
+  const version = manifest["version"];
+  if (typeof version !== "string" || version !== pinned)
+    throw new Error(
+      `Pi version mismatch: ${HOST_WORKSPACE} pins ${String(pinned)}, installed ${String(version)}; run npm install`,
+    );
+  return { bin: resolve(dirname(manifestPath), entry), version };
+}
+
+export function piBin(): string {
+  return piHost().bin;
 }
 
 export function assertNoNodeModulesAncestor(path: string): void {
