@@ -132,8 +132,9 @@ scenario(
     );
     const session = join(world.root, "reopened.jsonl");
     const args = ["--session", session, ...PROBE_ARGS];
-    await print(["-p", ...args, LARGE_PROMPT]);
-    await print(["-p", ...args, LARGE_PROMPT]);
+    const large = world.largePromptArg(LARGE_PROMPT);
+    await print(["-p", ...args, large]);
+    await print(["-p", ...args, large]);
     assert.equal(summaryCount(server), 0);
     world.mergeSettings(QUICK_IDLE);
 

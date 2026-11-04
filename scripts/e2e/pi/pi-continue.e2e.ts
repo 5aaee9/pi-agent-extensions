@@ -166,8 +166,8 @@ scenario(
     });
     const session = join(world.root, "large.jsonl");
     const args = ["--session", session, ...PROBE_ARGS];
-    await print(["-p", ...args, "x ".repeat(LARGE_CONTEXT_TOKENS)]);
-    await print(["-p", ...args, "y ".repeat(LARGE_CONTEXT_TOKENS)]);
+    await print(["-p", ...args, world.largePromptArg("x ".repeat(LARGE_CONTEXT_TOKENS))]);
+    await print(["-p", ...args, world.largePromptArg("y ".repeat(LARGE_CONTEXT_TOKENS + 1))]);
     failing = true;
     await print(["-p", ...args, "last question"]);
     failing = false;

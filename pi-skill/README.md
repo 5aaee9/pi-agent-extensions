@@ -55,7 +55,7 @@ autocomplete popup listing every loaded skill with its description, just like
 - Each context message uses the same `<skill name="…" location="…">` format pi emits for `/skill:name`, so relative references inside the skill keep working.
 - The original user prompt stays readable instead of being replaced by the full skill bodies.
 - A token that matches no loaded skill is left untouched, so `$HOME` or `$9.99` in prose is safe.
-- `$name` does not invoke a skill, and the model receives `$name` with both dollar signs.
+- `$$name` does not invoke a skill, and the model receives `$$name` with both dollar signs.
 - While the model is answering, the block travels inside your queued message, as Pi does for `/skill:`, so it arrives with your words rather than in a model turn of its own. With several skills queued in one message, the terminal collapses only the first.
 
 ## Development

@@ -4,12 +4,27 @@ Each scenario's proof that it detects its failure: the regression applied to a s
 
 ## Final runs
 
-- From a clean `npm ci`, `npm run test:e2e:pi`: 154 scenarios across 36 files, about 25 seconds, passing on three consecutive runs. After isolating the environment from ambient credentials, 155 scenarios pass with `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` set in the calling shell.
+- `npm run test:e2e:pi`: 159 scenarios across 36 files, about 26 seconds. From a clean `npm ci`, the 154 at that point passed on three consecutive runs; the scenarios added since passed on each later full run, including with `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` set in the calling shell.
 - The 80 `pi-provider-sub2api` scenarios are the catalog's P1 to P10; rows that share a relay inventory collapsed into them.
 
 - `npm run test:e2e`: 12 of 12 plugins pass, DSH included. Eight Pi load smoke tests pass; `pi-provider-sub2api`, `pi-custom-provider`, and `pi-skill` list no commands unconfigured, as expected.
 - `npm run release:gate -- --base origin/main --head HEAD`: passes; every DSH package reports no published changes.
-- `npm run check`: fails only on four `dsh-autocompact/test/client-plane.test.ts` browser cases (`getByRole('button', { name: 'autocompact-workspace' })` times out). The same four fail on untouched `main` on this machine, while CI's run of that same commit, b8c0c39, passed. They are unrelated to this change, and this change does not touch DSH. Task 13.1 stays open until CI runs this branch.
+- `npm run check`: CI's run on the draft pull request passes it, DSH included. On this machine it fails only on four `dsh-autocompact/test/client-plane.test.ts` browser cases, which fail the same way on untouched `main`, so they are local to this machine and unrelated to this change.
+
+## Found by the implementation review and CI
+
+| Finding                                                                                                                                    | Regression or evidence                                                      | Observed                                                                                    |
+| ------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `$$name` README regressed by a patch script: `String.replace` reads `$$` as `$`, so the line said `$name` does not invoke a skill          | All four reviewers read the file                                            | Corrected; later patches use function replacements                                          |
+| X3 accepted extension errors in print and JSON, which exit 0                                                                               | `session_start` throws only in print and JSON                               | Now fails on `Extension error` in stderr; previously 11/11 passed                           |
+| A scenario timeout skipped teardown, because Node's test timeout does not reject the body                                                  | Real RPC host and server, body never resolving, deadline shortened to 1.5 s | `scenario exceeded 1500 ms`; afterwards the world directory is gone and no process names it |
+| Three scenarios failed on CI with `spawn E2BIG`: 200,000-character prompts in argv exceed Linux's 128 KiB per argument, which macOS allows | CI run on the draft pull request                                            | Moved to Pi's `@file` input through `world.largePromptArg`                                  |
+| X3's "model change" reselected the same model                                                                                              | Reading the scenario                                                        | Switches to a second model and asserts it on the wire                                       |
+| sub2api offline cold start passed with the extension not loading                                                                           | `if (process.env.PI_OFFLINE) return;`                                       | Now fails: the extension must still register `sub2api-refresh`                              |
+| Custom-provider refresh under offline had no scenario                                                                                      | The command gated on offline                                                | Fails: "the explicit refresh must reach upstream"                                           |
+| A temporary root under a project would load its skills                                                                                     | Reviewer's run with `TMPDIR` inside the checkout                            | The harness refuses it, naming the marker                                                   |
+
+**Abort is guarded three times, so a single regression cannot show.** Removing the outcome check, or the `ctx.signal` check, or both, still sends no summary, because the summarizer's request is bound to the same signal. Only removing the signal from both places fails "aborting a running tool over the threshold...", which proves the scenario reaches the code. Pi reports the aborted tool's turn as `completed` with the signal aborted, then a second `turn_end` as `error`, and an abort mid-stream as `aborted`.
 
 ## Upgrade rehearsal
 

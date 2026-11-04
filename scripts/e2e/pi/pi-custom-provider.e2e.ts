@@ -58,6 +58,23 @@ for (const [label, offline, flags] of [
     },
   );
 
+scenario(
+  "/refresh-custom-provider-models still reaches upstream under offline, because the user asked",
+  { packages: [PACKAGE], offline: true },
+  async (context) => {
+    const gateway = await enrichedGateway(context);
+    const client = context.rpc(["--no-session"]);
+    assert.deepEqual(gateway.requests, []);
+    const refreshed = client.next(
+      (event) => event["method"] === "notify" && event["message"] === REFRESH_NOTICE,
+      "the refresh notification",
+    );
+    await client.send({ type: "prompt", message: "/refresh-custom-provider-models" });
+    await refreshed;
+    assert.ok(gateway.requests.length > 0, "the explicit refresh must reach upstream");
+  },
+);
+
 function expireCaches(context: Pick<Scenario, "world">): void {
   const path = join(context.world.agentDir, "custom-provider-models.json");
   const cache = readJsonRecord(path);

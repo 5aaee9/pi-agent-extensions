@@ -35,7 +35,7 @@ The model receives the user message `$$known hi` with both dollar signs and no s
 ## Findings
 
 - **Queued steer with `deliverAs` dropped is an equivalent mutation.** Pi's `sendCustomMessage` steers by default while streaming (`agent-session.js:1875-1880`), so the steer scenario passes when `deliverAs` is dropped. The follow-up scenario fails and the swap fails both, so both modes are guarded.
-- **Queued delivery is unchanged.** Both queued scenarios assert only whether the request carrying the tool result holds the block, with no assertion on turn count, as the owner has not yet decided how queued skills should be delivered.
+- **Queued delivery** was unchanged at this point, pending the owner's decision. The section at the end supersedes this: the scenarios now assert delivery together and exact request counts.
 - **Audit deviations.** Case counts match the design: 24 cases, 6 DELETE, 5 to E2E, 13 stay. Three things differ from the audit's rows:
   - Removing the dead `text` field also moved `keeps $$name literal` and `reports a missing skill file` off `text`; the audit named this move only for `leaves unknown tokens`. The second case lost "and leaves the token" from its name, because that is now covered by the prompt assertion in K1.
   - `$$known` has its own scenario, although the design's recorded list says no scenario asserts it. The owner asked for the README to state the behaviour observed on the wire, and this scenario guards that sentence.

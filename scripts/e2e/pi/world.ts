@@ -69,10 +69,25 @@ export function piBin(): string {
   return piHost().bin;
 }
 
-export function assertNoNodeModulesAncestor(path: string): void {
+const PROJECT_MARKERS = [".pi", ".agents", "AGENTS.md", "CLAUDE.md"];
+
+/** A project above the root would give Pi its skills and context files. */
+function projectAncestor(path: string): string | undefined {
+  const parent = dirname(path);
+  if (parent === path) return undefined;
+  const marker = PROJECT_MARKERS.find((name) => existsSync(join(parent, name)));
+  return marker === undefined ? projectAncestor(parent) : join(parent, marker);
+}
+
+export function assertCleanTemporaryRoot(path: string): void {
   if (path.split(sep).includes("node_modules"))
     throw new Error(
       `temporary root ${path} sits under a node_modules tree, which would let an installed package resolve host packages; set TMPDIR elsewhere`,
+    );
+  const ancestor = projectAncestor(path);
+  if (ancestor !== undefined)
+    throw new Error(
+      `temporary root ${path} sits under ${ancestor}, which Pi would load as project resources; set TMPDIR elsewhere`,
     );
 }
 
@@ -131,6 +146,11 @@ export interface World {
   readonly env: (extra?: EnvExtra) => NodeJS.ProcessEnv;
   readonly install: (name: string, tarball?: string) => void;
   readonly writeAgentFile: (path: string, content: unknown) => string;
+  /**
+   * A prompt argument for text too long for a command line (Linux caps one
+   * argument at 128 KiB), through Pi's own `@file` input.
+   */
+  readonly largePromptArg: (text: string) => string;
   /** Merges into `settings.json`, which also records what `pi install` installed. */
   readonly mergeSettings: (settings: Readonly<Record<string, unknown>>) => void;
   readonly dispose: () => void;
@@ -178,7 +198,7 @@ function piInstall(
 
 export function createWorld(options: WorldOptions): World {
   const root = mkdtempSync(join(tmpdir(), "pi-e2e-"));
-  assertNoNodeModulesAncestor(root);
+  assertCleanTemporaryRoot(root);
   const agentDir = join(root, "agent");
   const sessionDir = join(root, "sessions");
   const cwd = join(root, "cwd");
@@ -209,6 +229,11 @@ export function createWorld(options: WorldOptions): World {
       writeFileSync(target, typeof content === "string" ? content : JSON.stringify(content));
       return target;
     },
+    largePromptArg(text) {
+      const path = join(root, `prompt-${String(text.length)}.txt`);
+      writeFileSync(path, text);
+      return `@${path}`;
+    },
     mergeSettings: (settings) => {
       mergeSettingsFile(agentDir, settings);
     },
@@ -230,6 +255,8 @@ export const PROBE_ARGS: readonly string[] = [
   "--approve",
 ];
 
+export const PROBE_MODEL_ALT = "m-alt";
+
 export interface ProbeModelOptions {
   readonly reasoning?: boolean;
   readonly contextWindow?: number;
@@ -243,17 +270,15 @@ export function probeModels(baseUrl: string, options: ProbeModelOptions = {}): u
         baseUrl,
         api: "openai-completions",
         apiKey: "local",
-        models: [
-          {
-            id: PROBE_MODEL,
-            name: PROBE_MODEL,
-            reasoning: options.reasoning ?? false,
-            input: ["text"],
-            contextWindow: options.contextWindow ?? 1_000_000,
-            maxTokens: 4096,
-            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-          },
-        ],
+        models: [PROBE_MODEL, PROBE_MODEL_ALT].map((id) => ({
+          id,
+          name: id,
+          reasoning: options.reasoning ?? false,
+          input: ["text"],
+          contextWindow: options.contextWindow ?? 1_000_000,
+          maxTokens: 4096,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        })),
       },
     },
   };

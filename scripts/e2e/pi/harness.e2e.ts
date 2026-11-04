@@ -5,14 +5,9 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 
 import { isRecord } from "../../release/json.ts";
+import { REGISTRATIONS } from "./registrations.ts";
 import { scenario } from "./scenario.ts";
-import {
-  assertNoNodeModulesAncestor,
-  PROBE_ARGS,
-  ROOT_DIR,
-  piHost,
-  readJsonRecord,
-} from "./world.ts";
+import { assertCleanTemporaryRoot, PROBE_ARGS, ROOT_DIR, piHost, readJsonRecord } from "./world.ts";
 import { isChatRequest } from "./servers.ts";
 
 scenario(
@@ -49,9 +44,11 @@ scenario(
   async ({ print }) => {
     const run = await print(["--version"]);
     assert.equal(run.stdout.trim(), piHost().version);
-    const pins = readJsonRecord(join(ROOT_DIR, "pi-skill", "package.json"))["devDependencies"];
-    assert.ok(isRecord(pins));
-    assert.equal(pins["@earendil-works/pi-coding-agent"], piHost().version);
+    for (const name of Object.keys(REGISTRATIONS)) {
+      const pins = readJsonRecord(join(ROOT_DIR, name, "package.json"))["devDependencies"];
+      assert.ok(isRecord(pins), name);
+      assert.equal(pins["@earendil-works/pi-coding-agent"], piHost().version, name);
+    }
   },
 );
 
@@ -60,8 +57,11 @@ scenario(
   { packages: [] },
   async () => {
     assert.throws(() => {
-      assertNoNodeModulesAncestor("/tmp/node_modules/pi-e2e-x");
+      assertCleanTemporaryRoot("/tmp/node_modules/pi-e2e-x");
     }, /node_modules/u);
+    assert.throws(() => {
+      assertCleanTemporaryRoot(join(ROOT_DIR, "inside-a-project"));
+    }, /\.agents/u);
     await Promise.resolve();
   },
 );

@@ -118,6 +118,39 @@ scenario(
 );
 
 scenario(
+  "aborting a running tool over the threshold sends no paid summary",
+  PACKAGES,
+  async ({ world, probeServer, rpc }) => {
+    world.mergeSettings({ compaction: { keepRecentTokens: KEEP_RECENT_TOKENS } });
+    const toolCall = { name: "bash", arguments: JSON.stringify({ command: "sleep 30" }) };
+    const server = await probeServer((request): ChatReply =>
+      isSummaryRequest(request) ? { text: SUMMARY } : { toolCall, promptTokens: OVER_LIMIT_TOKENS },
+    );
+    const client = rpc(["--session", join(world.root, "aborted.jsonl"), ...PROBE_ARGS]);
+    const threshold = client.next(
+      (event) => event["method"] === "notify" && String(event["message"]).includes("above"),
+      "the threshold notice",
+    );
+    await client.send({ type: "prompt", message: "/autocompact 10k" });
+    await threshold;
+    const toolStarted = client.next(
+      (event) => event["type"] === "tool_execution_start",
+      "the tool to start",
+    );
+    const settled = client.next(
+      (event) => event["type"] === "agent_settled",
+      "the abort to settle",
+    );
+    await client.send({ type: "prompt", message: LARGE_PROMPT });
+    await toolStarted;
+    await client.send({ type: "abort" });
+    await settled;
+    assert.equal(summaries(server.requests).length, 0, "an aborted turn must not be summarized");
+    assert.deepEqual(client.extensionErrors(), []);
+  },
+);
+
+scenario(
   "a boundary after a tool call keeps the group, the other extension's entry, and no orphan",
   PACKAGES,
   async ({ world, probeServer, rpc }) => {
@@ -175,9 +208,9 @@ scenario(
     );
     const session = join(world.root, "print.jsonl");
     const args = ["-p", "--session", session, ...PROBE_ARGS];
-    await print([...args, `first ${LARGE_PROMPT}`]);
+    await print([...args, world.largePromptArg(`first ${LARGE_PROMPT}`)]);
     promptTokens = OVER_LIMIT_TOKENS;
-    const crossed = await print([...args, LARGE_PROMPT]);
+    const crossed = await print([...args, world.largePromptArg(LARGE_PROMPT)]);
     assert.equal(crossed.code, 0, crossed.stderr);
     assert.ok(crossed.stdout.includes(ANSWER), crossed.stdout);
     assert.equal(summaries(server.requests).length, 1);

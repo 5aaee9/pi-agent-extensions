@@ -62,20 +62,34 @@ function contextFor(world: World, defer: (cleanup: Cleanup) => void): Scenario {
   };
 }
 
+/** Rejects at the deadline: Node's own test timeout would leave `finally` unrun. */
+async function withinDeadline(run: () => Promise<void>): Promise<void> {
+  const { promise: expired, reject } = Promise.withResolvers<never>();
+  const timer = setTimeout(() => {
+    reject(new Error(`scenario exceeded ${String(SCENARIO_TIMEOUT_MS)} ms`));
+  }, SCENARIO_TIMEOUT_MS);
+  try {
+    await Promise.race([run(), expired]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export function scenario(
   name: string,
   options: WorldOptions,
   body: (context: Scenario) => Promise<void>,
 ): void {
-  void test(name, { timeout: SCENARIO_TIMEOUT_MS }, async () => {
+  void test(name, async () => {
     const world = createWorld(options);
     const cleanups: Cleanup[] = [];
     try {
-      await body(
-        contextFor(world, (cleanup) => {
-          cleanups.push(cleanup);
-        }),
-      );
+      const context = contextFor(world, (cleanup) => {
+        cleanups.push(cleanup);
+      });
+      await withinDeadline(async () => {
+        await body(context);
+      });
     } finally {
       await Promise.allSettled(
         cleanups.map(async (cleanup) => {

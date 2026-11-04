@@ -2,7 +2,7 @@
 // refresh a user asks for.
 import assert from "node:assert/strict";
 
-import { modelKeys } from "./pi.ts";
+import { extensionCommands, modelKeys } from "./pi.ts";
 import { scenario } from "./scenario.ts";
 import type { Scenario } from "./scenario.ts";
 import { json } from "./servers.ts";
@@ -53,6 +53,9 @@ scenario(
       OFFLINE_FORMS.map(async ({ args, env }) => {
         const client = rpc(["--session-dir", world.sessionDir, ...args], { env });
         const models = await client.send({ type: "get_available_models" });
+        const commands = extensionCommands(await client.send({ type: "get_commands" }));
+        assert.ok(commands.includes("sub2api-refresh"), "the extension must still load offline");
+        assert.deepEqual(client.extensionErrors(), []);
         await client.close();
         return modelKeys(models).includes("relay/gpt-5.5");
       }),

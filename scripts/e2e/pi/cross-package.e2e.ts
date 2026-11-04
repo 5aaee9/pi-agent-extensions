@@ -6,8 +6,8 @@ import { isRecord } from "../../release/json.ts";
 import { extensionCommands, modelKeys } from "./pi.ts";
 import { REGISTRATIONS } from "./registrations.ts";
 import { scenario } from "./scenario.ts";
-import { isChatRequest } from "./servers.ts";
-import { PROBE_ARGS, ROOT_DIR, readJsonRecord } from "./world.ts";
+import { bodyOf, isChatRequest } from "./servers.ts";
+import { PROBE_ARGS, PROBE_MODEL_ALT, PROBE_PROVIDER, ROOT_DIR, readJsonRecord } from "./world.ts";
 import { join } from "node:path";
 
 const PRINT_EXIT_BOUND_MS = 20_000;
@@ -63,6 +63,7 @@ scenario(
     for (const run of [printed, asJson]) {
       assert.equal(run.timedOut, false, `run did not exit within the bound\n${run.stderr}`);
       assert.equal(run.code, 0, run.stderr);
+      assert.ok(!run.stderr.includes("Extension error"), run.stderr);
     }
     assert.equal(server.requests.filter(isChatRequest).length, 2);
   },
@@ -72,12 +73,19 @@ scenario(
   "all packages installed together survive a model change, a new session, and a fork",
   { packages: ALL_PACKAGES },
   async ({ probeServer, rpc, world }) => {
-    await probeServer();
+    const server = await probeServer();
     const client = rpc(["--session-dir", world.sessionDir, ...PROBE_ARGS]);
     await client.prompt("first");
-    const switched = await client.send({ type: "set_model", provider: "probe", modelId: "m" });
+    const switched = await client.send({
+      type: "set_model",
+      provider: PROBE_PROVIDER,
+      modelId: PROBE_MODEL_ALT,
+    });
     assert.equal(switched["success"], true);
     await client.prompt("after a model change");
+    const afterSwitch = server.requests.at(-1);
+    assert.ok(afterSwitch !== undefined);
+    assert.equal(bodyOf(afterSwitch)["model"], PROBE_MODEL_ALT);
     assert.equal((await client.send({ type: "new_session" }))["success"], true);
     await client.prompt("after a new session");
     const forkable = await client.send({ type: "get_fork_messages" });
