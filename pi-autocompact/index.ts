@@ -129,7 +129,7 @@ export default function piAutocompact(pi: ExtensionAPI) {
       ctx.ui.setStatus("autocompact", `Compacting above ${limit.toLocaleString("en-US")} tokens…`);
       const entry = await summarizeBoundary(event.context, ctx, settings, signal);
       if (signal.aborted) return;
-      if (entry) return { entries: [entry] };
+      if (entry) return { entries: [...event.entries, entry] };
     } catch (error) {
       if (!shutdown && !ctx.signal?.aborted && !active?.signal.aborted) {
         ctx.ui.notify(

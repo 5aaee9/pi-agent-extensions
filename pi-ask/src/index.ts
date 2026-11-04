@@ -15,7 +15,7 @@ import { registerPendingAskResume } from "./resume-pending-ask.ts";
 
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const CONFIGURATION_DOC_PATH = resolve(PACKAGE_ROOT, "docs", "configuration.md");
-const PI_ASK_CONFIG_PROMPT = `When the user asks to configure, customize, debug, or explain @eko24ive/pi-ask settings or keymaps, first read ${CONFIGURATION_DOC_PATH} and follow it as the source of truth before editing config files.`;
+const PI_ASK_CONFIG_PROMPT = `When the user asks to configure, customize, debug, or explain @indexyz/pi-ask settings or keymaps, first read ${CONFIGURATION_DOC_PATH} and follow it as the source of truth before editing config files.`;
 
 export default function askExtension(pi: ExtensionAPI) {
   resetAskConfigStore();

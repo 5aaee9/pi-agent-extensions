@@ -173,7 +173,7 @@ export interface RealPlane {
   writeGlobalSettings(settings: unknown): Promise<void>;
   /** Start a session whose conversation is seeded with this many tokens, enough
    * for Pi's native compaction to find a cut point (0 seeds nothing). */
-  startSession(tokens?: number): Promise<RealSession>;
+  startSession(tokens?: number, precedingExtensions?: readonly string[]): Promise<RealSession>;
   close(): Promise<void>;
 }
 
@@ -330,7 +330,8 @@ export async function createRealPlane(): Promise<RealPlane> {
         await mkdir(agentDir, { recursive: true });
         await writeFile(join(agentDir, "settings.json"), `${JSON.stringify(settings, null, 2)}\n`);
       },
-      startSession: async (tokens = 100_000) => {
+      startSession: async (tokens = 100_000, precedingExtensions = []) => {
+        const extensionPaths = [...precedingExtensions, extensionPath];
         const modelRuntime = await ModelRuntime.create({
           authPath: join(agentDir, "auth.json"),
           modelsPath: join(agentDir, "models.json"),
@@ -342,7 +343,7 @@ export async function createRealPlane(): Promise<RealPlane> {
           cwd: projectDir,
           agentDir,
           settingsManager,
-          additionalExtensionPaths: [extensionPath],
+          additionalExtensionPaths: extensionPaths,
           noSkills: true,
           noPromptTemplates: true,
           noThemes: true,
@@ -350,7 +351,7 @@ export async function createRealPlane(): Promise<RealPlane> {
         });
         await resourceLoader.reload();
         const loaded = resourceLoader.getExtensions();
-        if (loaded.errors.length > 0 || loaded.extensions.length !== 1) {
+        if (loaded.errors.length > 0 || loaded.extensions.length !== extensionPaths.length) {
           throw new Error(
             `The real extension loader rejected the package: ${JSON.stringify(loaded.errors)}`,
           );

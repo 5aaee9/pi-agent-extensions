@@ -96,7 +96,7 @@ A `dsh-<topic>/` package for the DeepSeek Harness follows the same steps with th
     "prepack": "npm run check"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "0.84.0",
+    "@earendil-works/pi-coding-agent": "1.5.0",
     "@types/node": "^24.0.0",
     "typescript": "^7.0.2",
     "vitest": "^4.1.10"
@@ -113,7 +113,7 @@ A `dsh-<topic>/` package for the DeepSeek Harness follows the same steps with th
 }
 ```
 
-List every shipped file in `files`: each `.ts` module the extension imports, `README.md`, `CHANGELOG.md`, `LICENSE`, and any data file. Add `@earendil-works/pi-ai` or `@earendil-works/pi-tui` to both `peerDependencies` (`"*"`) and `devDependencies` (the same exact version as `pi-coding-agent`) when the code imports them. Pin the Pi version the package needs; `0.84.0` is what most packages use today. Do not add `private`.
+List every shipped file in `files`: each `.ts` module the extension imports, `README.md`, `CHANGELOG.md`, `LICENSE`, and any data file. Add `@earendil-works/pi-ai` or `@earendil-works/pi-tui` to both `peerDependencies` (`"*"`) and `devDependencies` (the same exact version as `pi-coding-agent`) when the code imports them. Pin the Pi version the package needs; `1.5.0` is the current shared verification baseline. Do not add `private`.
 
 ### `pi-<topic>/tsconfig.json`
 
@@ -251,7 +251,7 @@ Every change ends with all of these, run from the repository root:
    printf '{"id":"1","type":"get_commands"}\n' | node_modules/.bin/pi -ne -e ./pi-skill/index.ts --mode rpc
    ```
 
-   Replace `pi-skill` with the package you changed. When the package pins a Pi version different from the root's (today `pi-autocompact`, `pi-provider-sub2api`, and `pi-ask`), use its own binary: `pi-autocompact/node_modules/.bin/pi`. Exit code 0 and a `"success":true` response listing the package's commands mean the extension loaded. A load failure prints `Failed to load extension` and exits non-zero.
+   Replace `pi-skill` with the package you changed. All current Pi packages pin 1.5.0 and use the root binary after `npm install`. If a package later pins a different version, use its package-local binary. Exit code 0 and a `"success":true` response listing the package's commands mean the extension loaded. A load failure prints `Failed to load extension` and exits non-zero.
 
    The repository-wide host-loading check runs every supported package discovered from the workspace manifests:
 
@@ -259,7 +259,7 @@ Every change ends with all of these, run from the repository root:
    npm run test:e2e
    ```
 
-   It runs Pi packages through RPC with `PI_OFFLINE=1` and isolated config/session directories. DSH packages are built, packed, installed into a temporary directory without peer resolution, and checked with their declared `release.smoke` script. The run makes no model or business API calls, applies a 120-second per-package timeout by default, continues after an individual failure, and exits non-zero after printing the full summary. Use `npm run test:e2e -- --package @indexyz/pi-skill` to focus on one package or `--timeout-ms <milliseconds>` to adjust the local timeout. Failure sections include the command, exit status, stdout, and stderr.
+   It resolves the Pi host from each package, rejects an installed version that differs from its exact development pin with an `npm install` hint, and runs Pi packages through RPC with `PI_OFFLINE=1` and isolated config/session directories. DSH packages are built, packed, installed into a temporary directory without peer resolution, and checked with their declared `release.smoke` script. The run makes no model or business API calls, applies a 120-second per-package timeout by default, continues after an individual failure, and exits non-zero after printing the full summary. Use `npm run test:e2e -- --package @indexyz/pi-skill` to focus on one package or `--timeout-ms <milliseconds>` to adjust the local timeout. Failure sections include the command, exit status, stdout, and stderr.
 
    A `dsh-<topic>/` package has no Pi load to run. Its equivalent is the script its manifest declares, which the release engine also runs against the packed and installed tarball:
 

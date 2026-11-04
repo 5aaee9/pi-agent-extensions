@@ -1,11 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { VERSION } from "@earendil-works/pi-coding-agent";
-
-/** First Pi version whose inline `ctx.ui.custom()` accepts the `blocked` option. */
-const CUSTOM_BLOCKED_VERSION = [1, 5, 0] as const;
 const APP = "pi";
 const MAX_MESSAGE_BYTES = 2048;
-const VERSION_PATTERN = /^(\d+)\.(\d+)\.(\d+)/u;
 
 export type ProgramStatusState = "blocked" | "done" | "error" | "idle" | "working";
 
@@ -20,21 +15,6 @@ export type RestingStatus =
   | { state: "done" }
   | { message: string; state: "error" }
   | { state: "idle" };
-
-export function supportsCustomBlocked(version: string): boolean {
-  const match = VERSION_PATTERN.exec(version);
-  if (!match) {
-    return false;
-  }
-  const parts = [Number(match[1]), Number(match[2]), Number(match[3])];
-  for (const [index, minimum] of CUSTOM_BLOCKED_VERSION.entries()) {
-    const part = parts[index] ?? 0;
-    if (part !== minimum) {
-      return part > minimum;
-    }
-  }
-  return true;
-}
 
 /** Formats a root OSC 7501 record exactly as Pi does, so terminals treat it as Pi's own. */
 export function formatProgramStatus(status: ProgramStatus): string {
@@ -122,7 +102,6 @@ export function subscribeRestingStatus(
 export interface ProgramStatusHost {
   env: Record<string, string | undefined>;
   isTTY: boolean;
-  supportsCustomBlocked: boolean;
   write: (data: string) => void;
 }
 
@@ -140,9 +119,9 @@ export function reportBlockedQuestion(
   tracker: RestingStatusTracker,
   host: ProgramStatusHost = getProgramStatusHost(),
 ): () => void {
-  if (host.supportsCustomBlocked || !host.isTTY || host.env.PI_PROGRAM_STATUS === "0") {
+  if (!host.isTTY || host.env.PI_PROGRAM_STATUS === "0") {
     return () => {
-      // Pi reports the status itself, or reporting is off.
+      // Reporting is unavailable or disabled.
     };
   }
   host.write(formatProgramStatus({ state: "blocked", kind: "question", message }));
@@ -181,7 +160,6 @@ function getProgramStatusHost(): ProgramStatusHost {
   return {
     env: process.env,
     isTTY: Boolean(process.stdout.isTTY),
-    supportsCustomBlocked: supportsCustomBlocked(VERSION),
     write: (data) => {
       process.stdout.write(data);
     },

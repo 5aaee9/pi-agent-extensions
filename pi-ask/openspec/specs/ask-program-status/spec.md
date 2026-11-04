@@ -8,11 +8,11 @@ Reports to the terminal that pi is waiting on the user while an ask form is open
 
 ### Requirement: Report an open ask form through Pi's built-in status
 
-On a Pi host that supports a `blocked` option for custom components (Pi 1.5.0 or newer), the extension SHALL open the ask form with that option set to `kind=question` and a single-line message naming the waiting question. In that case it SHALL NOT write OSC 7501 sequences itself.
+On a Pi host that supports a `blocked` option for custom components (detected from its handling of the option, independent of its version string), the extension SHALL open the ask form with that option set to `kind=question` and a single-line message naming the waiting question. In that case it SHALL NOT write OSC 7501 sequences itself.
 
 #### Scenario: Question waiting on Pi 1.5.0
 
-- **WHEN** the agent calls `ask_user_question` in interactive TUI mode on Pi 1.5.0 or newer
+- **WHEN** the agent calls `ask_user_question` in interactive TUI mode on a host with native support
 - **THEN** Pi reports `state=blocked` with `kind=question` and a message of the form "Question waiting: <label or prompt>" until the form closes, and pi-ask writes no OSC 7501 sequence
 
 #### Scenario: Form closed on Pi 1.5.0
@@ -26,7 +26,7 @@ On a Pi host without the `blocked` option, the extension SHALL write an OSC 7501
 
 #### Scenario: Question waiting during an agent run on an older host
 
-- **WHEN** the agent calls `ask_user_question` on a Pi version before 1.5.0
+- **WHEN** the agent calls `ask_user_question` on a host without native support
 - **THEN** stdout receives `ESC ] 7501 ; state=blocked:app=pi:kind=question:msg=<base64> ESC \` when the form opens
 
 #### Scenario: Form closed while the agent run continues
@@ -58,6 +58,16 @@ On a Pi host without the `blocked` option, the extension SHALL write an OSC 7501
 
 - **WHEN** stdout is not a TTY or `PI_PROGRAM_STATUS` is `0`
 - **THEN** the extension writes no OSC 7501 sequence
+
+#### Scenario: Host version does not predict its capability
+
+- **WHEN** a host consumes the native blocked option even though its version string differs from standard Pi releases
+- **THEN** the host manages status and pi-ask emits no fallback OSC sequence
+
+#### Scenario: Form construction fails before display
+
+- **WHEN** custom UI fails before the form is rendered
+- **THEN** the extension does not emit a fallback blocked status
 
 ### Requirement: Retire the osc7501 notification channel
 

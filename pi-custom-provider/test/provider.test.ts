@@ -396,7 +396,7 @@ describe("custom provider extension", () => {
     upstream = "ok";
     outputLimit = 8192;
     const third = await loadHost();
-    expect(third.registrations[0]!.config.models![0]!.maxTokens).toBe(4096);
+    expect(third.registrations[0]!.config.models![0]).toMatchObject({ maxTokens: 4096 });
     expect(server.requests).toHaveLength(3);
 
     const session = await startSession(third);
@@ -577,8 +577,7 @@ describe("custom provider extension", () => {
       thinkingLevelMap: { xhigh: "max", max: "max" },
     });
     const plain = gateway.config.models!.find((model) => model.id === "plain-model")!;
-    expect(plain.reasoning).toBe(false);
-    expect(plain.thinkingLevelMap).toBeUndefined();
+    expect(plain).toMatchObject({ reasoning: false, thinkingLevelMap: undefined });
 
     const offline = host.registrations.find((entry) => entry.name === "offline")!;
     expect(offline.config.models![0]).toMatchObject({

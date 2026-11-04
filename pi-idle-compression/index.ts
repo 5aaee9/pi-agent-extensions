@@ -140,9 +140,11 @@ export default function piIdleCompression(pi: ExtensionAPI): void {
     cancel();
   });
 
-  pi.on("session_compact", () => {
-    cancel();
-  });
+  pi.on("session_before_compact", cancel);
+  pi.on("session_compact", cancel);
+  // An earlier hook can cancel before ours runs; preparation can also fail
+  // before session_before_compact. Either outcome ends the old idle period.
+  pi.on("session_compact_failed", cancel);
 
   pi.on("model_select", async (_event, ctx) => {
     // Keep the original idle start; only the effective idle time changes.

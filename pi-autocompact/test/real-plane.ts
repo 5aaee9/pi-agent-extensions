@@ -168,6 +168,8 @@ export interface RealSession {
 }
 
 export interface StartSessionOptions {
+  /** Real extensions loaded before autocompact to exercise handler composition. */
+  readonly precedingExtensions?: readonly string[];
   /** Seed a conversation whose measured context usage is this many tokens. */
   readonly tokens?: number;
   /** The usage every real reply reports (default: the seeded `tokens`). Seeding
@@ -349,6 +351,7 @@ export async function createRealPlane(): Promise<RealPlane> {
       readGlobalSettings: () => readFile(join(agentDir, "settings.json"), "utf8"),
       readProjectSettings: () => readFile(join(projectDir, ".pi", "settings.json"), "utf8"),
       startSession: async (options = {}) => {
+        const extensionPaths = [...(options.precedingExtensions ?? []), extensionPath];
         const modelRuntime = await ModelRuntime.create({
           authPath: join(agentDir, "auth.json"),
           modelsPath: join(agentDir, "models.json"),
@@ -360,7 +363,7 @@ export async function createRealPlane(): Promise<RealPlane> {
           cwd: projectDir,
           agentDir,
           settingsManager,
-          additionalExtensionPaths: [extensionPath],
+          additionalExtensionPaths: extensionPaths,
           noSkills: true,
           noPromptTemplates: true,
           noThemes: true,
@@ -368,7 +371,7 @@ export async function createRealPlane(): Promise<RealPlane> {
         });
         await resourceLoader.reload();
         const loaded = resourceLoader.getExtensions();
-        if (loaded.errors.length > 0 || loaded.extensions.length !== 1) {
+        if (loaded.errors.length > 0 || loaded.extensions.length !== extensionPaths.length) {
           throw new Error(
             `The real extension loader rejected the package: ${JSON.stringify(loaded.errors)}`,
           );

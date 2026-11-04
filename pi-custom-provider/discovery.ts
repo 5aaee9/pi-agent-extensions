@@ -218,7 +218,7 @@ function applyModelOverride(model: DiscoveredModel, override: JsonRecord | undef
 export function modelConfigForProvider(
   provider: ProviderDefinition,
   discovered: DiscoveredModel,
-): ProviderModelConfig {
+): Extract<ProviderModelConfig, { reasoning: boolean }> {
   const model = applyModelOverride(discovered, provider.modelOverrides[discovered.id]);
   const contextWindow = model.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
   const maxTokens = Math.min(model.maxTokens ?? DEFAULT_MAX_TOKENS, contextWindow);
@@ -239,7 +239,7 @@ export function modelConfigForProvider(
     cost: model.cost,
     contextWindow,
     maxTokens,
-    compat: mergeCompat(provider.compat, model.compat) as ProviderModelConfig["compat"],
+    compat: mergeCompat(provider.compat, model.compat),
   };
 }
 

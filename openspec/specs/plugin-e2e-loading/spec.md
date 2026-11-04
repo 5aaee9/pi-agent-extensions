@@ -22,7 +22,7 @@ CI SHALL discover every workspace package that declares a supported Pi or DSH ma
 
 ### Requirement: Pi packages load through the Pi host
 
-Each Pi package SHALL be loaded with its package-local Pi binary in non-interactive RPC mode, offline, with isolated session and agent directories, and SHALL succeed only when the process exits 0 and returns a successful `get_commands` response.
+Each Pi package SHALL be loaded with the Pi binary resolved from that package and matching its exact development dependency pin in non-interactive RPC mode, offline, with isolated session and agent directories, and SHALL succeed only when the process exits 0 and returns a successful `get_commands` response.
 
 #### Scenario: A Pi extension registers commands
 
@@ -33,6 +33,11 @@ Each Pi package SHALL be loaded with its package-local Pi binary in non-interact
 
 - **WHEN** an extension entry throws while the Pi host loads it
 - **THEN** the run reports that package as failed with the host's load diagnostics
+
+#### Scenario: Local dependencies resolve the wrong Pi version
+
+- **WHEN** the resolved Pi version differs from the package's development pin
+- **THEN** the runner fails that package before loading it, reports the expected and installed versions, and asks for dependency installation
 
 ### Requirement: DSH packages load from their packed artifacts
 

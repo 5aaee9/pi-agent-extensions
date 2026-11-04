@@ -4,20 +4,22 @@ A collection of extensions for the [pi coding agent](https://github.com/earendil
 
 ## Packages
 
-| Package                                                                                     | Description                                                                                                                                             |
-| ------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`@indexyz/pi-provider-sub2api`](./pi-provider-sub2api)                                     | Dynamic provider support, cached model and price discovery, quota reporting, saved request modes, and Grok (xAI) entries for Sub2API-compatible relays. |
-| [`@indexyz/pi-custom-provider`](./pi-custom-provider)                                       | Generic OpenAI Chat Compatible, Anthropic Messages, OpenAI Responses, and Ollama providers with model discovery and caching.                            |
-| [`@indexyz/pi-continue`](./pi-continue)                                                     | Resume an interrupted or failed turn with pi's currently selected model.                                                                                |
-| [`@indexyz/pi-skill`](./pi-skill)                                                           | Codex-style `$skill-name` invocation anywhere in a prompt.                                                                                              |
-| [`@indexyz/pi-model-trace`](./pi-model-trace)                                               | Attribute the model actually serving pi via ModelTrace numeric fingerprinting (`/model-trace`).                                                         |
-| [`@indexyz/pi-autocompact`](./pi-autocompact)                                               | Context compaction thresholds via `/autocompact 300k` or `80%`, with per-model defaults and provider and global caps.                                   |
-| [`@indexyz/pi-idle-compression`](./pi-idle-compression)                                     | Compact a session's context automatically after it has been idle (default 50 minutes), configurable globally, per provider, and per model.              |
-| [`@indexyz/pi-ask`](./pi-ask)                                                               | Structured interactive clarification questions with replay, notes, recovery, and configurable terminal notifications.                                   |
-| [`@indexyz/dsh-autocompact`](./dsh-autocompact)                                             | The same thresholds for dsh: a `/autocompact` command, a Settings section, and a composer status entry.                                                 |
-| [`@indexyz/dsh-custom-provider-reasoning-efforts`](./dsh-custom-provider-reasoning-efforts) | Declare `reasoningEfforts` and `input` modalities for hand-written dsh provider routes the pi-ai catalog does not describe.                             |
-| [`@indexyz/dsh-thread-summary`](./dsh-thread-summary)                                       | Generate a concise session title from the first user prompt with a configurable summary model.                                                          |
-| [`@indexyz/dsh-prompt-suggestions`](./dsh-prompt-suggestions)                               | Suggest the user's next message as dim ghost text in an empty composer after a successful reply.                                                        |
+All eight Pi packages are verified against Pi 1.5.0. `pi-ask` also exercises its OSC status fallback on Pi 1.4.0.
+
+| Package                                                                                     | Description                                                                                                                                                  |
+| ------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| [`@indexyz/pi-provider-sub2api`](./pi-provider-sub2api)                                     | Dynamic provider support, cached model and price discovery, quota reporting, saved request modes, and Grok (xAI) entries for Sub2API-compatible relays.      |
+| [`@indexyz/pi-custom-provider`](./pi-custom-provider)                                       | Generic OpenAI Chat Compatible, Anthropic Messages, OpenAI Responses, and Ollama providers with model discovery, caching, and transcript-aware Ollama tools. |
+| [`@indexyz/pi-continue`](./pi-continue)                                                     | Resume an interrupted or failed turn with pi's currently selected model.                                                                                     |
+| [`@indexyz/pi-skill`](./pi-skill)                                                           | Codex-style `$skill-name` invocation anywhere in a prompt.                                                                                                   |
+| [`@indexyz/pi-model-trace`](./pi-model-trace)                                               | Attribute the model actually serving pi via ModelTrace numeric fingerprinting in isolated sessions of the current host (`/model-trace`).                     |
+| [`@indexyz/pi-autocompact`](./pi-autocompact)                                               | Context compaction thresholds via `/autocompact 300k` or `80%`, with per-model defaults and provider and global caps.                                        |
+| [`@indexyz/pi-idle-compression`](./pi-idle-compression)                                     | Compact a session's context automatically after it has been idle (default 50 minutes), configurable globally, per provider, and per model.                   |
+| [`@indexyz/pi-ask`](./pi-ask)                                                               | Structured clarification questions with replay, recovery, and native OSC status detection with a fallback.                                                   |
+| [`@indexyz/dsh-autocompact`](./dsh-autocompact)                                             | The same thresholds for dsh: a `/autocompact` command, a Settings section, and a composer status entry.                                                      |
+| [`@indexyz/dsh-custom-provider-reasoning-efforts`](./dsh-custom-provider-reasoning-efforts) | Declare `reasoningEfforts` and `input` modalities for hand-written dsh provider routes the pi-ai catalog does not describe.                                  |
+| [`@indexyz/dsh-thread-summary`](./dsh-thread-summary)                                       | Generate a concise session title from the first user prompt with a configurable summary model.                                                               |
+| [`@indexyz/dsh-prompt-suggestions`](./dsh-prompt-suggestions)                               | Suggest the user's next message as dim ghost text in an empty composer after a successful reply.                                                             |
 
 Install a package from npm:
 

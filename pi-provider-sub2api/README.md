@@ -447,6 +447,8 @@ Use HTTPS for remote relays. Plain HTTP is accepted for trusted local developmen
 
 ## Development
 
+Verified against Pi 1.5.0.
+
 From the repository root:
 
 ```bash

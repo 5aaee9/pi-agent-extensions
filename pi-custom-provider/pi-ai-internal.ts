@@ -1,9 +1,9 @@
 // ---------------------------------------------------------------------------
-// Vendored internals from @earendil-works/pi-ai 0.99.1 (`dist/api/simple-options.js`,
-// `dist/api/transform-messages.js`, `dist/utils/estimate.js`, and `dist/utils/text.js`).
+// Adapted internals from @earendil-works/pi-ai (`dist/api/simple-options.js`,
+// `dist/api/transform-messages.js`, and `dist/utils/estimate.js`), aligned with 1.5.0.
 //
-// Pi's extension module mapping only exposes the pi-ai root (compat), `compat`,
-// `oauth`, and `providers/all` entrypoints, so the `api/*` submodules cannot be
+// Pi's extension module mapping exposes selected public entrypoints,
+// including transcript helpers, but the `api/*` submodules cannot be
 // imported at extension runtime (static, dynamic, or `import.meta.resolve` all
 // fail under the compiled pi binary). Keep this file aligned with upstream when
 // bumping the pinned pi-ai version.
@@ -12,12 +12,13 @@
 import type {
   Api,
   AssistantMessage,
-  Context,
+  TranscriptContext,
   ImageContent,
   Message,
   Model,
   SimpleStreamOptions,
   StreamOptions,
+  SystemMessage,
   TextContent,
   ThinkingContent,
   Tool,
@@ -27,43 +28,7 @@ import type {
   UserMessage,
 } from "@earendil-works/pi-ai";
 
-/**
- * Structural stand-in for pi-ai's mid-conversation system message, which exists
- * in newer hosts (0.99+) but not in the pinned 0.84 type definitions.
- */
-export interface SystemMessageLike {
-  role: "system";
-  content: string | (TextContent | ImageContent)[];
-  sections?: Record<string, string | null>;
-  toolsAdded?: Tool[];
-  toolsRemoved?: Tool[];
-  timestamp: number;
-}
-
-/** Messages as they can arrive from a newer pi host at runtime. */
-export type RuntimeMessage = Message | SystemMessageLike;
-
-// ---------------------------------------------------------------------------
-// utils/text.js
-// ---------------------------------------------------------------------------
-
-/** Extract and join text from message content. */
-function contentText(content: SystemMessageLike["content"], separator = "\n"): string {
-  if (typeof content === "string") return content;
-  return content
-    .filter((block) => block.type === "text")
-    .map((block) => block.text)
-    .join(separator);
-}
-
-/** Render a system message as a complete prompt: its content followed by its sections. */
-export function getSystemMessageText(message: SystemMessageLike): string {
-  const parts = [contentText(message.content)];
-  for (const text of Object.values(message.sections ?? {})) {
-    if (text !== null) parts.push(text);
-  }
-  return parts.filter((part) => part.length > 0).join("\n\n");
-}
+import { clampThinkingLevel, getSystemMessageText } from "@earendil-works/pi-ai";
 
 // ---------------------------------------------------------------------------
 // utils/estimate.js
@@ -104,12 +69,12 @@ function estimateTextAndImageContentTokens(
   return Math.ceil(estimateTextAndImageContentChars(content) / CHARS_PER_TOKEN);
 }
 
-function estimateToolsTokens(tools: Tool[] | undefined): number {
+function estimateToolsTokens(tools: Pick<Tool, "name">[] | undefined): number {
   if (!tools || tools.length === 0) return 0;
   return estimateTextTokens(safeJsonStringify(tools));
 }
 
-function estimateMessageTokens(message: RuntimeMessage): number {
+function estimateMessageTokens(message: Message): number {
   let chars = 0;
   if (message.role === "system") {
     return (
@@ -133,7 +98,7 @@ function estimateMessageTokens(message: RuntimeMessage): number {
 }
 
 function getLastAssistantUsageInfo(
-  messages: RuntimeMessage[],
+  messages: Message[],
 ): { usage: Usage; index: number } | undefined {
   let latestPrefixTimestamp = Number.NEGATIVE_INFINITY;
   let usageInfo: { usage: Usage; index: number } | undefined;
@@ -158,13 +123,13 @@ function getLastAssistantUsageInfo(
   return usageInfo;
 }
 
-export function estimateContextTokens(context: Context | RuntimeMessage[]): {
+export function estimateContextTokens(context: TranscriptContext | Message[]): {
   tokens: number;
   usageTokens: number;
   trailingTokens: number;
   lastUsageIndex: number | null;
 } {
-  const messages: RuntimeMessage[] = Array.isArray(context) ? context : context.messages;
+  const messages: Message[] = Array.isArray(context) ? context : context.messages;
   const usageInfo = getLastAssistantUsageInfo(messages);
   if (usageInfo) {
     const usageTokens = calculateContextTokens(usageInfo.usage);
@@ -191,14 +156,9 @@ export function estimateContextTokens(context: Context | RuntimeMessage[]): {
 const CONTEXT_SAFETY_TOKENS = 4096;
 const MIN_MAX_TOKENS = 1;
 
-/** `SimpleStreamOptions` extended with the newer host's provider-event passthrough. */
-export type HostSimpleStreamOptions = SimpleStreamOptions & {
-  onProviderStreamEvent?: (data: unknown, model: Model<Api>) => void | Promise<void>;
-};
-
 export function clampMaxTokensToContext(
   model: Model<Api>,
-  context: Context,
+  context: TranscriptContext,
   maxTokens: number,
 ): number {
   if (model.contextWindow <= 0) return Math.max(MIN_MAX_TOKENS, maxTokens);
@@ -209,31 +169,18 @@ export function clampMaxTokensToContext(
 
 export function buildBaseOptions(
   model: Model<Api>,
-  context: Context,
-  options?: HostSimpleStreamOptions,
-  apiKey?: string,
-): StreamOptions & Pick<HostSimpleStreamOptions, "onProviderStreamEvent"> {
+  context: TranscriptContext,
+  options?: SimpleStreamOptions,
+): StreamOptions {
+  const level = clampThinkingLevel(model, options?.reasoning ?? "off");
   return {
-    temperature: options?.temperature,
-    samplingParams: options?.samplingParams,
+    ...options,
+    samplingParams: {
+      ...model.samplingParams,
+      ...model.samplingParamsByThinkingLevel?.[level],
+      ...options?.samplingParams,
+    },
     maxTokens: clampMaxTokensToContext(model, context, options?.maxTokens ?? model.maxTokens),
-    signal: options?.signal,
-    telemetryContext: options?.telemetryContext,
-    apiKey: apiKey || options?.apiKey,
-    fetch: options?.fetch,
-    transport: options?.transport,
-    cacheRetention: options?.cacheRetention,
-    sessionId: options?.sessionId,
-    headers: options?.headers,
-    onPayload: options?.onPayload,
-    onResponse: options?.onResponse,
-    onProviderStreamEvent: options?.onProviderStreamEvent,
-    timeoutMs: options?.timeoutMs,
-    websocketConnectTimeoutMs: options?.websocketConnectTimeoutMs,
-    maxRetries: options?.maxRetries,
-    maxRetryDelayMs: options?.maxRetryDelayMs,
-    metadata: options?.metadata,
-    env: options?.env,
   };
 }
 
@@ -264,10 +211,7 @@ function replaceImagesWithPlaceholder(
   return result;
 }
 
-function downgradeUnsupportedImages(
-  messages: RuntimeMessage[],
-  model: Model<Api>,
-): RuntimeMessage[] {
+function downgradeUnsupportedImages(messages: Message[], model: Model<Api>): Message[] {
   if (model.input.includes("image")) {
     return messages;
   }
@@ -302,8 +246,7 @@ export function transformMessages(
   const toolCallIdMap = new Map<string, string>();
   // Normalize null/undefined content from untyped callers (custom tools, hand-built
   // histories, old session files) so downstream code can rely on the type contract.
-  const widened = messages as RuntimeMessage[];
-  const normalizedMessages = widened.map((msg) =>
+  const normalizedMessages = messages.map((msg) =>
     msg.content == null ? ({ ...msg, content: [] } as typeof msg) : msg,
   );
   const imageAwareMessages = downgradeUnsupportedImages(normalizedMessages, model);
@@ -386,13 +329,13 @@ export function transformMessages(
   });
   // Second pass: insert synthetic empty tool results for orphaned tool calls
   // This preserves thinking signatures and satisfies API requirements
-  const result: RuntimeMessage[] = [];
+  const result: Message[] = [];
   let pendingToolCalls: Extract<AssistantMessage["content"][number], { type: "toolCall" }>[] = [];
   let existingToolResultIds = new Set<string>();
   // System messages are transparent to tool-call accounting: one that lands between a tool
   // call and its results is held back and emitted after the results (synthetic ones
   // included), so it never causes a duplicate result for a call that is answered later.
-  const heldSystemMessages: SystemMessageLike[] = [];
+  const heldSystemMessages: SystemMessage[] = [];
   const closePendingToolCalls = () => {
     if (pendingToolCalls.length > 0) {
       for (const tc of pendingToolCalls) {
@@ -456,5 +399,5 @@ export function transformMessages(
   }
   // If the conversation ends with unresolved tool calls, synthesize results now.
   closePendingToolCalls();
-  return result as Message[];
+  return result;
 }

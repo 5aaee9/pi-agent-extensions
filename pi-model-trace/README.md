@@ -10,6 +10,8 @@ pi install npm:@indexyz/pi-model-trace
 
 Releases are published to npm as `@indexyz/pi-model-trace`; each release is tagged `@indexyz/pi-model-trace@<version>`.
 
+Requires Pi 1.5.0 or newer.
+
 To try a repository checkout (after `npm install` at the repository root):
 
 ```bash
@@ -28,8 +30,12 @@ is executed in its own **non-persisted pi session** — a fresh `pi -p --no-sess
 --no-tools -a` child process with an empty context, no session persistence, and all
 tools disabled, so the model has to answer the numeric challenge directly and
 cannot reuse prior context or call tools. Transport-level probe failures are
-retried once; the pi binary defaults to `pi` on `PATH` and can be overridden with
-the `PI_MODEL_TRACE_BIN` environment variable.
+retried once. Probes use the current Pi installation and preserve the session's
+thinking level, including `off`; `PI_MODEL_TRACE_BIN` explicitly overrides the
+probe executable. Each probe has a ten-minute timeout and a one-MiB combined
+stdout/stderr limit. Failed or truncated output does not contribute to attribution.
+Switching or closing the session cancels active probes without retries or a late
+report.
 
 Each challenge asks the model to emit ~300 integers between 1 and 355. The raw
 answers are scored locally against the bundled ModelTrace unified fingerprint bank
@@ -51,6 +57,8 @@ to the transcript as a `model-trace` message.
   reference signal, not definitive proof.
 - The model still sees pi's system prompt during probes; providers or harnesses
   whose prompts differ strongly from the bank's采集环境 can skew attribution.
+- Probe processes load persisted and project resources independently. Providers
+  registered only in the parent session's memory are not available in probes.
 - Probes consume the target model's inference quota (three ~300-token answers).
 - The fingerprint core and challenge generator are TypeScript ports of upstream
   `fingerprint-core.mjs` / `fingerprint.py` (MIT License, © 2026 xqy2006).
@@ -58,6 +66,9 @@ to the transcript as a `model-trace` message.
 ## Development
 
 ```bash
-npm test
-npm run typecheck
+npm run check --workspace @indexyz/pi-model-trace
+npm run test:e2e -- --package @indexyz/pi-model-trace
 ```
+
+The command regression tests run real Pi RPC sessions and probe subprocesses
+against a local OpenAI-compatible HTTP endpoint; they need no model credentials.

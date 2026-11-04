@@ -6,11 +6,14 @@ import {
   calculateCost,
   clampThinkingLevel,
   createAssistantMessageEventStream,
-  parseStreamingJson,
+  collapseSystemMessages,
+  getCurrentTools,
+  getSystemMessageText,
+  parseToolCallArguments,
   type Api,
   type AssistantMessage,
   type AssistantMessageEventStream,
-  type Context,
+  type TranscriptContext,
   type Model,
   type SimpleStreamOptions,
   type StreamOptions,
@@ -18,12 +21,7 @@ import {
   type ToolResultMessage,
   type UserMessage,
 } from "@earendil-works/pi-ai";
-import {
-  getSystemMessageText,
-  buildBaseOptions,
-  transformMessages,
-  type RuntimeMessage,
-} from "./pi-ai-internal.ts";
+import { buildBaseOptions, transformMessages } from "./pi-ai-internal.ts";
 
 import type { JsonRecord } from "./types.ts";
 import { asRecord, readResponseText, toNonNegativeNumber } from "./util.ts";
@@ -63,13 +61,9 @@ function ollamaContentParts(content: UserMessage["content"] | ToolResultMessage[
   return { text: text.join("\n"), images };
 }
 
-function toOllamaMessages(context: Context): OllamaChatMessage[] {
+function toOllamaMessages(context: TranscriptContext): OllamaChatMessage[] {
   const messages: OllamaChatMessage[] = [];
-  const systemPrompt = context.systemPrompt?.trim();
-  if (systemPrompt) messages.push({ role: "system", content: systemPrompt });
-  for (const message of context.messages as RuntimeMessage[]) {
-    // Newer pi hosts can inject mid-conversation system messages; map them onto
-    // Ollama's system role instead of letting them fall through to tool results.
+  for (const message of context.messages) {
     if (message.role === "system") {
       const text = getSystemMessageText(message).trim();
       if (text) messages.push({ role: "system", content: text });
@@ -142,7 +136,7 @@ function ollamaThink(
 
 function buildOllamaPayload(
   model: Model<Api>,
-  context: Context,
+  context: TranscriptContext,
   options: StreamOptions,
   think: boolean | string | undefined,
 ): JsonRecord {
@@ -160,8 +154,9 @@ function buildOllamaPayload(
   };
   if (think !== undefined) payload.think = think;
   if (Object.keys(ollamaOptions).length > 0) payload.options = ollamaOptions;
-  if (context.tools && context.tools.length > 0) {
-    payload.tools = context.tools.map((tool) => ({
+  const tools = getCurrentTools(context.messages);
+  if (tools.length > 0) {
+    payload.tools = tools.map((tool) => ({
       type: "function",
       function: {
         name: tool.name,
@@ -184,12 +179,12 @@ function ollamaErrorMessage(payload: unknown, fallback: string) {
 }
 
 /** Read an ndjson response body line by line, invoking `onLine` per JSON value. */
-async function readNdjson(response: Response, onLine: (value: JsonRecord) => void) {
+async function readNdjson(response: Response, onLine: (value: JsonRecord) => Promise<void>) {
   if (!response.body) return;
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
-  const flush = (line: string) => {
+  const flush = async (line: string) => {
     const trimmed = line.trim();
     if (!trimmed) return;
     let value: unknown;
@@ -199,20 +194,20 @@ async function readNdjson(response: Response, onLine: (value: JsonRecord) => voi
       return; // tolerate partial/garbage lines between valid chunks
     }
     const record = asRecord(value);
-    if (record) onLine(record);
+    if (record) await onLine(record);
   };
   while (true) {
     const { done, value } = await reader.read();
     buffer += decoder.decode(value, { stream: !done });
     let newline = buffer.indexOf("\n");
     while (newline >= 0) {
-      flush(buffer.slice(0, newline));
+      await flush(buffer.slice(0, newline));
       buffer = buffer.slice(newline + 1);
       newline = buffer.indexOf("\n");
     }
     if (done) break;
   }
-  flush(buffer);
+  await flush(buffer);
 }
 
 function ollamaRetryDelayMs(response: Response | undefined, attempt: number, cap: number) {
@@ -230,7 +225,7 @@ function ollamaRetryDelayMs(response: Response | undefined, attempt: number, cap
  */
 function streamOllamaChat(
   model: Model<Api>,
-  context: Context,
+  context: TranscriptContext,
   options?: StreamOptions & { think?: boolean | string },
 ): AssistantMessageEventStream {
   const stream = createAssistantMessageEventStream();
@@ -385,17 +380,17 @@ function streamOllamaChat(
       const pushToolCall = (raw: OllamaToolCall) => {
         const name = raw.function?.name;
         if (!name) return;
-        const args =
-          asRecord(raw.function?.arguments) ??
-          (typeof raw.function?.arguments === "string"
-            ? (parseStreamingJson(raw.function.arguments) as Record<string, unknown>)
-            : {});
+        const args = parseToolCallArguments(
+          typeof raw.function?.arguments === "string"
+            ? raw.function.arguments
+            : JSON.stringify(raw.function?.arguments ?? {}),
+        );
         const toolCall: ToolCall = {
           type: "toolCall",
           // Ollama does not generate call ids; synthesize one for matching.
           id: `ollama_call_${toolCallIndex++}`,
           name,
-          arguments: args,
+          ...args,
         };
         closeBlock();
         output.content.push(toolCall);
@@ -410,7 +405,8 @@ function streamOllamaChat(
       };
 
       let sawDone = false;
-      await readNdjson(response, (chunk) => {
+      await readNdjson(response, async (chunk) => {
+        await options?.onProviderStreamEvent?.(chunk, model);
         const message = asRecord(chunk.message);
         if (typeof message?.thinking === "string") pushDelta("thinking", message.thinking);
         if (typeof message?.content === "string") pushDelta("text", message.content);
@@ -470,11 +466,12 @@ function streamOllamaChat(
 
 export const streamOllamaChatSimple = (
   model: Model<Api>,
-  context: Context,
+  context: TranscriptContext,
   options?: SimpleStreamOptions,
 ): AssistantMessageEventStream => {
-  const base = buildBaseOptions(model, context, options, options?.apiKey);
-  const transformed = transformMessages(context.messages, model);
+  const transcript = collapseSystemMessages(context);
+  const base = buildBaseOptions(model, transcript, options);
+  const transformed = transformMessages(transcript.messages, model);
   const think = ollamaThink(model, options);
-  return streamOllamaChat(model, { ...context, messages: transformed }, { ...base, think });
+  return streamOllamaChat(model, { ...transcript, messages: transformed }, { ...base, think });
 };

@@ -75,8 +75,9 @@ idle period is not armed. Project `.pi/settings.json` is not read.
 - An idle period starts when Pi settles after a run, and when a session opens
   with an existing conversation (resume, `/reload`); for a reopened session the
   clock starts when it is opened.
-- User input, a new agent run, or any compaction (for example `/compact`) ends
-  the idle period. The next one starts when Pi settles again.
+- User input, a new agent run, or the start of any native compaction (for example
+  `/compact`) ends the idle period, including a compaction that later fails or is
+  cancelled. The next one starts when Pi settles again.
 - Compaction happens at most once per idle period. It is skipped when Pi is not
   idle, messages are queued, the conversation is already compacted, or Pi has
   not measured the context since the last compaction.
@@ -86,6 +87,14 @@ idle period is not armed. Project `.pi/settings.json` is not read.
   session too small to compact is reported as a failed compaction.
 - A prompt typed while idle compaction runs waits for it, as after `/compact`.
 - The timer never keeps Pi running: print and RPC modes exit normally.
+
+Pi 1.5.0 defaults to `cacheWarming: "streaming"`, which warms eligible prompt
+caches during active runs. If you select `cacheWarming: "idle"`, Pi can also pay
+to keep a cache warm between runs. This extension still compacts at its configured
+idle deadline; it does not inspect cache warmth or change Pi's warming policy.
+Compacting replaces the cached transcript with a summary, so a deliberately warm
+cache may lose its benefit. To keep that cache, disable idle compression for the
+relevant provider or model, or choose a longer idle interval.
 
 ## Development
 

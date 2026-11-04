@@ -7,7 +7,6 @@ import {
   RestingStatusTracker,
   reportBlockedQuestion,
   subscribeRestingStatus,
-  supportsCustomBlocked,
 } from "../src/program-status.ts";
 
 const ESC = "\x1b";
@@ -25,7 +24,6 @@ function makeHost(overrides: Partial<ProgramStatusHost> = {}) {
   const host: ProgramStatusHost = {
     env: {},
     isTTY: true,
-    supportsCustomBlocked: false,
     write: (data) => {
       writes.push(data);
     },
@@ -66,17 +64,6 @@ function subscribeTracker() {
     emit("message_end", { message: { role: "assistant", stopReason, errorMessage } });
   return { assistant, emit, tracker };
 }
-
-test("custom blocked support starts at Pi 1.5.0", () => {
-  assert.equal(supportsCustomBlocked("1.4.0"), false);
-  assert.equal(supportsCustomBlocked("0.84.0"), false);
-  assert.equal(supportsCustomBlocked("1.5.0"), true);
-  assert.equal(supportsCustomBlocked("1.5.1-beta.1"), true);
-  assert.equal(supportsCustomBlocked("1.10.0"), true);
-  assert.equal(supportsCustomBlocked("2.0.0"), true);
-  assert.equal(supportsCustomBlocked("unknown"), false);
-  assert.equal(supportsCustomBlocked(""), false);
-});
 
 test("program status records match Pi's root record format", () => {
   assert.equal(
@@ -153,18 +140,6 @@ test("only a manual compaction outside a run marks the session done", () => {
 
   emit("session_compact", { reason: "manual" });
   assert.deepEqual(tracker.status, { state: "done" });
-});
-
-test("hosts with built-in blocked support get no direct writes", () => {
-  const { host, writes } = makeHost({ supportsCustomBlocked: true });
-  const restore = reportBlockedQuestion(
-    "Question waiting",
-    makeCtx(false),
-    new RestingStatusTracker(),
-    host,
-  );
-  restore();
-  assert.deepEqual(writes, []);
 });
 
 test("fallback reporting stays silent without a TTY or with PI_PROGRAM_STATUS=0", () => {

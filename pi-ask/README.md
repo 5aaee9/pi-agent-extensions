@@ -14,7 +14,7 @@ For a repository checkout, after `npm install`:
 pi -e ./pi-ask/index.ts
 ```
 
-Tested against Pi 0.84.0. Releases use tags `@indexyz/pi-ask@<version>`.
+Tested against Pi 1.5.0, with OSC fallback tests on Pi 1.4.0. Releases use tags `@indexyz/pi-ask@<version>`.
 
 ## Usage
 
@@ -41,9 +41,11 @@ New configurations enable the `bell` notification channel. Explicit user channel
 
 While an ask form is open, terminals and agent dashboards that support the [Program Status Protocol (OSC 7501)](https://www.superlogical.com/rex/docs/build/program-status) see Pi as `blocked` with `kind=question` and the message `Question waiting: <label or prompt>`, instead of `working`. This does not depend on notification settings.
 
-- Pi 1.5.0 and later report it themselves: pi-ask opens the form with the `blocked` option of `ctx.ui.custom()`, and Pi restores its own status when the form closes.
-- On older Pi versions, pi-ask writes the same root record Pi writes (`app=pi`, no `id`) when the form opens. When it closes, pi-ask writes the status Pi would report: `working` with the session name during an agent run, otherwise `done`, `error`, or `idle` according to how the last run ended. A failed or aborted manual `/compact` outside a run is not visible to extensions, so the restored status can differ from Pi's until Pi's next status change.
-- On older Pi versions, pi-ask writes nothing when stdout is not a TTY or `PI_PROGRAM_STATUS=0`. Pi 1.5.0 and later apply their own `PI_PROGRAM_STATUS` and support detection.
+- When the host handles the native `blocked` option (as Pi 1.5.0 does), it reports status itself: pi-ask opens the form with the `blocked` option of `ctx.ui.custom()`, and Pi restores its own status when the form closes.
+- When the host does not handle `blocked`, pi-ask writes the same root record Pi writes (`app=pi`, no `id`) when the form opens. When it closes, pi-ask writes the status Pi would report: `working` with the session name during an agent run, otherwise `done`, `error`, or `idle` according to how the last run ended. A failed or aborted manual `/compact` outside a run is not visible to extensions, so the restored status can differ from Pi's until Pi's next status change.
+- In fallback mode, pi-ask writes nothing when stdout is not a TTY or `PI_PROGRAM_STATUS=0`. Native hosts apply their own `PI_PROGRAM_STATUS` and support detection.
+
+Support is detected from the active dialog consuming `blocked` before rendering, not from a version number. The fallback starts only when the form is first displayed and the host has not consumed the option.
 
 The renamed tool does not register an `ask_user` alias. Do not load both forks together: commands and local event identifiers are shared with upstream.
 

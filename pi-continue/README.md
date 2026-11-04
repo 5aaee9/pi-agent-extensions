@@ -34,6 +34,8 @@ The command waits for the run to settle, verifies that the current branch ends i
 
 ## Development
 
+Verified against Pi 1.5.0.
+
 ```bash
 npm install
 npm run check --workspace @indexyz/pi-continue

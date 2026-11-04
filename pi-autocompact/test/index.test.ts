@@ -1,4 +1,5 @@
 import { SettingsManager } from "@earendil-works/pi-coding-agent";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createRealPlane, type RealPlane, type RealSession } from "./real-plane.ts";
 
@@ -46,6 +47,41 @@ describe("Pi extension loading", () => {
 });
 
 describe("session-only commands", () => {
+  it("preserves earlier boundary metadata and context omissions before its summary", async () => {
+    const real = await plane.startSession({
+      ...ACROSS,
+      precedingExtensions: [
+        fileURLToPath(new URL("./fixtures/boundary-proposals.ts", import.meta.url)),
+      ],
+    });
+    await real.command("300k");
+
+    expect(await real.turn()).toHaveLength(1);
+
+    const entries = real.session.sessionManager.getBranch();
+    expect(entries.slice(-3).map((entry) => entry.type)).toEqual([
+      "custom",
+      "context_edit",
+      "compaction",
+    ]);
+    expect(entries.at(-3)).toMatchObject({
+      customType: "boundary-probe",
+      data: { saved: true },
+    });
+    const omission = entries.at(-2);
+    if (omission?.type !== "context_edit") throw new Error("Expected the preceding context edit");
+    expect(omission.replacement).toBeNull();
+    expect(real.session.sessionManager.getEntry(omission.targetId)).toBeDefined();
+    const projection = real.session.sessionManager.buildSessionProjection();
+    expect(
+      projection.entries.find((entry) => entry.sourceEntry.id === omission.targetId)?.messages ??
+        [],
+    ).toEqual([]);
+    const summary = plane.server.requests.find((request) => request.summary);
+    expect(summary?.body).toBeDefined();
+    expect(summary?.body).not.toContain("local summary");
+  });
+
   it("sets model-local overrides, clears them on session start, and never changes model metadata", async () => {
     const real = await plane.startSession(ACROSS);
     const model = real.session.model;

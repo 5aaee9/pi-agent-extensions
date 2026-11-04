@@ -109,26 +109,43 @@ export async function runAskFlow(
     };
   }
   const waiting = createQuestionWaitingNotification(firstQuestionSubject(params));
-  const restoreProgramStatus = reportBlockedQuestion(
-    waiting.message,
-    ctx,
-    getRestingStatusTracker(),
-  );
+  let nativeBlocked = false;
+  let restoreProgramStatus: (() => void) | undefined;
   try {
     return await ctx.ui.custom<AskResult>(
-      (...args) =>
-        createAskFlowController(args, {
+      (...args) => {
+        const component = createAskFlowController(args, {
           ...params,
           config,
           configNotice: notice?.text,
           cwd: ctx.cwd,
           ctx,
           flowOptions,
-        }),
-      { blocked: { kind: "question", message: waiting.message } },
+        });
+        const render = component.render;
+        component.render = (width) => {
+          // Native hosts consume blocked before mounting the inline component.
+          // Detect that behavior instead of guessing capabilities from a version.
+          if (!nativeBlocked && !restoreProgramStatus) {
+            restoreProgramStatus = reportBlockedQuestion(
+              waiting.message,
+              ctx,
+              getRestingStatusTracker(),
+            );
+          }
+          return render(width);
+        };
+        return component;
+      },
+      {
+        get blocked() {
+          nativeBlocked = true;
+          return { kind: "question" as const, message: waiting.message };
+        },
+      },
     );
   } finally {
-    restoreProgramStatus();
+    restoreProgramStatus?.();
   }
 }
 

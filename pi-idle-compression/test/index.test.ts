@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { fileURLToPath } from "node:url";
 
 import { createRealPlane, sleep, until, type RealPlane, type RealSession } from "./real-plane.ts";
 
@@ -36,7 +37,9 @@ describe("Pi extension loading", () => {
       "agent_settled",
       "agent_start",
       "input",
+      "session_before_compact",
       "session_compact",
+      "session_compact_failed",
       "model_select",
     ].filter((event) => !real.session.hasExtensionHandlers(event));
     expect(missing).toEqual([]);
@@ -94,6 +97,62 @@ describe("idle compaction", () => {
     await sleep(0.01 * 60_000 * 2);
     expect(real.compactions()).toHaveLength(1);
     expect(plane.server.summaryRequests()).toBe(summaries);
+    expect(messages(real, "info")).toEqual([]);
+  });
+
+  it("ends the idle period when manual compaction fails and arms after later work", async () => {
+    await plane.writeGlobalSettings({ ...idle(0.01), retry: { enabled: false } });
+    const real = await plane.startSession();
+    await real.turn();
+    plane.server.failNextSummary = true;
+
+    await expect(real.session.compact()).rejects.toThrow(/local model failure|500/);
+    expect(plane.server.summaryRequests()).toBe(1);
+    await sleep(1200);
+    expect(real.compactions()).toHaveLength(0);
+    expect(plane.server.summaryRequests()).toBe(1);
+    expect(messages(real, "info")).toEqual([]);
+
+    await plane.writeGlobalSettings(idle(QUICK));
+    await real.turn("new work after the failed compaction");
+    await until(() => real.compactions().length === 1);
+    expect(plane.server.summaryRequests()).toBe(2);
+  });
+
+  it("ends the idle period when manual compaction is cancelled", async () => {
+    await plane.writeGlobalSettings(idle(0.01));
+    const real = await plane.startSession();
+    await real.turn();
+
+    const release = plane.server.hold();
+    const compacting = real.session.compact().catch((error: unknown) => error);
+    try {
+      await plane.server.waitForRequests(2);
+      real.session.abortCompaction();
+      expect(await compacting).toMatchObject({
+        message: expect.stringMatching(/cancelled|aborted/i),
+      });
+    } finally {
+      release();
+    }
+
+    await sleep(1200);
+    expect(real.compactions()).toHaveLength(0);
+    expect(plane.server.summaryRequests()).toBe(1);
+    expect(messages(real, "info")).toEqual([]);
+  });
+
+  it("ends the idle period when an earlier extension cancels compaction", async () => {
+    await plane.writeGlobalSettings(idle(0.01));
+    const real = await plane.startSession(100_000, [
+      fileURLToPath(new URL("./fixtures/cancel-first-compaction.ts", import.meta.url)),
+    ]);
+    await real.turn();
+
+    await expect(real.session.compact()).rejects.toThrow("Compaction cancelled");
+    await sleep(1200);
+    expect(real.compactions()).toHaveLength(0);
+    expect(plane.server.summaryRequests()).toBe(0);
     expect(messages(real, "info")).toEqual([]);
   });
 

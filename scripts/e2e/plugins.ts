@@ -1,6 +1,8 @@
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { findPackageJSON } from "node:module";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 
 import { isRecord, type JsonRecord } from "../release/json.ts";
@@ -75,12 +77,22 @@ function npmEnvironment(): NodeJS.ProcessEnv {
   return { ...process.env, CI: "1", npm_config_update_notifier: "false", npm_config_fund: "false" };
 }
 function piBinary(packageDir: string): string {
-  const binaryName = process.platform === "win32" ? "pi.cmd" : "pi";
-  const local = join(packageDir, "node_modules", ".bin", binaryName);
-  const root = join(rootDir, "node_modules", ".bin", binaryName);
-  if (existsSync(local)) return local;
-  if (existsSync(root)) return root;
-  throw new Error(`no Pi binary found at ${local} or ${root}`);
+  const packagePath = join(packageDir, "package.json");
+  const expected = objects(manifest(packagePath)["devDependencies"])?.[
+    "@earendil-works/pi-coding-agent"
+  ];
+  const hostPath = findPackageJSON("@earendil-works/pi-coding-agent", pathToFileURL(packagePath));
+  if (hostPath === undefined)
+    throw new Error(`Pi is not installed for ${packageDir}; run npm install`);
+  const host = manifest(hostPath);
+  const installed = host["version"];
+  if (typeof expected !== "string" || installed !== expected)
+    throw new Error(
+      `Pi version mismatch for ${packageDir}: expected ${String(expected)}, installed ${String(installed)}; run npm install`,
+    );
+  const bin = objects(host["bin"])?.["pi"];
+  if (typeof bin !== "string") throw new Error(`${hostPath} does not declare bin.pi`);
+  return resolve(dirname(hostPath), bin);
 }
 function parseRpcResponse(output: string): JsonRecord | undefined {
   return output
@@ -100,6 +112,7 @@ function checkPi(pkg: PluginPackage, timeoutMs: number): void {
   const sessionDir = mkdtempSync(join(tmpdir(), "pi-e2e-session-"));
   try {
     const args = [
+      piBinary(pkg.dir),
       "--mode",
       "rpc",
       "--no-session",
@@ -115,7 +128,7 @@ function checkPi(pkg: PluginPackage, timeoutMs: number): void {
       ...pkg.extensions.flatMap((extension) => ["--extension", resolve(pkg.dir, extension)]),
     ];
     const result = runCommand(
-      piBinary(pkg.dir),
+      process.execPath,
       args,
       new CommandOptions(
         pkg.dir,

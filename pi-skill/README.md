@@ -59,6 +59,8 @@ autocomplete popup listing every loaded skill with its description, just like
 
 ## Development
 
+Verified against Pi 1.5.0.
+
 ```bash
 npm install
 npm run check --workspace @indexyz/pi-skill

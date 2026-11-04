@@ -117,6 +117,8 @@ participate in native compaction configuration. A session command without
 - Boundary compaction preserves recent context according to the effective native
   `keepRecentTokens`, including complete assistant/tool-result groups. It uses
   the projected context so prior compactions and context edits are respected.
+  Entries proposed by earlier extensions at the same boundary are preserved in
+  order before the new compaction entry.
   The threshold must exceed `keepRecentTokens` and be below the real model window.
 - Boundary summaries use the active registered provider and standard Pi summary
   generator; they do **not** invoke `session_before_compact` custom/native relay

@@ -13,6 +13,8 @@
 
 ## 安装
 
+需要 Pi 1.5.0 或更新版本，以及 Node.js 22.19 或更新版本。
+
 ```bash
 pi install npm:@indexyz/pi-custom-provider
 ```
@@ -65,6 +67,8 @@ API 也接受以下别名：`openai-chat-compatible`、`chat-completions`、`ant
 ### Ollama
 
 `api: "ollama"`（或 `ollama-chat`）使用 Ollama 原生 API：模型发现走 `GET /api/tags`，并逐个调用 `POST /api/show` 读取 `capabilities`（`thinking`、`vision`）与 `model_info.*.context_length`，映射为 reasoning、图像输入和上下文窗口。对话走 `POST /api/chat` 的 NDJSON 流，支持 thinking 块、tool calls 和 `think` effort 字符串（pi 的 thinking 等级通过 `thinkingLevelMap` 映射到 `low`/`medium`/`high`/`max`）。
+
+每次请求使用当前会话的工具集合和系统提示：工具添加、移除以及系统提示段落的替换、删除都会反映到下一次请求，工具执行结果会传回 Ollama。原始 NDJSON 事件会交给 Pi 的 `provider_stream_event` 观察者，并等待观察者处理完成后再更新回复。
 
 Ollama 本身不要求鉴权，但 pi 会过滤没有 credential 的 provider，本地部署时可写任意占位值（如 `"apiKey": "ollama"`）；Ollama 云端或反代网关则配置真实 key，会以 `Authorization: Bearer` 发送。
 

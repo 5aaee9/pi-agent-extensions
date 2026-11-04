@@ -1,8 +1,13 @@
-import { spawn } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import {
+  getPackageDir,
+  type ExtensionAPI,
+  type ExtensionCommandContext,
+} from "@earendil-works/pi-coding-agent";
 
 import { generateChallenges, type Challenge } from "./challenges.ts";
 import {
@@ -15,6 +20,7 @@ import {
 const BANK_URL = new URL("./data/unified_bank.json", import.meta.url);
 const PROBE_COUNT = 3;
 const PROBE_TIMEOUT_MS = 10 * 60 * 1000;
+const PROBE_MAX_OUTPUT_BYTES = 1024 * 1024;
 const MESSAGE_TYPE = "model-trace";
 
 let bankPromise: Promise<FingerprintBank> | undefined;
@@ -42,13 +48,15 @@ interface ProbeResult {
  * answer the numeric task directly. `-a` reuses the trust decision of the
  * current project so project-local providers/extensions resolve in the child.
  */
-function runProbe(
+async function runProbe(
+  pi: ExtensionAPI,
   challenge: Challenge,
   model: ProbeModel,
   thinkingLevel: ExtensionCommandContext["thinkingLevel"],
   cwd: string,
+  signal: AbortSignal,
 ): Promise<ProbeResult> {
-  const piBin = process.env.PI_MODEL_TRACE_BIN ?? "pi";
+  if (signal.aborted) return { challenge, text: "", parsed: 0, error: "probe cancelled" };
   const args = [
     "-p",
     "--no-session",
@@ -57,32 +65,48 @@ function runProbe(
     "--model",
     `${model.provider}/${model.id}`,
   ];
-  if (thinkingLevel && thinkingLevel !== "off") args.push("--thinking", thinkingLevel);
+  if (thinkingLevel) args.push("--thinking", thinkingLevel);
   args.push(challenge.prompt);
 
-  return new Promise((resolve) => {
-    const child = spawn(piBin, args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
-    const stdout: Buffer[] = [];
-    const stderr: Buffer[] = [];
-    child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
-    child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
-    const timer = setTimeout(() => child.kill("SIGTERM"), PROBE_TIMEOUT_MS);
-
-    child.on("error", (error) => {
-      clearTimeout(timer);
-      resolve({ challenge, text: "", parsed: 0, error: `spawn failed: ${error.message}` });
-    });
-    child.on("close", (code, signal) => {
-      clearTimeout(timer);
-      const text = Buffer.concat(stdout).toString("utf8").trim();
-      const errors = Buffer.concat(stderr).toString("utf8").trim();
-      let error: string | undefined;
-      if (signal) error = `probe killed (${signal}${signal === "SIGTERM" ? ", timed out" : ""})`;
-      else if (code !== 0) error = `probe exited ${code}: ${errors.slice(-300) || "no stderr"}`;
-      else if (!text) error = "empty response";
-      resolve({ challenge, text, parsed: parseNumbers(text).length, ...(error ? { error } : {}) });
-    });
+  const invocation = getProbeInvocation(args);
+  const result = await pi.exec(invocation.command, invocation.args, {
+    cwd,
+    signal,
+    timeout: PROBE_TIMEOUT_MS,
+    maxBuffer: PROBE_MAX_OUTPUT_BYTES,
   });
+  let error: string | undefined;
+  if (signal.aborted) error = "probe cancelled";
+  else if (result.truncated) error = "probe exceeded 1 MiB output limit";
+  else if (result.killed) error = "probe timed out";
+  else if (result.code !== 0)
+    error = `probe exited ${result.code}: ${result.stderr.trim().slice(-300) || "no stderr"}`;
+  else if (!result.stdout.trim()) error = "empty response";
+
+  // A failed or truncated sequence is not a completed model response.
+  const text = error ? "" : result.stdout.trim();
+  return { challenge, text, parsed: parseNumbers(text).length, ...(error ? { error } : {}) };
+}
+
+function getProbeInvocation(args: string[]): { command: string; args: string[] } {
+  const override = process.env.PI_MODEL_TRACE_BIN;
+  if (override) return { command: override, args };
+
+  const packageDir = getPackageDir();
+  const manifestPath = join(packageDir, "package.json");
+  if (existsSync(manifestPath)) {
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as { bin?: { pi?: string } };
+    if (typeof manifest.bin?.pi === "string") {
+      const cliPath = join(packageDir, manifest.bin.pi);
+      if (existsSync(cliPath)) return { command: process.execPath, args: [cliPath, ...args] };
+    }
+  }
+
+  // Standalone Pi binaries do not have an on-disk JavaScript entry point.
+  if (!/^(node|bun)(\.exe)?$/i.test(basename(process.execPath))) {
+    return { command: process.execPath, args };
+  }
+  throw new Error("Cannot locate the current Pi CLI; set PI_MODEL_TRACE_BIN explicitly");
 }
 
 function formatPercent(value: number): string {
@@ -164,13 +188,15 @@ function resolveTarget(
 }
 
 export default function piModelTrace(pi: ExtensionAPI) {
-  let running = false;
+  let activeRun: AbortController | undefined;
+
+  pi.on("session_shutdown", () => activeRun?.abort());
 
   pi.registerCommand("model-trace", {
     description:
       "Attribute the model actually serving pi: run 3 independent no-session numeric probes and score them against the ModelTrace bank",
     handler: async (args, ctx) => {
-      if (running) {
+      if (activeRun) {
         ctx.ui.notify("A /model-trace run is already in progress", "warning");
         return;
       }
@@ -182,11 +208,16 @@ export default function piModelTrace(pi: ExtensionAPI) {
       }
       const { model, label } = target;
 
-      running = true;
+      const controller = new AbortController();
+      activeRun = controller;
+      const signal = ctx.signal
+        ? AbortSignal.any([controller.signal, ctx.signal])
+        : controller.signal;
       const startedAt = Date.now();
       try {
         await ctx.waitForIdle();
         const bank = await loadBank();
+        if (signal.aborted) return;
         const challenges = generateChallenges(PROBE_COUNT);
 
         ctx.ui.notify(
@@ -199,15 +230,16 @@ export default function piModelTrace(pi: ExtensionAPI) {
         // are kept as-is since they are legitimate fingerprint evidence.
         const probes = await Promise.all(
           challenges.map(async (challenge) => {
-            const first = await runProbe(challenge, model, ctx.thinkingLevel, ctx.cwd);
-            if (!first.error || first.error === "empty response") return first;
+            const first = await runProbe(pi, challenge, model, ctx.thinkingLevel, ctx.cwd, signal);
+            if (signal.aborted || !first.error || first.error === "empty response") return first;
             ctx.ui.notify(
               `ModelTrace: ${challenge.id} failed (${first.error}), retrying…`,
               "warning",
             );
-            return runProbe(challenge, model, ctx.thinkingLevel, ctx.cwd);
+            return runProbe(pi, challenge, model, ctx.thinkingLevel, ctx.cwd, signal);
           }),
         );
+        if (signal.aborted) return;
 
         const outputs = probes.map((probe) => ({
           text: probe.text,
@@ -242,13 +274,14 @@ export default function piModelTrace(pi: ExtensionAPI) {
         );
         ctx.ui.notify(`ModelTrace finished in ${elapsed}s`, "info");
       } catch (error) {
+        if (signal.aborted) return;
         ctx.ui.notify(
           `ModelTrace failed: ${error instanceof Error ? error.message : String(error)}`,
           "error",
         );
       } finally {
-        running = false;
-        ctx.ui.setStatus(MESSAGE_TYPE, undefined);
+        activeRun = undefined;
+        if (!signal.aborted) ctx.ui.setStatus(MESSAGE_TYPE, undefined);
       }
     },
   });
