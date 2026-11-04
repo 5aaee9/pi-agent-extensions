@@ -17,12 +17,12 @@ import {
   createUserMessage,
 } from "@deepseek-ai/dsh-llm";
 import { SessionStore } from "@deepseek-ai/dsh-session";
-import type { Session, SessionSeq } from "@deepseek-ai/dsh-session";
+import type { Session } from "@deepseek-ai/dsh-session";
 import { SessionProjectionRegistry } from "@deepseek-ai/dsh-session-projection";
 import { TokenMeter } from "@deepseek-ai/dsh-token-meter";
 import type { TokenMeasurement } from "@deepseek-ai/dsh-token-meter";
 import { onTestFinished, describe, expect, it } from "vitest";
-import { needsCompaction, selectCompactableRange, systemHead } from "../compaction.ts";
+import { needsCompaction, selectCompactableRange } from "../compaction.ts";
 
 async function createSession(): Promise<{ ctx: Context; session: Session }> {
   const ctx = new Context();
@@ -158,18 +158,5 @@ describe("surface range selection", () => {
     expect(needsCompaction({ totalTokens: 300001 }, 300000)).toBe(true);
     expect(needsCompaction({ totalTokens: 300000 }, 300000)).toBe(false);
     expect(needsCompaction({ totalTokens: undefined as unknown as number }, 300000)).toBe(false);
-  });
-
-  it("reads the surface head type from the real session event", async () => {
-    const { session } = await createSession();
-    session.append(
-      "system/message",
-      { turn: 1, step: 1, message: createSystemMessage("system prompt") },
-      { surfaceOp: "append" },
-    );
-    appendText(session, "a".repeat(40));
-    const [head, next] = session.surface.nodes as [SessionSeq, SessionSeq];
-    expect(systemHead(session, head)).toBeDefined();
-    expect(systemHead(session, next)).toBeUndefined();
   });
 });

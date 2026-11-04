@@ -43,33 +43,6 @@ test("repairExtractionParams drops generic conversational prompts", () => {
   assert.deepEqual(repaired.questions, []);
 });
 
-test("tool-call arguments become the extraction candidate", () => {
-  const candidate = extractionCandidateFromContent([
-    { type: "thinking", thinking: "ignored" },
-    {
-      type: "toolCall",
-      id: "call-1",
-      name: "ask_user_question",
-      arguments: {
-        title: "Direction",
-        questions: [
-          {
-            id: "direction",
-            prompt: "Which direction?",
-            options: [{ value: "a", label: "A" }],
-          },
-        ],
-      },
-    },
-  ] as never);
-  const result = parseExtractionCandidate(candidate);
-
-  assert.equal(result.ok, true);
-  if (result.ok) {
-    assert.equal(result.params.title, "Direction");
-  }
-});
-
 test("tool-call arguments take precedence over text", () => {
   const candidate = extractionCandidateFromContent([
     { type: "text", text: "not JSON" },

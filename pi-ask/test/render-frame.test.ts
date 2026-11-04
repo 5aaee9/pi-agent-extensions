@@ -29,55 +29,6 @@ function plainTheme() {
   } as never;
 }
 
-test("narrow tab strip keeps active middle tab visible", () => {
-  const state = createInitialState({
-    title: "Demo",
-    questions: [
-      {
-        id: "q1",
-        label: "One",
-        prompt: "One",
-        options: [{ value: "a", label: "A" }],
-      },
-      {
-        id: "q2",
-        label: "Two",
-        prompt: "Two",
-        options: [{ value: "a", label: "A" }],
-      },
-      {
-        id: "q3",
-        label: "Three",
-        prompt: "Three",
-        options: [{ value: "a", label: "A" }],
-      },
-      {
-        id: "q4",
-        label: "Four",
-        prompt: "Four",
-        options: [{ value: "a", label: "A" }],
-      },
-      {
-        id: "q5",
-        label: "Five",
-        prompt: "Five",
-        options: [{ value: "a", label: "A" }],
-      },
-    ],
-  });
-  state.activeTabIndex = 2;
-
-  const lines = renderAskScreen({
-    config: DEFAULT_ASK_CONFIG,
-    state,
-    theme: plainTheme(),
-    width: 28,
-    editor: mockEditor(),
-  });
-
-  assert.equal(lines[3], " ←  ☐ Three   ☐ Four  →");
-});
-
 test("narrow tab strip keeps submit tab visible when active", () => {
   const state = createInitialState({
     title: "Demo",

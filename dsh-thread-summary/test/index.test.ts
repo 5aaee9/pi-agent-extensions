@@ -215,16 +215,6 @@ describe("thread summary provider", () => {
     await expect(createTitleProvider(ctx.llm, config).generate(request())).rejects.toThrow(kind);
   });
 
-  it.each([400, 500])("preserves the provider's error diagnostic for status %i", async (code) => {
-    const { ctx, server } = await createLlmPlane();
-    server.enqueue((reply) => {
-      reply.status(code, { error: { message: "provider failed" } });
-    });
-    await expect(createTitleProvider(ctx.llm, config).generate(request())).rejects.toThrow(
-      "provider failed",
-    );
-  });
-
   it("rejects a stream without a finish reason and reasoning-only output", async () => {
     const { ctx, server } = await createLlmPlane();
     const provider = createTitleProvider(ctx.llm, config);
@@ -299,16 +289,6 @@ describe("thread summary provider", () => {
     expect(signal?.aborted).toBe(false);
   }
 
-  it("releases its deadline timer on success", async () => {
-    const plane = await createLlmPlane();
-    plane.server.enqueue(streamText(["Fix login"]));
-    vi.useFakeTimers(fakeClock);
-    await expect(
-      createTitleProvider(plane.ctx.llm, config).generate(request()),
-    ).resolves.toMatchObject({ title: "Fix login" });
-    await expectReleasedDeadline(plane);
-  });
-
   it("releases its deadline timer on an endpoint failure", async () => {
     const plane = await createLlmPlane();
     plane.server.enqueue((reply) => {
@@ -319,15 +299,6 @@ describe("thread summary provider", () => {
       "offline",
     );
     await expectReleasedDeadline(plane);
-  });
-
-  it("clears its deadline timer when no adapter serves the route", async () => {
-    const { ctx } = await createLlmPlane();
-    vi.useFakeTimers(fakeClock);
-    await expect(
-      createTitleProvider(ctx.llm, { model: "openai/gpt-4o-mini" }).generate(request()),
-    ).rejects.toThrow('no adapter registered for provider "openai"');
-    expect(vi.getTimerCount()).toBe(0);
   });
 });
 

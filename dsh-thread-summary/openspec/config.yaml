@@ -4,8 +4,9 @@ context: |
   Scope: the dsh-thread-summary plugin in this directory only (npm package
   @indexyz/dsh-thread-summary). Repository-wide concerns belong to the repository root's
   openspec/.
-  Constraints: follow ../AGENTS.md and ../docs/conventions.md. This directory is excluded
-  from the published package (it is not in "files"). Verification: npm run check from
-  the repository root, the package release smoke check, and live installation in the web
-  profile as described by ../docs/workflow.md. Published content requires a release
-  decision per ../docs/releases.md.
+  Constraints: follow ../AGENTS.md, ../docs/conventions.md, and
+  ../docs/dsh/README.md. This directory is excluded from the published package
+  (it is not in "files").
+  Verification for every change: the commands in ../docs/dsh/README.md, "Verify",
+  and a release decision for @indexyz/dsh-thread-summary per ../docs/releases.md when published
+  files change.

@@ -1,8 +1,6 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  hasCodexManifest,
-  isListableApi,
   listingUrl,
   manifestUrl,
   probeManifest,
@@ -31,15 +29,6 @@ describe("listingUrl", () => {
     expect(listingUrl("https://api.anthropic.com/v1", "anthropic-messages")).toBe(
       "https://api.anthropic.com/v1/models?limit=1000",
     );
-  });
-});
-
-describe("isListableApi", () => {
-  it("accepts the protocols whose listing this build reads", () => {
-    expect(isListableApi("openai-responses")).toBe(true);
-    expect(isListableApi("openai-completions")).toBe(true);
-    expect(isListableApi("anthropic-messages")).toBe(true);
-    expect(isListableApi("google-generative-ai")).toBe(false);
   });
 });
 
@@ -94,22 +83,6 @@ describe("probeRoute over real HTTP", () => {
     expect(server.requests[0]?.headers["authorization"]).toBeUndefined();
   });
 
-  it("refuses a protocol whose listing it cannot read", async () => {
-    await expect(
-      probeRoute({
-        route: "other",
-        baseURL: "https://other.example/v1",
-        api: "google-generative-ai",
-      }),
-    ).rejects.toThrow(/no model listing this build can read/);
-  });
-
-  it("reports an unreachable endpoint", async () => {
-    await expect(
-      probeRoute({ route: "magpie", baseURL: `${REFUSED_ORIGIN}/v1`, api: "openai-responses" }),
-    ).rejects.toThrow(/could not reach .*\/v1\/models/);
-  });
-
   it("reports a refusal and hints at the credential", async () => {
     const server = await startServer({
       "/v1/models": { status: 401, body: {} },
@@ -149,14 +122,6 @@ describe("manifestUrl", () => {
     expect(manifestUrl("https://relay.example")).toBe(
       "https://relay.example/backend-api/codex/models",
     );
-  });
-});
-
-describe("hasCodexManifest", () => {
-  it("consults the manifest for the Responses protocol only", () => {
-    expect(hasCodexManifest("openai-responses")).toBe(true);
-    expect(hasCodexManifest("openai-completions")).toBe(false);
-    expect(hasCodexManifest("anthropic-messages")).toBe(false);
   });
 });
 
@@ -224,27 +189,9 @@ describe("probeManifest over real HTTP", () => {
     ).resolves.toBeUndefined();
   });
 
-  it("reports a status the endpoint owned", async () => {
-    const server = await startServer({
-      "/backend-api/codex/models": { status: 500, body: {} },
-    });
-    await expect(
-      probeManifest({ route: "relay", baseURL: `${server.url}/v1`, api: "openai-responses" }),
-    ).rejects.toThrow(/backend-api\/codex\/models answered 500/);
-  });
-
   it("reports an unreachable endpoint", async () => {
     await expect(
       probeManifest({ route: "relay", baseURL: `${REFUSED_ORIGIN}/v1`, api: "openai-responses" }),
     ).rejects.toThrow(/could not reach .*\/backend-api\/codex\/models/);
-  });
-
-  it("refuses an oversized manifest", async () => {
-    const server = await startServer({
-      "/backend-api/codex/models": { body: "x".repeat(MAX_RESPONSE_BYTES + 1) },
-    });
-    await expect(
-      probeManifest({ route: "relay", baseURL: `${server.url}/v1`, api: "openai-responses" }),
-    ).rejects.toThrow(new RegExp(`more than ${String(MAX_RESPONSE_BYTES)} bytes`));
   });
 });

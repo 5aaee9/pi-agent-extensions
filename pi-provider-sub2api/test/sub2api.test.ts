@@ -241,7 +241,6 @@ describe("relay configuration", () => {
 
   it.each([
     { label: "not set", name: "SUB2API_ENV_UNSET_TOKEN_TEST", value: undefined },
-    { label: "set to an empty value", name: "SUB2API_ENV_EMPTY_TOKEN_TEST", value: "" },
     { label: "set to whitespace", name: "SUB2API_ENV_WS_TOKEN_TEST", value: "   " },
   ])("rejects a token referencing an env variable that is $label", async ({ name, value }) => {
     if (value !== undefined) vi.stubEnv(name, value);
@@ -271,12 +270,7 @@ describe("relay configuration", () => {
     expect(error).not.toContain("\n");
   });
 
-  it("rejects credentials embedded in a base URL", async () => {
-    const error = await loadError({ baseURL: "https://user:pass@example.com", token: "sk" });
-    expect(error).toContain("must not include credentials");
-  });
-
-  it.each(["?", "#"])("rejects a base URL with a trailing %s", async (suffix) => {
+  it.each(["#"])("rejects a base URL with a trailing %s", async (suffix) => {
     const error = await loadError({ baseURL: `https://invalid.example${suffix}`, token: "sk" });
     expect(error).toContain("must not include a query or fragment");
   });

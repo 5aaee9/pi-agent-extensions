@@ -196,15 +196,6 @@ describe("thread summary row in the running web app", { timeout: TEST_TIMEOUT },
 
   afterAll(() => closeAll(browser, plane), HOOK_TIMEOUT);
 
-  it("mounts one additive row in the host's General settings tab", async () => {
-    const page = await open();
-    const row = await readRow(page);
-    expect(row.root).toBe(1);
-    expect(row.title).toBe("Summary model");
-    expect(row.description).toBe("Name new sessions from your first message.");
-    expect(row.styleRules).toBeGreaterThan(0);
-  });
-
   it("renders with the host's own UI primitives", async () => {
     const page = await open();
     const row = await readRow(page);

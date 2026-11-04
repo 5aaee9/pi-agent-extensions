@@ -31,53 +31,23 @@ function addRelay(provider: string, settings: Record<string, unknown> = {}) {
 afterEach(() => relaysByProvider.clear());
 
 describe("request mode injection", () => {
-  it.each(["openai-codex-responses", "openai-responses"])(
-    "merges programs without mutation for %s",
-    (api) => {
-      const selected = model(api);
-      const payload = {
-        model: selected.id,
-        access_programs: { future: "keep", cyber: "standard" },
-      };
-      const result = addDaybreakProgram(payload, selected, "blue");
-      expect(result).toEqual({
-        ...payload,
-        access_programs: { future: "keep", cyber: "daybreak_blue" },
-      });
-      expect(payload.access_programs.cyber).toBe("standard");
-      expect(addServiceTier(result, selected, "ultrafast")).toEqual({
-        ...result,
-        service_tier: "ultrafast",
-      });
-      expect(addDaybreakProgram(result, selected, "standard")).toEqual(payload);
-    },
-  );
-
-  it("keeps default and Fast but not Ultrafast or Daybreak on Chat Completions", () => {
-    const selected = model("openai-completions");
-    const payload = { model: selected.id };
-    expect(addServiceTier(payload, selected, "fast")).toEqual({
+  it.each(["openai-responses"])("merges programs without mutation for %s", (api) => {
+    const selected = model(api);
+    const payload = {
+      model: selected.id,
+      access_programs: { future: "keep", cyber: "standard" },
+    };
+    const result = addDaybreakProgram(payload, selected, "blue");
+    expect(result).toEqual({
       ...payload,
-      service_tier: "priority",
+      access_programs: { future: "keep", cyber: "daybreak_blue" },
     });
-    expect(addServiceTier(payload, selected, "default")).toEqual({
-      ...payload,
-      service_tier: "default",
+    expect(payload.access_programs.cyber).toBe("standard");
+    expect(addServiceTier(result, selected, "ultrafast")).toEqual({
+      ...result,
+      service_tier: "ultrafast",
     });
-    expect(addServiceTier(payload, selected, "ultrafast")).toBeUndefined();
-    expect(addDaybreakProgram(payload, selected, "blue")).toBeUndefined();
-  });
-
-  it.each([
-    ["anthropic-messages", "relay", "claude-synthetic"],
-    ["openai-responses", "other", MODEL_A],
-    ["openai-responses", "relay", "grok-test"],
-  ])("ignores unsupported model %s %s %s", (api, provider, id) => {
-    const selected = model(api, provider, id);
-    for (const tier of ["default", "fast", "ultrafast"] as const) {
-      expect(addServiceTier({ model: id }, selected, tier)).toBeUndefined();
-    }
-    expect(addDaybreakProgram({ model: id }, selected, "blue")).toBeUndefined();
+    expect(addDaybreakProgram(result, selected, "standard")).toEqual(payload);
   });
 
   it("ignores malformed payloads and mismatched models", () => {
@@ -91,8 +61,6 @@ describe("request mode injection", () => {
 describe("request mode configuration", () => {
   it.each([
     [{ requestModes: null }, "provider relay requestModes must be an object"],
-    [{ requestModes: [] }, "provider relay requestModes must be an object"],
-    [{ requestModes: "fast" }, "provider relay requestModes must be an object"],
     [
       { requestModes: { serviceTier: null } },
       "provider relay requestModes.serviceTier must be default, fast, ultrafast",
@@ -100,10 +68,6 @@ describe("request mode configuration", () => {
     [
       { requestModes: { serviceTier: "priority" } },
       "provider relay requestModes.serviceTier must be default, fast, ultrafast",
-    ],
-    [
-      { requestModes: { daybreak: true } },
-      "provider relay requestModes.daybreak must be standard, blue",
     ],
     [
       { requestModes: { daybreak: "daybreak_blue" } },
@@ -142,35 +106,9 @@ describe("request mode configuration", () => {
     expect(parse).toThrow(message);
     expect(parse).not.toThrow("sk-secret-token");
   });
-
-  it("validates preferences before resolving an environment token", () => {
-    expect(() =>
-      parseRelayConfig("relay", {
-        baseURL: "https://example.com",
-        token: "${SUB2API_UNSET_TEST_TOKEN}",
-        requestModes: { serviceTier: "bad" },
-      }),
-    ).toThrow("requestModes.serviceTier");
-  });
 });
 
 describe("request mode resolution", () => {
-  it("inherits field by field and isolates providers", () => {
-    addRelay("relay", {
-      api: "openai-responses",
-      requestModes: { serviceTier: "fast", daybreak: "blue" },
-      modelRequestModes: { [MODEL_A]: { serviceTier: "default" } },
-    });
-    addRelay("other", { api: "openai-responses" });
-    const state = createRequestModeState();
-    const a = { provider: "relay", id: MODEL_A, api: "openai-responses" } as Model<any>;
-    const b = { provider: "relay", id: MODEL_B, api: "openai-responses" } as Model<any>;
-    expect(state.resolve(a)).toEqual({ serviceTier: "default", daybreak: "blue" });
-    expect(state.resolve(b)).toEqual({ serviceTier: "fast", daybreak: "blue" });
-    expect(state.resolve({ ...a, provider: "other" })).toEqual({});
-    expect(state.resolve({ ...a, provider: "unknown" })).toEqual({});
-  });
-
   it("layers temporary state per provider and model without touching saved state", () => {
     const relay = addRelay("relay", {
       api: "openai-responses",

@@ -1,4 +1,4 @@
-// Rehearses a Pi upgrade the way docs/workflow.md describes one: moves the Pi
+// Rehearses a Pi upgrade the way docs/pi/README.md describes one: moves the Pi
 // packages' exact host pins to another version, installs, and runs their checks.
 // It rewrites manifests and the lockfile, so it runs only in a throwaway checkout.
 import { spawnSync } from "node:child_process";

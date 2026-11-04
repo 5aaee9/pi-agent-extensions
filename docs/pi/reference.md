@@ -4,22 +4,9 @@ Pi's own documentation, examples, and type declarations are the source of truth 
 
 ## Which copy to read
 
-Packages pin their Pi version independently. After `npm install`:
+Packages pin their Pi version independently; check the `devDependencies` of the package you edit, and read the copy at that version. When a package pins a different version than most of the workspace, npm installs that version inside the package's own `node_modules/`; otherwise the package uses the root copy. The matching `pi` binary is in the `node_modules/.bin/` next to it.
 
-| Package               | Pinned Pi | Installed copy                                  |
-| --------------------- | --------- | ----------------------------------------------- |
-| `pi-provider-sub2api` | 1.5.0     | `node_modules/@earendil-works/pi-coding-agent/` |
-| `pi-custom-provider`  | 1.5.0     | `node_modules/@earendil-works/pi-coding-agent/` |
-| `pi-continue`         | 1.5.0     | `node_modules/@earendil-works/pi-coding-agent/` |
-| `pi-skill`            | 1.5.0     | `node_modules/@earendil-works/pi-coding-agent/` |
-| `pi-model-trace`      | 1.5.0     | `node_modules/@earendil-works/pi-coding-agent/` |
-| `pi-autocompact`      | 1.5.0     | `node_modules/@earendil-works/pi-coding-agent/` |
-| `pi-idle-compression` | 1.5.0     | `node_modules/@earendil-works/pi-coding-agent/` |
-| `pi-ask`              | 1.5.0     | `node_modules/@earendil-works/pi-coding-agent/` |
-
-`pi-ask` also pins a test-only `pi-coding-agent-legacy` alias at 1.4.0 to exercise the explicitly supported OSC fallback in a real terminal. It is not the development host.
-
-The rule behind the table: when a package pins a different version than most of the workspace, npm installs that version inside the package's own `node_modules/`; otherwise the package uses the root copy. Check the `devDependencies` of the package you edit, and read the copy at that version. The matching `pi` binary is in the `node_modules/.bin/` next to it (`docs/workflow.md`, "Verify"). Update this table when a pin changes.
+`pi-ask` also pins a test-only `pi-coding-agent-legacy` alias to exercise the explicitly supported OSC fallback in a real terminal. It is not the development host.
 
 ## Layout of the installed package
 

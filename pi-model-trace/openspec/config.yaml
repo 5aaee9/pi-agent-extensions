@@ -4,8 +4,9 @@ context: |
   Scope: the pi-model-trace extension in this directory only (npm package
   @indexyz/pi-model-trace). Repository-wide concerns belong to the repository root's
   openspec/.
-  Constraints: follow ../AGENTS.md and ../docs/conventions.md. This
-  directory is excluded from the published package (it is not in "files").
-  Verification for every change: npm run check from the repository root, the
-  load smoke test in ../docs/workflow.md, and a release decision for
-  @indexyz/pi-model-trace per ../docs/releases.md when published files change.
+  Constraints: follow ../AGENTS.md, ../docs/conventions.md, and
+  ../docs/pi/README.md. This directory is excluded from the published package
+  (it is not in "files").
+  Verification for every change: the commands in ../docs/pi/README.md, "Verify",
+  and a release decision for @indexyz/pi-model-trace per ../docs/releases.md when published
+  files change.

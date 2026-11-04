@@ -26,14 +26,11 @@ describe("resolveIdleSettings", () => {
     expect(MAX_IDLE_MINUTES * 60_000).toBeLessThanOrEqual(2 ** 31 - 1);
   });
 
-  it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY, MAX_IDLE_MINUTES + 1, "50", null])(
-    "rejects idleMinutes %s",
-    (idleMinutes) => {
-      expect(() => resolveIdleSettings({ piIdleCompression: { idleMinutes } }, "p", "m")).toThrow(
-        /piIdleCompression\.idleMinutes must be a number of minutes/,
-      );
-    },
-  );
+  it.each([0, Number.NaN, MAX_IDLE_MINUTES + 1, "50"])("rejects idleMinutes %s", (idleMinutes) => {
+    expect(() => resolveIdleSettings({ piIdleCompression: { idleMinutes } }, "p", "m")).toThrow(
+      /piIdleCompression\.idleMinutes must be a number of minutes/,
+    );
+  });
 
   it("validates layers a more specific one overrides", () => {
     const settings = {

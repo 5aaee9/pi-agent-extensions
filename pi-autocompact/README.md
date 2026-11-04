@@ -137,6 +137,6 @@ participate in native compaction configuration. A session command without
 ## Development
 
 ```bash
-npm run check
+npm run check --workspace @indexyz/pi-autocompact
 pi -e ./pi-autocompact/index.ts
 ```

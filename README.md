@@ -31,12 +31,14 @@ pi install npm:@indexyz/pi-skill
 pi install npm:@indexyz/pi-model-trace
 pi install npm:@indexyz/pi-autocompact
 pi install npm:@indexyz/pi-idle-compression
+pi install npm:@indexyz/pi-ask
 ```
 
 A `dsh-<topic>/` package is installed into a dsh profile instead, and its command line, configuration, and behavior are documented in its own README:
 
 ```bash
 dsh plugin --profile web add @indexyz/dsh-autocompact
+dsh plugin --profile web add @indexyz/dsh-custom-provider-reasoning-efforts
 dsh plugin --profile web add @indexyz/dsh-thread-summary
 dsh plugin --profile web add @indexyz/dsh-prompt-suggestions
 ```
@@ -45,7 +47,7 @@ dsh plugin --profile web add @indexyz/dsh-prompt-suggestions
 
 Each package is versioned and released independently. A release of one package publishes only that package, and each published version is tagged `@indexyz/<name>@<version>` (for example `@indexyz/pi-skill@0.1.43`) with a GitHub Release carrying that version's changelog section. Every package's history is in its own `CHANGELOG.md`. The release procedure is [`docs/releases.md`](./docs/releases.md).
 
-Every new npm package starts with an independent empty `0.0.0` workspace: the owner publishes it with the `bootstrap` tag and configures npm Trusted Publisher before the formal version is pushed to GitHub for CI publication. Follow [First release of a new package](./docs/releases.md#first-release-of-a-new-package) for the workspace template, commands and publisher settings.
+Every new npm package starts with an independent empty `0.0.0` workspace: the owner publishes it with the `bootstrap` tag and configures npm Trusted Publisher before the formal version is pushed to GitHub for CI publication. Follow [First release of a new package](./docs/releases/first-release.md) for the workspace template, commands and publisher settings.
 
 ## Layout
 
@@ -53,14 +55,17 @@ The repository root is a private npm workspace that holds shared tooling and doc
 
 ## Development
 
+Pi and dsh packages are separate plugin systems, so work on one package verifies only that package:
+
 ```bash
 npm install
-npm run format
-npm run check
-pi -e ./pi-provider-sub2api/index.ts
+npx oxfmt --check <name> .changeset
+npx oxlint --deny-warnings <name>
+npm run check --workspace @indexyz/<name>
+npm run test:e2e -- --package @indexyz/<name>
 ```
 
-`npm run check` runs the format check, lint, every package's typecheck, the build step of every package that declares one, every package's tests, and the release-script tests. Try a pi package from a checkout with `pi -e ./<name>/index.ts`.
+A pi package also runs its black-box scenarios with `node --test "scripts/e2e/pi/<name>*.e2e.ts"`, and the whole Pi suite with `npm run test:e2e:pi`; try it from a checkout with `pi -e ./<name>/index.ts`. A dsh package also needs `pnpm` and `npx playwright install chromium`. Root `npm run check` and `npm run test:e2e` cover every package in both systems; CI runs them, and they are the gate for changes to shared tooling.
 
 Dsh build output (`lib/` and optional `client.js`) is Git-ignored; `npm pack` builds and includes it automatically. Before installing a dsh checkout into a profile, run `npm run build --workspace @indexyz/<name>`, then `dsh plugin --profile web add ./<name>`.
 

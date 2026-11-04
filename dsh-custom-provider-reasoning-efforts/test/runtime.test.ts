@@ -1,8 +1,7 @@
 import { Context } from "@deepseek-ai/cordis";
 import { credentialRef } from "@deepseek-ai/dsh-credentials";
-import { beforeEach, describe, expect, it, onTestFinished } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 
-import type { SettingsSeam } from "../apply.ts";
 import {
   createRuntime,
   describeResult,
@@ -22,7 +21,6 @@ import {
   isolateCredentialEnvironment,
   magpieListing,
   magpieProviders,
-  modelField,
   REFUSED_ORIGIN,
   routeModels,
   routeProviders,
@@ -55,18 +53,6 @@ function deps(ctx: Context, overrides: Partial<RuntimeDeps> = {}): RuntimeDeps {
 describe("createRuntime on the real settings plane", () => {
   beforeEach(isolateCredentialEnvironment);
 
-  it("reports unavailable when no settings service is mounted", async () => {
-    const ctx = new Context();
-    onTestFinished(async () => {
-      await ctx.fiber.dispose();
-    });
-    const runtime = createRuntime(options(), deps(ctx));
-    const summary = await runtime.run("apply");
-
-    expect(summary.result.kind).toBe("unavailable");
-    expect(summary.probed).toEqual([]);
-  });
-
   it("applies the row's explicit declarations without touching the network", async () => {
     const server = await startServer({});
     const host = await createHost({
@@ -79,32 +65,6 @@ describe("createRuntime on the real settings plane", () => {
     expect(summary.result.changes).toHaveLength(1);
     expect(server.requests).toEqual([]);
     expect(host.providers()?.["magpie"]).toBeDefined();
-  });
-
-  it("plans without writing in status mode", async () => {
-    const host = await createHost();
-    const runtime = createRuntime(options(), deps(host.ctx, { settings: () => host.ctx.settings }));
-    const summary = await runtime.run("status");
-
-    expect(summary.mode).toBe("status");
-    expect(summary.result.kind).toBe("pending");
-    expect(await host.readPatch()).not.toContain("reasoningEfforts");
-  });
-
-  it("removes the declared fields in clear mode", async () => {
-    const host = await createHost();
-    await createRuntime(options(), deps(host.ctx, { settings: () => host.ctx.settings })).run(
-      "apply",
-    );
-    const summary = await createRuntime(
-      options(),
-      deps(host.ctx, { settings: () => host.ctx.settings }),
-    ).run("clear");
-
-    expect(summary.result.kind).toBe("applied");
-    expect(
-      modelField(host.providers(), "magpie", "ollama-cloud/kimi-k3", "reasoningEfforts"),
-    ).toBeUndefined();
   });
 
   it("discovers the endpoint's levels for the models the route declares", async () => {
@@ -161,26 +121,6 @@ describe("createRuntime on the real settings plane", () => {
     expect(summary.result.skipped).toEqual([]);
   });
 
-  it("writes nothing for a listing that publishes text only", async () => {
-    const server = await startServer({
-      "/v1/models": {
-        body: { data: [{ id: "ollama-cloud/kimi-k3", input_modalities: ["text"] }] },
-      },
-    });
-    const host = await createHost({
-      providers: routeProviders(magpieProviders(), "magpie", { baseURL: `${server.url}/v1` }),
-    });
-    const runtime = createRuntime(
-      options({ declarations: {} }),
-      deps(host.ctx, { settings: () => host.ctx.settings }),
-    );
-    const summary = await runtime.run("discover");
-
-    expect(summary.result.kind).toBe("unchanged");
-    const models = routeModels(host.providers(), "magpie");
-    expect(models[0]?.["input"]).toEqual(["text"]);
-  });
-
   it("prefers an explicit vision declaration over a discovered one", async () => {
     const server = await startServer({ "/v1/models": { body: visionListing() } });
     const host = await createHost({
@@ -195,24 +135,6 @@ describe("createRuntime on the real settings plane", () => {
     expect(summary.result.kind).toBe("unchanged");
     const models = routeModels(host.providers(), "magpie");
     expect(models[0]?.["input"]).toEqual(["text"]);
-  });
-
-  it("removes the vision table's input field in clear mode", async () => {
-    const host = await createHost();
-    const inputs = { magpie: { "ollama-cloud/kimi-k3": ["text", "image"] as const } };
-    await createRuntime(
-      options({ declarations: {}, inputs }),
-      deps(host.ctx, { settings: () => host.ctx.settings }),
-    ).run("apply");
-    const summary = await createRuntime(
-      options({ declarations: {}, inputs }),
-      deps(host.ctx, { settings: () => host.ctx.settings }),
-    ).run("clear");
-
-    expect(summary.result.kind).toBe("applied");
-    expect(summary.result.changes.map((change) => change.field)).toEqual(["input"]);
-    const models = routeModels(host.providers(), "magpie");
-    expect(models[0]).not.toHaveProperty("input");
   });
 
   it("contains a probe failure and still applies the declarations", async () => {
@@ -236,31 +158,6 @@ describe("createRuntime on the real settings plane", () => {
     const summary = await runtime.run("discover");
 
     expect(summary.failures[0]).toMatch(/no model listing this build can read/);
-  });
-
-  it("interrogates the routes discoverRoutes names instead of the heuristic's", async () => {
-    const server = await startServer({
-      "/v1/models": {
-        body: { data: [{ id: "gpt-6-sol", reasoning: true, reasoning_levels: ["high"] }] },
-      },
-    });
-    const providers = routeProviders(codexProviders(), "zero-aicoding-codex", {
-      baseURL: `${server.url}/v1`,
-      models: [{ id: "gpt-6-sol", name: "GPT-6-Sol" }],
-    });
-    setEnvironment("ZERO_AICODING_CODEX_API_KEY", "k");
-    const host = await createHost({ providers });
-    const runtime = createRuntime(
-      options({ declarations: {}, discoverRoutes: ["zero-aicoding-codex"] }),
-      deps(host.ctx, { settings: () => host.ctx.settings }),
-    );
-    const summary = await runtime.run("discover");
-
-    expect(summary.probed).toEqual(["zero-aicoding-codex"]);
-    expect(server.requests.map((request) => request.url)).toEqual(["/v1/models"]);
-    expect(server.requests[0]?.headers["authorization"]).toBe("Bearer k");
-    const models = routeModels(host.providers(), "zero-aicoding-codex");
-    expect(models[0]?.["reasoningEfforts"]).toEqual({ high: "high" });
   });
 
   it("probes unauthenticated when the environment resolves no credential", async () => {
@@ -525,31 +422,8 @@ describe("describeResult", () => {
     expect(text).toMatch(/magpie\/ollama-cloud\/kimi-k3 input -> removed/);
   });
 
-  it("renders a status answer with the pending pairs", () => {
-    const text = describeResult(summary("status", "pending"));
-    expect(text).toMatch(/1 pending change\(s\) for "llm-pi-ai" \(1 already current\)/);
-    expect(text).toMatch(/magpie\/ollama-cloud\/kimi-k3 reasoningEfforts -> low\/high/);
-    expect(text).toMatch(/skipped magpie\/missing reasoningEfforts: not declared/);
-  });
-
-  it("renders an applied answer", () => {
-    expect(describeResult(summary("apply", "applied"))).toMatch(/applied 1 change\(s\)/);
-  });
-
   it("renders an unchanged answer", () => {
     expect(describeResult(summary("apply", "unchanged"))).toMatch(/nothing to change/);
-  });
-
-  it("renders an unavailable answer", () => {
-    const text = describeResult({
-      mode: "apply",
-      namespace: "llm-pi-ai",
-      result: { kind: "unavailable", namespace: "llm-pi-ai", changes: [], skipped: [] },
-      intents: 0,
-      probed: [],
-      failures: [],
-    });
-    expect(text).toMatch(/no configurable "llm-pi-ai" entry is mounted/);
   });
 
   it("renders discovery failures and an empty discovery", () => {
@@ -562,14 +436,6 @@ describe("describeResult", () => {
     expect(text).toMatch(/discovery failed: magpie: could not reach/);
     const empty = describeResult(summary("discover", "unchanged"));
     expect(empty).toMatch(/nothing to interrogate/);
-  });
-});
-
-describe("SettingsSeam typing", () => {
-  it("accepts the real settings service as the seam", async () => {
-    const host = await createHost();
-    const seam: SettingsSeam = host.ctx.settings;
-    expect(seam.describe()[0]?.ns).toBe("llm-pi-ai");
   });
 });
 

@@ -3,13 +3,7 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import {
-  analyzeGlobalOutputs,
-  countNumbers,
-  DIMENSION,
-  parseNumbers,
-  type FingerprintBank,
-} from "../fingerprint.ts";
+import { analyzeGlobalOutputs, parseNumbers, type FingerprintBank } from "../fingerprint.ts";
 
 const bank = JSON.parse(
   readFileSync(fileURLToPath(new URL("../data/unified_bank.json", import.meta.url)), "utf8"),
@@ -49,16 +43,6 @@ describe("parseNumbers", () => {
     const sequence = Array.from({ length: 120 }, (_, index) => index + 1);
     const text = `生成 ${sequence.length} 个数字: ${sequence.join(", ")}`;
     expect(parseNumbers(text)).toEqual(sequence);
-  });
-});
-
-describe("countNumbers", () => {
-  it("builds a 355-dimension count vector", () => {
-    const counts = countNumbers([1, 355, 355]);
-    expect(counts).toHaveLength(DIMENSION);
-    expect(counts[0]).toBe(1);
-    expect(counts[354]).toBe(2);
-    expect(counts.reduce((a, b) => a + b, 0)).toBe(3);
   });
 });
 

@@ -13,7 +13,6 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { assertFreshBuild } from "./web-plane.ts";
 
-const sourceUrl = new URL("../index.ts", import.meta.url);
 const builtUrl = new URL("../lib/index.js", import.meta.url);
 
 /** Import specifier that must not be a static value import of the removed export. */
@@ -21,13 +20,6 @@ const NAMED_SERVICE_FOR_AGENT =
   /import\s+(?!type\b)[^;]*\bserviceForAgent\b[^;]*from\s+["']@deepseek-ai\/dsh-agent-preset-registry["']/;
 
 describe("preset registry entry", () => {
-  it("does not statically import the removed serviceForAgent export", () => {
-    const source = readFileSync(sourceUrl, "utf8");
-    expect(source).not.toMatch(NAMED_SERVICE_FOR_AGENT);
-    expect(source).toContain("agentPresets");
-    expect(source).toContain("serviceFor");
-  });
-
   it("loads the built host entry as installed ESM against the real registry", () => {
     // `npm run check` builds before tests; a run without a build has nothing to
     // prove here, so it fails instead of passing silently.

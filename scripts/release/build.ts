@@ -113,7 +113,7 @@ function smokeLoadPi(
  *
  * The script runs from the version commit's worktree so the check itself is the
  * reviewed one, and receives the installed package directory as its only argument.
- * Its own output is the failure detail; see `docs/releases.md`.
+ * Its own output is the failure detail; see `docs/dsh/README.md`.
  */
 function smokeLoadDeclared(
   worktree: string,

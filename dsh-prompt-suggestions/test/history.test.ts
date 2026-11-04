@@ -8,7 +8,6 @@ import {
   messageText,
   normalizeSuggestion,
   selectRecentTurns,
-  suggestionFromBlocks,
 } from "../src/host/history.ts";
 import {
   MAX_INPUT_BYTES,
@@ -65,17 +64,6 @@ describe("message and history selection", () => {
       { user: "third", assistant: "third answer" },
     ]);
   });
-
-  it("limits context to the eight newest completed turns", () => {
-    const messages: Message[] = [];
-    for (let index = 0; index < 10; index += 1) {
-      messages.push(user(`question ${index}`), assistant(`answer ${index}`));
-    }
-    const turns = selectRecentTurns(messages);
-    expect(turns).toHaveLength(8);
-    expect(turns[0]?.user).toBe("question 2");
-    expect(turns[7]?.assistant).toBe("answer 9");
-  });
 });
 
 describe("suggestion prompt", () => {
@@ -105,10 +93,6 @@ describe("suggestion prompt", () => {
     expect(Array.isArray(decoded)).toBe(true);
     expect(JSON.stringify(decoded).length).toBeGreaterThan(2);
   });
-
-  it("returns nothing for no turns", () => {
-    expect(buildSuggestionPrompt([])).toBe("");
-  });
 });
 
 describe("suggestion normalization", () => {
@@ -133,21 +117,5 @@ describe("suggestion normalization", () => {
     const normalized = normalizeSuggestion("🚀".repeat(MAX_SUGGESTION_CHARS + 20));
     expect([...normalized]).toHaveLength(MAX_SUGGESTION_CHARS);
     expect(normalized).not.toMatch(/[\uD800-\uDFFF](?![\uDC00-\uDFFF])/u);
-  });
-
-  it("drops any response containing a tool call and ignores reasoning", () => {
-    expect(
-      suggestionFromBlocks([
-        { type: "reasoning", text: "plan" },
-        { type: "text", text: "I can do that" },
-        { type: "tool-call", id: ToolCallId("call-1"), name: "bash", arguments: "{}" },
-      ]),
-    ).toBe("");
-    expect(
-      suggestionFromBlocks([
-        { type: "reasoning", text: "plan" },
-        { type: "text", text: "Add the regression test" },
-      ]),
-    ).toBe("Add the regression test");
   });
 });

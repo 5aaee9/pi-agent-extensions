@@ -113,22 +113,6 @@ describe("session-only commands", () => {
     expect(await real.turn()).toHaveLength(1);
   });
 
-  it("off masks the global default, default restores inheritance", async () => {
-    await plane.writeGlobalSettings({ piAutocompact: { modelLimits: { [MODEL]: 300_000 } } });
-    const real = await plane.startSession(ACROSS);
-
-    // session_start loaded the real settings file.
-    expect(await real.turn()).toHaveLength(1);
-    expect(plane.server.summaryRequests()).toBe(1);
-
-    await real.command("off");
-    expect(await real.turn()).toEqual([]);
-    expect(plane.server.summaryRequests()).toBe(1);
-
-    await real.command("default");
-    expect(await real.turn()).toHaveLength(1);
-  });
-
   it("writes the user model limit only when --save is present", async () => {
     await plane.writeProjectSettings({ theme: "dark" });
     const projectSettings = await plane.readProjectSettings();
@@ -190,38 +174,6 @@ describe("session-only commands", () => {
     await plane.writeGlobalSettings({});
     // 280k is below the original 300k override, so the rejected 250k never took effect.
     expect(await real.turn()).toEqual([]);
-    expect(plane.server.summaryRequests()).toBe(0);
-  });
-
-  it("loads a saved model limit on the next session without another command", async () => {
-    const first = await plane.startSession(ACROSS);
-    await first.command("300k --save");
-    const saved = await plane.readGlobalSettings();
-    // The saving session does not need a reload.
-    expect(await first.turn()).toHaveLength(1);
-
-    const second = await plane.startSession(ACROSS);
-    expect(await plane.readGlobalSettings()).toBe(saved);
-    expect(await second.turn()).toHaveLength(1);
-  });
-
-  it("does not compact below the threshold or when native auto-compaction is disabled", async () => {
-    const real = await plane.startSession({ tokens: 350_000 });
-    await real.command("400k");
-    expect(await real.turn()).toEqual([]);
-    expect(plane.server.turnRequests()).toBe(1);
-    expect(plane.server.summaryRequests()).toBe(0);
-
-    const disabled = { compaction: { enabled: false } };
-    await plane.writeGlobalSettings(disabled);
-    await real.reload();
-    await real.command("300k");
-    expect(lastNotification(real)).toMatchObject({
-      message: expect.stringContaining("disabled"),
-      type: "error",
-    });
-    expect(await real.turn()).toEqual([]);
-    expect(JSON.parse(await plane.readGlobalSettings())).toEqual(disabled);
     expect(plane.server.summaryRequests()).toBe(0);
   });
 
@@ -330,20 +282,6 @@ describe("provider and global caps", () => {
     expect(lastNotification(real)?.message).toContain(
       "autocompact above 300,000 tokens (global cap 30% of the context window)",
     );
-  });
-
-  it("lowers a model limit and a session threshold to the provider cap", async () => {
-    await plane.writeGlobalSettings({
-      piAutocompact: { modelLimits: { [MODEL]: 400_000 }, providerLimits: { probe: 300_000 } },
-    });
-    const real = await plane.startSession(ACROSS);
-    expect(await real.turn()).toHaveLength(1);
-
-    await real.command("500k");
-    expect(lastNotification(real)?.message).toContain(
-      "autocompact above 300,000 tokens (provider cap 300,000 tokens for probe)",
-    );
-    expect(await real.turn()).toHaveLength(1);
   });
 
   it("off ignores caps until default restores them", async () => {

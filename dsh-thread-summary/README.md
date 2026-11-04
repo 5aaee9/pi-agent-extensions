@@ -44,7 +44,6 @@ The settings row reuses DSH's built-in `Button`, `Switch` and `Menu` components 
 
 ```bash
 npm run check --workspace @indexyz/dsh-thread-summary
-npm run check
 node dsh-thread-summary/test/smoke-release.ts dsh-thread-summary
 ```
 
