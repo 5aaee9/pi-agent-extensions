@@ -71,12 +71,12 @@ export function piBin(): string {
 
 const PROJECT_MARKERS = [".pi", ".agents", "AGENTS.md", "CLAUDE.md"];
 
-/** A project above the root would give Pi its skills and context files. */
-function projectAncestor(path: string): string | undefined {
+/** A project at or above the path would give Pi its skills and context files. */
+function projectMarkerAt(path: string): string | undefined {
+  const marker = PROJECT_MARKERS.find((name) => existsSync(join(path, name)));
+  if (marker !== undefined) return join(path, marker);
   const parent = dirname(path);
-  if (parent === path) return undefined;
-  const marker = PROJECT_MARKERS.find((name) => existsSync(join(parent, name)));
-  return marker === undefined ? projectAncestor(parent) : join(parent, marker);
+  return parent === path ? undefined : projectMarkerAt(parent);
 }
 
 export function assertCleanTemporaryRoot(path: string): void {
@@ -84,10 +84,10 @@ export function assertCleanTemporaryRoot(path: string): void {
     throw new Error(
       `temporary root ${path} sits under a node_modules tree, which would let an installed package resolve host packages; set TMPDIR elsewhere`,
     );
-  const ancestor = projectAncestor(path);
-  if (ancestor !== undefined)
+  const marker = projectMarkerAt(path);
+  if (marker !== undefined)
     throw new Error(
-      `temporary root ${path} sits under ${ancestor}, which Pi would load as project resources; set TMPDIR elsewhere`,
+      `temporary root ${path} sits under ${marker}, which Pi would load as project resources; set TMPDIR elsewhere`,
     );
 }
 

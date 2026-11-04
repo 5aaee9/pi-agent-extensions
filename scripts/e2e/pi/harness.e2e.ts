@@ -59,9 +59,10 @@ scenario(
     assert.throws(() => {
       assertCleanTemporaryRoot("/tmp/node_modules/pi-e2e-x");
     }, /node_modules/u);
-    assert.throws(() => {
-      assertCleanTemporaryRoot(join(ROOT_DIR, "inside-a-project"));
-    }, /\.agents/u);
+    for (const path of [ROOT_DIR, join(ROOT_DIR, "inside-a-project")])
+      assert.throws(() => {
+        assertCleanTemporaryRoot(path);
+      }, /\.agents/u);
     await Promise.resolve();
   },
 );
