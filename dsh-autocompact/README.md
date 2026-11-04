@@ -242,7 +242,7 @@ configuration. The Settings page above writes `modelLimits`, `defaultLimit`, and
 
 ## Development
 
-Both halves are TypeScript; only their build targets differ.
+Both halves are TypeScript; only their build targets differ. Run these from this package's directory.
 
 ```bash
 npm run check          # typecheck, build both halves, then test

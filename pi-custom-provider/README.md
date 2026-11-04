@@ -235,7 +235,7 @@ provider 名称无法自动匹配时，可以指定 models.dev provider：
 
 ```bash
 npm install
-npm run check
+npm run check --workspace @indexyz/pi-custom-provider
 ```
 
 ## License

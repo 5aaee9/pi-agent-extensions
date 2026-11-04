@@ -22,7 +22,7 @@ export interface Manifest {
    * The package's declared release smoke script (`release.smoke`), or `null`.
    *
    * A package that Pi cannot load declares how its installed tarball is verified
-   * instead; see `docs/releases.md`, "Packages Pi does not load".
+   * instead; see `docs/dsh/README.md`, "Release smoke script".
    */
   readonly smoke: string | null;
   /**
@@ -30,7 +30,7 @@ export interface Manifest {
    * Harness installs rather than Pi.
    *
    * The Harness supplies its host packages at runtime, so such a package's
-   * tarball is installed without resolving peers; see `docs/releases.md`.
+   * tarball is installed without resolving peers; see `docs/dsh/README.md`.
    */
   readonly dsh: boolean;
 }

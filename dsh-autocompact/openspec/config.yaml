@@ -4,9 +4,9 @@ context: |
   Scope: the dsh-autocompact plugin in this directory only (npm package
   @indexyz/dsh-autocompact). Repository-wide concerns belong to the repository root's
   openspec/.
-  Constraints: follow ../AGENTS.md and ../docs/conventions.md. This
-  directory is excluded from the published package (it is not in "files").
-  Verification for every change: npm run check from the repository root (which builds
-  both halves before the tests), the release smoke check in test/smoke-release.ts and
-  the live profile install in ../docs/workflow.md, and a release decision for
-  @indexyz/dsh-autocompact per ../docs/releases.md when published files change.
+  Constraints: follow ../AGENTS.md, ../docs/conventions.md, and
+  ../docs/dsh/README.md. This directory is excluded from the published package
+  (it is not in "files").
+  Verification for every change: the commands in ../docs/dsh/README.md, "Verify",
+  and a release decision for @indexyz/dsh-autocompact per ../docs/releases.md when published
+  files change.

@@ -454,9 +454,9 @@ From the repository root:
 
 ```bash
 npm install
-npm run format
-npm run lint
-npm run check
+npx oxfmt pi-provider-sub2api
+npx oxlint --deny-warnings pi-provider-sub2api
+npm run check --workspace @indexyz/pi-provider-sub2api
 ```
 
 ## Acknowledgements

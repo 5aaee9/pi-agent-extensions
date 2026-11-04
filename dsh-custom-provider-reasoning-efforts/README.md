@@ -267,12 +267,12 @@ not need the network.
 ## Development
 
 The host half is TypeScript compiled to `lib/` with `tsc`; there is no browser
-half.
+half. Run these from this package's directory.
 
 ```bash
 npm run check          # typecheck, build, then test
 npm run build          # lib/ (Host half)
-npm test               # 166 Vitest cases
+npm test
 ```
 
 `test/smoke-release.ts` is the package's declared `release.smoke` check: the

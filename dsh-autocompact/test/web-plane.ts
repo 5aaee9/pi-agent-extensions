@@ -1,6 +1,6 @@
 /**
  * Shared helper for driving this package's client half through the real Harness web
- * plane (`docs/conventions.md`, "Tests"; AGENTS.md rule 5).
+ * plane (`docs/conventions.md`, "Tests").
  *
  * It starts the pinned host CLI (`@deepseek-ai/dsh`, a devDependency pinned to the
  * host version this package builds against) as a real `dsh web` server over a
