@@ -101,13 +101,11 @@ const hasSkillBlock = (request: Readonly<RecordedRequest>): boolean =>
 
 /** The block and the words it came with reach the model together, block first. */
 function assertDeliveredTogether(requests: readonly RecordedRequest[]): void {
-  const carrying = requests.filter((request) => hasSkillBlock(request));
-  assert.ok(carrying.length > 0, "no request carried the skill block");
-  const message = messagesOf(carrying[0] as RecordedRequest).find((sent) =>
-    SKILL_BLOCK.test(sent.text),
-  );
-  assert.ok(message?.text.endsWith("\n\n$known now"), JSON.stringify(message));
-  assert.equal(blockIn(message), message.text.slice(0, -"\n\n$known now".length));
+  const carrying = requests.find((request) => hasSkillBlock(request));
+  assert.ok(carrying !== undefined, "no request carried the skill block");
+  const message = messagesOf(carrying).find((sent) => SKILL_BLOCK.test(sent.text));
+  assert.ok(message !== undefined);
+  assert.equal(message.text, `${blockIn(message)}\n\n$known now`);
 }
 
 const afterToolResult = (requests: readonly RecordedRequest[]): RecordedRequest => {
