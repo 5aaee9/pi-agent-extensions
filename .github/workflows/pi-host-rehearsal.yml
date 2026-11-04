@@ -1,0 +1,43 @@
+name: Rehearse the next Pi release
+
+# Pi packages declare their host as a "*" peer, so users run Pi versions newer
+# than the pins. This finds a breaking release before they report it. It runs in
+# the job's throwaway checkout, pushes nothing, and holds no secrets.
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      pi-version:
+        description: Pi version to rehearse
+        required: false
+        default: latest
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
+jobs:
+  rehearse:
+    name: Check Pi packages against the newest Pi
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Rehearse the upgrade
+        env:
+          PI_VERSION: ${{ inputs.pi-version || 'latest' }}
+        run: node scripts/e2e/pi/rehearse.ts --throwaway --version "$PI_VERSION"

@@ -25,27 +25,6 @@ function messages(real: RealSession, type: "info" | "warning" | "error"): string
   return real.notifications.filter((entry) => entry.type === type).map((entry) => entry.message);
 }
 
-describe("Pi extension loading", () => {
-  it("registers its command and lifecycle handlers through Pi's real loader", async () => {
-    const real = await plane.startSession(0);
-    expect(real.session.extensionRunner.getCommand("idle-compression")?.description).toBe(
-      "Show idle compaction settings and the time left before it runs",
-    );
-    const missing = [
-      "session_start",
-      "session_shutdown",
-      "agent_settled",
-      "agent_start",
-      "input",
-      "session_before_compact",
-      "session_compact",
-      "session_compact_failed",
-      "model_select",
-    ].filter((event) => !real.session.hasExtensionHandlers(event));
-    expect(missing).toEqual([]);
-  });
-});
-
 describe("idle compaction", () => {
   it("compacts once after the idle time and not again while still idle", async () => {
     await plane.writeGlobalSettings(idle(QUICK));
@@ -154,17 +133,6 @@ describe("idle compaction", () => {
     expect(real.compactions()).toHaveLength(0);
     expect(plane.server.summaryRequests()).toBe(0);
     expect(messages(real, "info")).toEqual([]);
-  });
-
-  it("arms a resumed conversation from the moment it is opened", async () => {
-    await plane.writeGlobalSettings(idle(QUICK));
-    // The seed lands after the first session_start; Pi's reload sees it.
-    const real = await plane.startSession();
-    await sleep(QUICK_MS * 2);
-    expect(real.compactions()).toHaveLength(0);
-
-    await real.reload();
-    await until(() => real.compactions().length === 1);
   });
 
   it("releases the timer on shutdown so a reload never compacts twice", async () => {

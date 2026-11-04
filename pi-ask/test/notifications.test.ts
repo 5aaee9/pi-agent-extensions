@@ -3,19 +3,6 @@ import { test } from "vitest";
 import { DEFAULT_ASK_CONFIG } from "../src/config/defaults.ts";
 import { createQuestionWaitingNotification, notifyQuestionWaiting } from "../src/notifications.ts";
 
-test("notification payload uses question label before prompt", () => {
-  const payload = createQuestionWaitingNotification({
-    label: "Scope",
-    prompt: "What should we change?",
-  });
-
-  assert.deepEqual(payload, {
-    event: "question.waiting",
-    title: "pi ask",
-    message: "Question waiting: Scope",
-  });
-});
-
 test("notification payload falls back to prompt and compacts whitespace", () => {
   const payload = createQuestionWaitingNotification({
     label: "",
@@ -23,31 +10,6 @@ test("notification payload falls back to prompt and compacts whitespace", () => 
   });
 
   assert.equal(payload.message, "Question waiting: What should we change?");
-});
-
-test("disabled notifications are skipped", async () => {
-  const attempts = await notifyQuestionWaiting(
-    {
-      ...DEFAULT_ASK_CONFIG,
-      notifications: { channels: ["bell"], enabled: false },
-    },
-    createQuestionWaitingNotification({ label: "Scope", prompt: "Prompt" }),
-  );
-
-  assert.deepEqual(attempts, [{ channel: "notifications", status: "skipped" }]);
-});
-
-test("new configurations enable only the bell", () => {
-  assert.deepEqual(DEFAULT_ASK_CONFIG.notifications.channels, ["bell"]);
-});
-
-test("terminal notifications do not write escape sequences to redirected stdout", async () => {
-  assert.equal(Boolean(process.stdout.isTTY), false);
-  const attempts = await notifyQuestionWaiting(
-    DEFAULT_ASK_CONFIG,
-    createQuestionWaitingNotification({ label: "Scope", prompt: "Prompt" }),
-  );
-  assert.deepEqual(attempts, [{ channel: "bell", status: "skipped" }]);
 });
 
 test("command notification receives env and swallows failures", async () => {

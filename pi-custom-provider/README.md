@@ -68,7 +68,7 @@ API 也接受以下别名：`openai-chat-compatible`、`chat-completions`、`ant
 
 `api: "ollama"`（或 `ollama-chat`）使用 Ollama 原生 API：模型发现走 `GET /api/tags`，并逐个调用 `POST /api/show` 读取 `capabilities`（`thinking`、`vision`）与 `model_info.*.context_length`，映射为 reasoning、图像输入和上下文窗口。对话走 `POST /api/chat` 的 NDJSON 流，支持 thinking 块、tool calls 和 `think` effort 字符串（pi 的 thinking 等级通过 `thinkingLevelMap` 映射到 `low`/`medium`/`high`/`max`）。
 
-每次请求使用当前会话的工具集合和系统提示：工具添加、移除以及系统提示段落的替换、删除都会反映到下一次请求，工具执行结果会传回 Ollama。原始 NDJSON 事件会交给 Pi 的 `provider_stream_event` 观察者，并等待观察者处理完成后再更新回复。
+每次请求使用当前会话的工具集合和系统提示：工具添加、移除以及系统提示段落的替换、删除都会反映到下一次请求，工具执行结果会传回 Ollama。切换模型后，上一个模型的 thinking 不会发送给新模型，可见回复和工具调用会保留。原始 NDJSON 事件会交给 Pi 的 `provider_stream_event` 观察者，并等待观察者处理完成后再更新回复。
 
 Ollama 本身不要求鉴权，但 pi 会过滤没有 credential 的 provider，本地部署时可写任意占位值（如 `"apiKey": "ollama"`）；Ollama 云端或反代网关则配置真实 key，会以 `Authorization: Bearer` 发送。
 
@@ -228,6 +228,8 @@ provider 名称无法自动匹配时，可以指定 models.dev provider：
 ```
 
 `cache: false` 可对单个 provider 禁用缓存；也可以使用 `/refresh-custom-provider-models` 强制重新拉取所有 provider 的模型列表和 models.dev 元数据，该命令会等待刷新完成。缓存文件路径可以是绝对路径，也可以是相对于 `PI_CODING_AGENT_DIR` 的路径。
+
+使用 `--offline` 或 `PI_OFFLINE=1` 时，扩展不发起任何自动网络请求：有匹配缓存的 provider 直接注册缓存（即使已过期，也不会后台刷新），没有缓存的 provider 使用 `fallbackModels`，models.dev 补全只使用已有缓存。由用户显式执行的 `/refresh-custom-provider-models` 不受影响。
 
 ## 开发
 

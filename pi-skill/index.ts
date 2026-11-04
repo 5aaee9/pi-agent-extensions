@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import type { ExtensionAPI, SlashCommandInfo } from "@earendil-works/pi-coding-agent";
 import {
   parseSkillBlock,
@@ -28,9 +29,9 @@ export const SKILL_MESSAGE_TYPE = "skill";
 
 /**
  * Candidates like `$code-review`: a `$` followed by a valid skill name
- * (lowercase letters, digits, single hyphens). `(?<!\$)` keeps `$$name` literal
- * as an escape hatch. Tokens that resolve to no loaded skill pass through
- * untouched, so `$HOME` or `$9.99` in prose are never rewritten.
+ * (lowercase letters, digits, single hyphens). `(?<!\$)` keeps `$$name` from
+ * invoking a skill. The prompt itself is never rewritten, so such text, `$HOME`,
+ * and `$9.99` all reach the model as written.
  */
 const SKILL_TOKEN_PATTERN = /(?<!\$)\$([a-z0-9]+(?:-[a-z0-9]+)*)/g;
 
@@ -45,7 +46,7 @@ export function skillsFromCommands(commands: readonly SlashCommandInfo[]): Map<s
     skills.set(name, {
       name,
       filePath,
-      baseDir: command.sourceInfo.baseDir ?? filePath.replace(/\/[^/]*$/, ""),
+      baseDir: dirname(filePath),
       description: command.description,
     });
   }
@@ -53,60 +54,42 @@ export function skillsFromCommands(commands: readonly SlashCommandInfo[]): Map<s
 }
 
 /**
- * Expand `$skill-name` tokens into the same `<skill>` block pi emits for `/skill:name`.
- * Tokens without a matching loaded skill are left untouched.
+ * Resolve `$skill-name` tokens into the same `<skill>` block pi emits for
+ * `/skill:name`, once per skill in first-reference order. Tokens without a
+ * matching loaded skill are ignored.
  */
 export async function expandSkillTokens(
   text: string,
   skills: ReadonlyMap<string, SkillRef>,
 ): Promise<{
-  text: string;
   expanded: string[];
   failed: string[];
   blocks: ResolvedSkillBlock[];
 }> {
-  const matches = [...text.matchAll(SKILL_TOKEN_PATTERN)];
-  if (matches.length === 0) return { text, expanded: [], failed: [], blocks: [] };
-
   const expanded: string[] = [];
   const failed: string[] = [];
   const blocks: ResolvedSkillBlock[] = [];
-  const blockByName = new Map<string, string>();
-  const failedNames = new Set<string>();
+  const seen = new Set<string>();
 
-  // Rebuild the string so each match is replaced exactly once, left to right.
-  let result = "";
-  let cursor = 0;
-  for (const match of matches) {
+  for (const match of text.matchAll(SKILL_TOKEN_PATTERN)) {
     const name = match[1];
     const skill = skills.get(name);
-    if (!skill || match.index === undefined) continue;
-
-    let block = blockByName.get(name);
-    if (block === undefined) {
-      if (failedNames.has(name)) continue;
-      try {
-        const content = await readFile(skill.filePath, "utf-8");
-        const body = stripFrontmatter(content).trim();
-        block = `<skill name="${skill.name}" location="${skill.filePath}">\nReferences are relative to ${skill.baseDir}.\n\n${body}\n</skill>`;
-        blockByName.set(name, block);
-        blocks.push({ name, text: block });
-        expanded.push(name);
-      } catch {
-        failedNames.add(name);
-        failed.push(name);
-        continue;
-      }
+    if (!skill || seen.has(name)) continue;
+    seen.add(name);
+    try {
+      const content = await readFile(skill.filePath, "utf-8");
+      const body = stripFrontmatter(content).trim();
+      blocks.push({
+        name,
+        text: `<skill name="${skill.name}" location="${skill.filePath}">\nReferences are relative to ${skill.baseDir}.\n\n${body}\n</skill>`,
+      });
+      expanded.push(name);
+    } catch {
+      failed.push(name);
     }
-
-    result += text.slice(cursor, match.index);
-    result += block;
-    cursor = match.index + match[0].length;
   }
 
-  if (expanded.length === 0) return { text, expanded, failed, blocks };
-  result += text.slice(cursor);
-  return { text: result, expanded, failed, blocks };
+  return { expanded, failed, blocks };
 }
 
 const MAX_SUGGESTIONS = 20;
@@ -214,6 +197,13 @@ export default function piSkill(pi: ExtensionAPI) {
     }
     if (blocks.length === 0) return;
 
+    // Queued items are delivered one at a time, so a separate message would give
+    // the block a model turn of its own. This is the shape Pi uses for /skill:.
+    if (event.streamingBehavior) {
+      const text = [...blocks.map((block) => block.text), event.text].join("\n\n");
+      return { action: "transform", text };
+    }
+
     for (const block of blocks) {
       const message = {
         customType: SKILL_MESSAGE_TYPE,
@@ -221,11 +211,7 @@ export default function piSkill(pi: ExtensionAPI) {
         display: true,
         details: { name: block.name },
       };
-      if (event.streamingBehavior) {
-        pi.sendMessage(message, { deliverAs: event.streamingBehavior });
-      } else {
-        pi.sendMessage(message);
-      }
+      pi.sendMessage(message);
     }
 
     // Keep the user's original `$skill` references visible while each skill's

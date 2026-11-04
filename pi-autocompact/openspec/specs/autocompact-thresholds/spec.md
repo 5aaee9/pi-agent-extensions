@@ -196,3 +196,26 @@ When autocompact appends a summary at a turn or settlement boundary, it SHALL pr
 
 - **WHEN** an earlier extension omits a message at a boundary where autocompact generates a summary
 - **THEN** the omission remains in session history and the omitted message stays excluded from model context
+
+### Requirement: Boundary summaries use the session's model options
+
+A boundary summary request SHALL carry the same reasoning effort and output token limit as a native compaction's summary request for the same model and thinking level.
+
+#### Scenario: Reasoning model at a thinking level
+
+- **WHEN** autocompact summarizes at a boundary on a reasoning model with a thinking level set
+- **THEN** the summary request carries the reasoning effort and the output token limit that a native compaction's summary request carries
+
+### Requirement: Boundary compaction runs only after a completed turn
+
+Boundary compaction SHALL NOT send a summary request for a turn whose outcome is an error or an abort, and a skipped boundary SHALL NOT count as an attempt.
+
+#### Scenario: A turn fails over the threshold
+
+- **WHEN** a turn fails with an upstream error while context usage is above the threshold
+- **THEN** no summary request is sent
+
+#### Scenario: The next turn succeeds
+
+- **WHEN** a later turn completes while usage is above the threshold
+- **THEN** one summary request is sent and the compaction is committed

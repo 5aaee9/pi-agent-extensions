@@ -238,7 +238,7 @@ MIT
 
 ## Verify
 
-Every package test exercises the host the package pins — a Pi package through Pi's real extension loader and its real settings/filesystem surface, a dsh package through the pinned dsh runtime's real service graph, and a package's built client half through a real DOM against the real pinned UI packages. A test never stands in for its host: no module or global replacement of a host package, no hand-rolled fake settings, engine, LLM stream, React component, or `__ModuleLoader__` harness, and no fake HTTP response. Network-shaped paths run against a real server (a locally started one where no credential is needed), and model paths run through the real LLM stack with the model the package's own settings surface selects. Where a path needs a credential the environment cannot hold, the test names the credential route it needs and fails — it does not stub the response and does not skip silently; model-call conversions are recorded as pending until a credential route is granted. Deferred by owner decision today: `pi-provider-sub2api`'s live-endpoint tests stay as they are until that package is converted; do not fake them into passing and do not convert them silently.
+Every package test exercises the host the package pins — a Pi package through Pi's real extension loader and its real settings/filesystem surface, a dsh package through the pinned dsh runtime's real service graph, and a package's built client half through a real DOM against the real pinned UI packages. A test never stands in for its host: no module or global replacement of a host package, no hand-rolled fake settings, engine, LLM stream, React component, or `__ModuleLoader__` harness, and no fake HTTP response. Network-shaped paths run against a real server (a locally started one where no credential is needed), and model paths run through the real LLM stack with the model the package's own settings surface selects. Where a path needs a credential the environment cannot hold, the test names the credential route it needs and fails — it does not stub the response and does not skip silently; model-call conversions are recorded as pending until a credential route is granted. `pi-provider-sub2api` is exercised against a local relay in `scripts/e2e/pi/`; its live endpoints stay untested, and nothing fakes them into passing. A Pi package's tests of its own logic on plain data, with real host utilities, or against a vendored copy's host original are the exceptions `docs/conventions.md` ("Tests") names; simulating a host never is.
 
 The dsh web-plane tests install the package into a throwaway profile with the pinned host's `dsh plugin --profile web add`, which forwards to `pnpm`, and drive the page with Playwright's Chromium. A machine that runs `npm run check` therefore needs `pnpm` on `PATH` (CI installs `pnpm@11.28.5` globally; it is a host tool, not this repository's package manager, so npm and `package-lock.json` stay the only workspace tooling) and the browser from `npx playwright install chromium`.
 
@@ -259,7 +259,16 @@ Every change ends with all of these, run from the repository root:
    npm run test:e2e
    ```
 
-   It resolves the Pi host from each package, rejects an installed version that differs from its exact development pin with an `npm install` hint, and runs Pi packages through RPC with `PI_OFFLINE=1` and isolated config/session directories. DSH packages are built, packed, installed into a temporary directory without peer resolution, and checked with their declared `release.smoke` script. The run makes no model or business API calls, applies a 120-second per-package timeout by default, continues after an individual failure, and exits non-zero after printing the full summary. Use `npm run test:e2e -- --package @indexyz/pi-skill` to focus on one package or `--timeout-ms <milliseconds>` to adjust the local timeout. Failure sections include the command, exit status, stdout, and stderr.
+   It resolves the Pi host from each package, rejects an installed version that differs from its exact development pin with an `npm install` hint, packs each Pi package, installs the tarball with `pi install` into an isolated agent directory (so no host package sits beside it, as for a user), and loads it through RPC with `PI_OFFLINE=1`. A package that imports a file its `files` allowlist does not ship, or a host path Pi does not map, fails here. DSH packages are built, packed, installed into a temporary directory without peer resolution, and checked with their declared `release.smoke` script. The run makes no model or business API calls, applies a 120-second per-package timeout by default, continues after an individual failure, and exits non-zero after printing the full summary. Use `npm run test:e2e -- --package @indexyz/pi-skill` to focus on one package, `--kind pi` to skip the dsh packages, or `--timeout-ms <milliseconds>` to adjust the local timeout. Failure sections include the command, exit status, stdout, and stderr.
+
+   Pi packages also have scenarios that exercise them as users run them, in `scripts/e2e/pi/`:
+
+   ```bash
+   npm run test:e2e:pi
+   node --test scripts/e2e/pi/pi-skill.e2e.ts
+   ```
+
+   Each scenario installs the packed tarball and drives the published `pi` bin over RPC, print, JSON, or a real terminal against local protocol servers, with no credential. A scenario must name the failure it guards and be seen detecting it once (`openspec/specs/pi-package-e2e/spec.md`). The suite does not touch `dsh-*` packages.
 
    A `dsh-<topic>/` package has no Pi load to run. Its equivalent is the script its manifest declares, which the release engine also runs against the packed and installed tarball:
 
@@ -286,7 +295,7 @@ A running Pi session keeps the extension code it loaded at startup. After editin
 
 ## Remove an extension
 
-Delete `<name>/` (its OpenSpec root goes with it), remove it from the root `package.json` `workspaces` and `pi.extensions`, remove its row from the root README, delete any pending intent naming it from `.changeset/`, run `npm install` to update the lockfile, and commit as `chore(repo): remove <name>`. Versions already on npm stay there; never unpublish them.
+Delete `<name>/` (its OpenSpec root goes with it), remove it from the root `package.json` `workspaces` and `pi.extensions`, delete its `scripts/e2e/pi/<name>.e2e.ts` and its entry in `scripts/e2e/pi/registrations.ts`, remove its row from the root README, delete any pending intent naming it from `.changeset/`, run `npm install` to update the lockfile, and commit as `chore(repo): remove <name>`. Versions already on npm stay there; never unpublish them.
 
 ## Release
 
@@ -295,3 +304,5 @@ Releasing is a separate step taken only on an explicit request: prepare versions
 ## Upgrade Pi
 
 Each package pins the Pi host packages it builds against in its own `devDependencies` (`docs/pi-reference.md`). To upgrade one package: bump all of its `@earendil-works/*` dev dependencies together to the new exact version, run `npm install`, read that version's `CHANGELOG.md` (under the package's `node_modules/@earendil-works/pi-coding-agent/` when it differs from the root's, otherwise the root's) for breaking changes, update the README if the package now requires a newer Pi, run `npm run check`, and smoke-test the package with the matching `pi` binary. The upgrade changes `package.json`, a published file, so it needs a release decision.
+
+The `Rehearse the next Pi release` workflow does this against the newest Pi every day, in CI's throwaway checkout: it moves the Pi packages' pins, installs, and runs their typecheck, package tests, the load check, and `test:e2e:pi`, leaving dsh packages alone. A red run means a published Pi breaks something, before any pin moved; read the failing step and the Pi version in the summary, and start the upgrade above. To rehearse a specific version, run `gh workflow run pi-host-rehearsal.yml -f pi-version=<version>`, or `node scripts/e2e/pi/rehearse.ts --throwaway --version <version>` in a scratch checkout, because it rewrites manifests and the lockfile.

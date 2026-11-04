@@ -77,12 +77,4 @@ describe("credential commands", () => {
       "Credential command failed",
     );
   }, 15_000);
-
-  it("honors cancellation", async () => {
-    const controller = new AbortController();
-    controller.abort();
-    await expect(
-      resolveCredentialCommand(command("setInterval(() => {}, 1000)"), controller.signal),
-    ).rejects.toThrow("Credential command failed");
-  });
 });

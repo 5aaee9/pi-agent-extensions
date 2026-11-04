@@ -36,6 +36,8 @@ Run from the repository root.
 | `npm run lint` / `npm run lint:fix`                        | Run oxlint, including the strict type-aware profile for `scripts/` and `.changeset/` / apply its fixes                             |
 | `npm run typecheck` / `npm run build` / `npm test`         | Individual steps of `check` (`typecheck` covers the root tooling and every package; `build` skips packages without a build script) |
 | `npm run test:scripts`                                     | Individual step of `check`: the release-script tests                                                                               |
+| `npm run test:e2e`                                         | Load every plugin through its host, from its packed tarball (`--kind pi` or `--package @indexyz/<name>` to narrow)                 |
+| `npm run test:e2e:pi`                                      | Black-box Pi scenarios: installed tarballs driven through the published `pi` bin against local servers                             |
 | `npm run check --workspace @indexyz/<name>`                | One package's typecheck, build, and tests (any package script works with `--workspace`)                                            |
 | `npm run change -- --patch @indexyz/<name> -m "<summary>"` | Record a release intent (`--minor`, `--major`; a `none` intent is written by hand, see `docs/releases.md`)                         |
 | `npm run change:status`                                    | Show pending release intents and the versions they imply (local only)                                                              |

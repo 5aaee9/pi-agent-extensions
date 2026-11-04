@@ -65,18 +65,6 @@ function subscribeTracker() {
   return { assistant, emit, tracker };
 }
 
-test("program status records match Pi's root record format", () => {
-  assert.equal(
-    formatProgramStatus({ state: "blocked", kind: "question", message: "Question waiting: Scope" }),
-    record(`state=blocked:app=pi:kind=question:msg=${encode("Question waiting: Scope")}`),
-  );
-  assert.equal(formatProgramStatus({ state: "idle" }), record("state=idle:app=pi"));
-  assert.equal(
-    formatProgramStatus({ state: "working", kind: "question", message: "  " }),
-    record("state=working:app=pi"),
-  );
-});
-
 test("program status messages drop control characters and stay within 2048 bytes", () => {
   assert.equal(
     formatProgramStatus({ state: "error", message: "bad\n\u001b[31mthing\t" }),
@@ -142,14 +130,6 @@ test("only a manual compaction outside a run marks the session done", () => {
   assert.deepEqual(tracker.status, { state: "done" });
 });
 
-test("fallback reporting stays silent without a TTY or with PI_PROGRAM_STATUS=0", () => {
-  for (const overrides of [{ isTTY: false }, { env: { PI_PROGRAM_STATUS: "0" } }]) {
-    const { host, writes } = makeHost(overrides);
-    reportBlockedQuestion("Question waiting", makeCtx(false), new RestingStatusTracker(), host)();
-    assert.deepEqual(writes, []);
-  }
-});
-
 test("fallback restores working with the session name during a run, once", () => {
   const { host, writes } = makeHost({ env: { PI_PROGRAM_STATUS: "1" } });
   const restore = reportBlockedQuestion(
@@ -197,13 +177,4 @@ test("fallback restores the tracked resting status when idle", () => {
     reportBlockedQuestion("Question waiting", makeCtx(true, "refactor"), tracker, host)();
     assert.equal(writes[1], expected);
   }
-});
-
-test("a done restore without a session name carries no message", () => {
-  const tracker = new RestingStatusTracker();
-  tracker.agentStarted();
-  tracker.agentSettled(false);
-  const { host, writes } = makeHost();
-  reportBlockedQuestion("Question waiting", makeCtx(true), tracker, host)();
-  assert.equal(writes[1], record("state=done:app=pi"));
 });

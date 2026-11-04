@@ -103,6 +103,9 @@ export default function piAutocompact(pi: ExtensionAPI) {
   // (manual compaction aborts the run). Returning a compaction draft preserves
   // the ordinary tool/follow-up continuation without injecting a user prompt.
   const checkBoundary = async (event: BoundaryState, ctx: ExtensionContext) => {
+    // A failed or aborted turn would pay for a summary, possibly from a failing
+    // provider. Skipping consumes no attempt, so the next completed turn compacts.
+    if (event.outcome !== "completed") return;
     if (!supported || shutdown || active || ctx.signal?.aborted) return;
     const key = keyOf(ctx);
     if (!key || !ctx.model) return;

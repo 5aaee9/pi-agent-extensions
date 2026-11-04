@@ -48,7 +48,7 @@ export async function summarizeBoundary(
     undefined,
     undefined,
     ctx.thinkingLevel,
-    (model, transcript, options) => ctx.modelRegistry.stream(model, transcript, options),
+    (model, transcript, options) => ctx.modelRegistry.streamSimple(model, transcript, options),
   );
   return {
     type: "compaction",

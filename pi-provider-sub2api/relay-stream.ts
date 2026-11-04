@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 
+import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type {
   AssistantMessageEventStream,
   Model,
@@ -42,6 +43,25 @@ export function createRelayFetch(
   };
 }
 
+// Relays report a dropped upstream stream as `stream_read_error`, a code Pi's retry
+// classifier only recognizes under the `upstream_stream_read_error` spelling.
+function normalizeRelayErrors(source: AssistantMessageEventStream) {
+  const normalized = createAssistantMessageEventStream();
+  void (async () => {
+    for await (const event of source) {
+      if (event.type === "error" && event.error.errorMessage) {
+        event.error.errorMessage = event.error.errorMessage.replace(
+          /\bstream_read_error\b/,
+          "upstream_stream_read_error",
+        );
+      }
+      normalized.push(event);
+    }
+    normalized.end();
+  })();
+  return normalized;
+}
+
 export function streamCodex(
   model: Model<any>,
   context: TranscriptContext,
@@ -54,12 +74,14 @@ export function streamCodex(
   // Failed requests surface as ordinary stream errors so Pi's own retry
   // handling can retry the turn.
   const upstreamFetch = options.fetch ?? globalThis.fetch;
-  return CODEX_API.streamSimple(model, context, {
-    ...options,
-    apiKey: relay.codexAuthToken,
-    transport: "sse",
-    fetch: createRelayFetch(relay, upstreamFetch),
-  });
+  return normalizeRelayErrors(
+    CODEX_API.streamSimple(model, context, {
+      ...options,
+      apiKey: relay.codexAuthToken,
+      transport: "sse",
+      fetch: createRelayFetch(relay, upstreamFetch),
+    }),
+  );
 }
 
 export function addServerTools(payload: unknown, model: Model<any> | undefined) {

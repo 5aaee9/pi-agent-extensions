@@ -24,6 +24,14 @@ export { parseRootConfig } from "./config.ts";
 
 type RefreshContext = Parameters<NonNullable<ProviderConfig["refreshModels"]>>[0];
 
+// The extension API has no offline accessor; `refreshModels` only learns it per
+// call. Pi turns `--offline` into `PI_OFFLINE=1` before loading extensions, so the
+// variable covers both forms, read with the same truthy values Pi accepts.
+function isOffline() {
+  const value = process.env.PI_OFFLINE?.toLowerCase();
+  return value === "1" || value === "true" || value === "yes";
+}
+
 export default async function customProviderExtension(pi: ExtensionAPI) {
   const configPath = getConfigPath();
   let loaded: Awaited<ReturnType<typeof loadProviders>>;
@@ -36,6 +44,7 @@ export default async function customProviderExtension(pi: ExtensionAPI) {
   if (loaded.providers.length === 0) return;
   const { root, providers } = loaded;
 
+  const offline = isOffline();
   const controller = new AbortController();
   const store = new CacheStore();
   const modelsDevPath = modelsDevCachePath(root.modelsDev, root.cache);
@@ -89,15 +98,25 @@ export default async function customProviderExtension(pi: ExtensionAPI) {
   // Startup registers every matching cache, however old, and waits only for
   // sources that have nothing cached. Expired sources refresh after
   // session_start (refreshExpired), so a slow upstream never delays startup.
+  // Offline, nothing automatic touches the network: an uncached provider gets its
+  // fallbackModels and an uncached catalog stays empty until an explicit refresh.
   const expiredProviders: ProviderDefinition[] = [];
   const cachedCatalog = cachedModelsDevCatalog(root.modelsDev, await store.read(modelsDevPath));
   const modelsDevExpired = cachedCatalog?.expired === true;
   const [catalog, startupModels] = await Promise.all([
-    cachedCatalog ? cachedCatalog.catalog : fetchModelsDev(controller.signal, false),
+    cachedCatalog
+      ? cachedCatalog.catalog
+      : offline
+        ? emptyModelsDevCatalog()
+        : fetchModelsDev(controller.signal, false),
     Promise.all(
       providers.map(async (provider) => {
         const cached = cachedProviderModels(provider, await store.read(providerPath(provider)));
-        if (!cached) return fetchProvider(provider, controller.signal, false);
+        if (!cached) {
+          return offline
+            ? provider.fallbackModels
+            : fetchProvider(provider, controller.signal, false);
+        }
         if (cached.expired) expiredProviders.push(provider);
         return cached.models;
       }),
@@ -157,7 +176,7 @@ export default async function customProviderExtension(pi: ExtensionAPI) {
   pi.on("session_start", () => {
     if (refreshStarted) return;
     refreshStarted = true;
-    if (!modelsDevExpired && expiredProviders.length === 0) return;
+    if (offline || (!modelsDevExpired && expiredProviders.length === 0)) return;
     void refreshExpired().catch((error: unknown) => {
       if (!controller.signal.aborted) {
         console.error("[custom-provider] background model refresh failed:", error);

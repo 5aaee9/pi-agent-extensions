@@ -1,6 +1,6 @@
 # pi-ask configuration
 
-This file is the source of truth for configuring `@eko24ive/pi-ask`.
+This file is the source of truth for configuring `@indexyz/pi-ask`.
 
 When changing pi-ask settings:
 

@@ -5,6 +5,13 @@ import {
   REQUEST_TIMEOUT_MS,
 } from "./types.ts";
 
+// Pi's extension API has no accessor for this. `--offline` reaches extensions as
+// PI_OFFLINE=1, which Pi sets before it loads them.
+export function isOffline() {
+  const value = process.env.PI_OFFLINE?.toLowerCase();
+  return value === "1" || value === "true" || value === "yes";
+}
+
 export function isControlCharacter(character: string) {
   const code = character.codePointAt(0) ?? 0;
   return code <= 0x1f || (code >= 0x7f && code <= 0x9f);

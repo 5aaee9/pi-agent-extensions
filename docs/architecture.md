@@ -13,6 +13,7 @@
 ├── .changeset/                    release intents (<id>.md), changesets config, changelog renderer
 ├── .github/workflows/             lint.yml (checks, release-impact gate) and publish.yml (publication)
 ├── scripts/
+│   ├── e2e/                       host loading for every plugin, and the black-box Pi suite in e2e/pi/ (TypeScript)
 │   └── release/                   release-impact gate, publication plan and publish steps, and their tests (TypeScript)
 ├── .agents/skills/
 │   ├── pi-extension-dev/SKILL.md  skill loaded when working on an extension

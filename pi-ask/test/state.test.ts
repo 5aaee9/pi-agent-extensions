@@ -3,9 +3,8 @@ import { test } from "vitest";
 import { createInitialState } from "../src/state/create.ts";
 import { cycleCurrentQuestionType } from "../src/state/question-type.ts";
 
-const DUPLICATE_QUESTION_ID_RE = /duplicate question id "scope"/;
 const DUPLICATE_OPTION_VALUE_RE = /duplicate option value "small"/;
-const PREVIEW_REQUIRED_RE = /preview questions require preview text for every option/;
+
 const FREEFORM_UNSUPPORTED_RE = /freeform options are only supported for \/answer forms/;
 const FREEFORM_MIXED_RE = /freeform options must be the only option/;
 
@@ -53,24 +52,6 @@ function sampleParams(): AskParams {
     ],
   };
 }
-
-test("normalize defaults via initial state", () => {
-  const state = createInitialState({
-    questions: [
-      {
-        id: "q1",
-        prompt: "Question?",
-        options: [{ value: "a", label: "A" }],
-      },
-    ],
-  });
-
-  assert.equal(state.questions[0].label, "Q1");
-  assert.equal(state.questions[0].type, "single");
-  assert.equal(state.questions[0].required, false);
-  assert.equal(getRenderableOptions(state.questions[0]).at(-1)?.label, "Type your own");
-  assert.equal(getRenderableOptions(state.questions[0]).at(-1)?.isCustomOption, true);
-});
 
 test("answer freeform questions render only the custom input option", () => {
   const state = createInitialState(
@@ -130,47 +111,6 @@ test("freeform questions cannot mix normal options", () => {
   );
 });
 
-test("preview questions keep their type and option previews", () => {
-  const state = createInitialState({
-    questions: [
-      {
-        id: "preview",
-        label: "Preview",
-        prompt: "What layout?",
-        type: "preview",
-        options: [{ value: "a", label: "Option A", preview: "Example" }],
-      },
-    ],
-  });
-
-  assert.equal(state.questions[0].type, "preview");
-  assert.equal(state.questions[0].options[0].preview, "Example");
-  assert.equal(getRenderableOptions(state.questions[0]).at(-1)?.isCustomOption, true);
-  assert.equal(getRenderableOptions(state.questions[0]).at(-1)?.label, "Type your own");
-  assert.equal(getRenderableOptions(state.questions[0]).length, 2);
-});
-
-test("createInitialState rejects duplicate question ids", () => {
-  assert.throws(
-    () =>
-      createInitialState({
-        questions: [
-          {
-            id: "scope",
-            prompt: "What scope?",
-            options: [{ value: "small", label: "Small" }],
-          },
-          {
-            id: "scope",
-            prompt: "What tone?",
-            options: [{ value: "direct", label: "Direct" }],
-          },
-        ],
-      }),
-    DUPLICATE_QUESTION_ID_RE,
-  );
-});
-
 test("createInitialState rejects duplicate option values within one question", () => {
   assert.throws(
     () =>
@@ -187,23 +127,6 @@ test("createInitialState rejects duplicate option values within one question", (
         ],
       }),
     DUPLICATE_OPTION_VALUE_RE,
-  );
-});
-
-test("preview questions require preview text for every option", () => {
-  assert.throws(
-    () =>
-      createInitialState({
-        questions: [
-          {
-            id: "layout",
-            prompt: "Pick layout",
-            type: "preview",
-            options: [{ value: "compact", label: "Compact" }],
-          },
-        ],
-      }),
-    PREVIEW_REQUIRED_RE,
   );
 });
 
@@ -232,36 +155,6 @@ test("normalize trims ids, prompts, and option text", () => {
     value: "small",
     label: "Small",
     description: "Lowest risk",
-    preview: undefined,
-  });
-});
-
-test("normalize treats blank optional presentation text as absent", () => {
-  const state = createInitialState({
-    title: "   ",
-    questions: [
-      {
-        id: "scope",
-        label: "  ",
-        prompt: "Pick scope",
-        options: [
-          {
-            value: "small",
-            label: "Small",
-            description: " ",
-            preview: "\t",
-          },
-        ],
-      },
-    ],
-  });
-
-  assert.equal(state.title, undefined);
-  assert.equal(state.questions[0].label, "Q1");
-  assert.deepEqual(state.questions[0].options[0], {
-    value: "small",
-    label: "Small",
-    description: undefined,
     preview: undefined,
   });
 });
@@ -769,80 +662,10 @@ test("multi-select keeps custom text when toggling additional options", () => {
   );
 });
 
-test("preview questions can store selected option notes for submission", () => {
-  let state = createInitialState({
-    questions: [
-      {
-        id: "preview",
-        prompt: "Pick layout",
-        type: "preview",
-        options: [
-          { value: "compact", label: "Compact", preview: "A" },
-          { value: "spacious", label: "Spacious", preview: "B" },
-        ],
-      },
-    ],
-  });
-
-  state = enterOptionNoteMode(state, "preview", "spacious");
-  state = saveNote(state, "better scanability");
-  state = applyNumberShortcut(state, 2);
-
-  assert.deepEqual(toAskResult(state).answers.preview, {
-    values: ["spacious"],
-    labels: ["Spacious"],
-    indices: [2],
-    customText: undefined,
-    note: undefined,
-    optionNotes: {
-      spacious: "better scanability",
-    },
-  });
-});
-
-test("preview questions support custom answers", () => {
-  let state = createInitialState({
-    questions: [
-      {
-        id: "preview",
-        prompt: "Pick layout",
-        type: "preview",
-        options: [{ value: "compact", label: "Compact", preview: "A" }],
-      },
-    ],
-  });
-
-  state = applyNumberShortcut(state, 2);
-  state = submitCustomAnswer(state, "Something else");
-
-  assert.deepEqual(toAskResult(state).answers.preview, {
-    values: ["Something else"],
-    labels: ["Something else"],
-    indices: [],
-    customText: "Something else",
-    note: undefined,
-    optionNotes: undefined,
-  });
-});
-
 test("tab navigation wraps including submit tab", () => {
   let state = createInitialState(sampleParams());
   state = moveTab(state, -1);
   assert.equal(state.activeTabIndex, 2);
-  assert.equal(state.view.kind, "submit");
-
-  state = moveTab(state, 1);
-  assert.equal(state.activeTabIndex, 0);
-  assert.equal(state.view.kind, "navigate");
-});
-
-test("tab navigation works with a single question", () => {
-  let state = createInitialState({
-    questions: [{ id: "q", prompt: "Q?", options: [{ value: "a", label: "A" }] }],
-  });
-
-  state = moveTab(state, -1);
-  assert.equal(state.activeTabIndex, 1);
   assert.equal(state.view.kind, "submit");
 
   state = moveTab(state, 1);

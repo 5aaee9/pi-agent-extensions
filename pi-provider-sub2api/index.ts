@@ -52,7 +52,7 @@ import type {
   ServiceTierMode,
   SupportedApi,
 } from "./types.ts";
-import { firstMaxTokensWithinContext, sanitizeDisplayString } from "./util.ts";
+import { firstMaxTokensWithinContext, isOffline, sanitizeDisplayString } from "./util.ts";
 import { resolveXaiMetadata } from "./xai.ts";
 import { streamXai, XAI_RESPONSES_API } from "./xai-stream.ts";
 
@@ -112,6 +112,10 @@ export default async function (pi: ExtensionAPI) {
   let active = true;
   const isCurrent = () =>
     active && isExtensionGeneration(generation) && !lifecycleController.signal.aborted;
+  // Offline suppresses every automatic request. /sub2api-refresh and model requests
+  // are the user's own, so they still go out.
+  const offline = isOffline();
+  const canRefreshUsage = () => !offline && isCurrent();
 
   let usageFooterLine: UsageFooterLine | undefined;
   let requestFooterRender: (() => void) | undefined;
@@ -217,10 +221,13 @@ export default async function (pi: ExtensionAPI) {
           if (cached.priceMultiplier !== undefined) {
             rememberPriceMultiplier(relay, cached.priceMultiplier);
           }
-          if (!cached.fresh) staleRelays.push(relay);
-          else if (cached.priceMultiplier === undefined) billingRelays.push(relay);
+          if (!offline) {
+            if (!cached.fresh) staleRelays.push(relay);
+            else if (cached.priceMultiplier === undefined) billingRelays.push(relay);
+          }
           return { relay, models: cached.models };
         }
+        if (offline) return { relay, models: [] };
         const [discovery, billing] = await Promise.all([
           fetchModels(relay),
           refreshRelayBilling(relay),
@@ -348,6 +355,9 @@ export default async function (pi: ExtensionAPI) {
         ? "openai-codex-responses"
         : ((registeredModels[0]?.api as SupportedApi | undefined) ?? "openai-responses"));
 
+    // Pi merges a re-registration over the previous one, so leaving streamSimple out
+    // would keep the Codex handler of a relay whose last Codex model just disappeared.
+    if (!usesCodex) pi.unregisterProvider(relay.provider);
     pi.registerProvider(relay.provider, {
       name: relay.provider,
       baseUrl: getApiBaseUrl(relay, defaultApi),
@@ -675,7 +685,7 @@ export default async function (pi: ExtensionAPI) {
         ctx.model.provider,
         refreshRelayQuota,
         refreshRelayBillingAndPricing,
-        isCurrent,
+        canRefreshUsage,
         setUsageLine,
         clearUsageLine,
       );
@@ -689,7 +699,7 @@ export default async function (pi: ExtensionAPI) {
       event.model.provider,
       refreshRelayQuota,
       refreshRelayBillingAndPricing,
-      isCurrent,
+      canRefreshUsage,
       setUsageLine,
       clearUsageLine,
     );
@@ -702,7 +712,7 @@ export default async function (pi: ExtensionAPI) {
         ctx.model.provider,
         refreshRelayQuota,
         refreshRelayBillingAndPricing,
-        isCurrent,
+        canRefreshUsage,
         setUsageLine,
         clearUsageLine,
       );
@@ -713,5 +723,8 @@ export default async function (pi: ExtensionAPI) {
     active = false;
     lifecycleController.abort();
     clearUsageLine(ctx);
+    // Pi's model registry outlives this module graph. Only this generation can remove
+    // what it registered: an unregister during the next load never reaches the registry.
+    for (const relay of relays) pi.unregisterProvider(relay.provider);
   });
 }

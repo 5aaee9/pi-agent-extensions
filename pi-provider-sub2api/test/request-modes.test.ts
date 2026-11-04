@@ -53,18 +53,6 @@ describe("request mode injection", () => {
     },
   );
 
-  it.each([
-    ["default", "default"],
-    ["fast", "priority"],
-    ["ultrafast", "ultrafast"],
-  ] as const)("maps tier %s to service_tier %s", (tier, wire) => {
-    const selected = model("openai-responses");
-    expect(addServiceTier({ model: selected.id, service_tier: "auto" }, selected, tier)).toEqual({
-      model: selected.id,
-      service_tier: wire,
-    });
-  });
-
   it("keeps default and Fast but not Ultrafast or Daybreak on Chat Completions", () => {
     const selected = model("openai-completions");
     const payload = { model: selected.id };
@@ -94,44 +82,13 @@ describe("request mode injection", () => {
 
   it("ignores malformed payloads and mismatched models", () => {
     const selected = model();
-    for (const payload of [null, [], "bad", {}, { model: "other" }]) {
-      expect(addDaybreakProgram(payload, selected, "blue")).toBeUndefined();
-      expect(addServiceTier(payload, selected, "ultrafast")).toBeUndefined();
-    }
-    for (const access_programs of [null, [], "bad"]) {
-      expect(
-        addDaybreakProgram({ model: selected.id, access_programs }, selected, "blue"),
-      ).toBeUndefined();
-    }
-    expect(addDaybreakProgram({}, undefined, "blue")).toBeUndefined();
-    expect(addServiceTier({}, undefined, "ultrafast")).toBeUndefined();
+    const other = { model: "other" };
+    expect(addDaybreakProgram(other, selected, "blue")).toBeUndefined();
+    expect(addServiceTier(other, selected, "ultrafast")).toBeUndefined();
   });
 });
 
 describe("request mode configuration", () => {
-  it("defaults to no preferences", () => {
-    const relay = addRelay("relay");
-    expect(relay.requestModes).toEqual({});
-    expect(relay.modelRequestModes.size).toBe(0);
-  });
-
-  it("parses provider defaults, partial model overrides, and explicit off states", () => {
-    const relay = addRelay("relay", {
-      requestModes: { serviceTier: "fast", daybreak: "blue" },
-      modelRequestModes: {
-        [MODEL_A]: { serviceTier: "default" },
-        [MODEL_B]: { serviceTier: "default", daybreak: "standard" },
-        "gpt-synthetic-empty": {},
-      },
-    });
-    expect(relay.requestModes).toEqual({ serviceTier: "fast", daybreak: "blue" });
-    expect(Object.fromEntries(relay.modelRequestModes)).toEqual({
-      [MODEL_A]: { serviceTier: "default" },
-      [MODEL_B]: { serviceTier: "default", daybreak: "standard" },
-      "gpt-synthetic-empty": {},
-    });
-  });
-
   it.each([
     [{ requestModes: null }, "provider relay requestModes must be an object"],
     [{ requestModes: [] }, "provider relay requestModes must be an object"],

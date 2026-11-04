@@ -3,7 +3,6 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { generateChallenges } from "../challenges.ts";
 import {
   analyzeGlobalOutputs,
   countNumbers,
@@ -16,11 +15,28 @@ const bank = JSON.parse(
   readFileSync(fileURLToPath(new URL("../data/unified_bank.json", import.meta.url)), "utf8"),
 ) as FingerprintBank;
 
-describe("parseNumbers", () => {
-  it("parses comma and space separated runs", () => {
-    expect(parseNumbers("1, 2, 3 355")).toEqual([1, 2, 3, 355]);
-  });
+/** Deterministic generator (mulberry32), so a failure reproduces. */
+function seededRandom(seed: number): () => number {
+  let state = seed;
+  return () => {
+    state = (state + 0x6d2b79f5) | 0;
+    let mixed = Math.imul(state ^ (state >>> 15), 1 | state);
+    mixed = (mixed + Math.imul(mixed ^ (mixed >>> 7), 61 | mixed)) ^ mixed;
+    return ((mixed ^ (mixed >>> 14)) >>> 0) / 4294967296;
+  };
+}
 
+/** Draws in-range numbers with the frequencies a bank model's count vector records. */
+function sampleFromCounts(counts: readonly number[], size: number, next: () => number): number[] {
+  const total = counts.reduce((sum, count) => sum + count, 0);
+  return Array.from({ length: size }, () => {
+    let remaining = next() * total;
+    const index = counts.findIndex((count) => (remaining -= count) < 0);
+    return (index === -1 ? counts.length - 1 : index) + 1;
+  });
+}
+
+describe("parseNumbers", () => {
   it("drops out-of-range values without breaking the run", () => {
     expect(parseNumbers("5, 999, 6, 0, 7")).toEqual([5, 6, 7]);
   });
@@ -30,13 +46,9 @@ describe("parseNumbers", () => {
   });
 
   it("keeps prose numbers out of the sampled sequence", () => {
-    const sequence = Array.from({ length: 120 }, (_, index) => (index % 355) + 1).join(", ");
-    const text = `生成 ${sequence.length} 个数字: ${sequence}`;
-    expect(parseNumbers(text)).toHaveLength(120);
-  });
-
-  it("returns an empty array for prose-only text", () => {
-    expect(parseNumbers("no digits here")).toEqual([]);
+    const sequence = Array.from({ length: 120 }, (_, index) => index + 1);
+    const text = `生成 ${sequence.length} 个数字: ${sequence.join(", ")}`;
+    expect(parseNumbers(text)).toEqual(sequence);
   });
 });
 
@@ -50,53 +62,25 @@ describe("countNumbers", () => {
   });
 });
 
-describe("generateChallenges", () => {
-  it("creates three challenges with distinct expected counts in range", () => {
-    const challenges = generateChallenges();
-    expect(challenges).toHaveLength(3);
-    const counts = challenges.map((challenge) => challenge.expected_count);
-    expect(new Set(counts).size).toBe(3);
-    for (const count of counts) {
-      expect(count).toBeGreaterThanOrEqual(292);
-      expect(count).toBeLessThanOrEqual(332);
-    }
-    for (const challenge of challenges) {
-      expect(challenge.id).toMatch(/^probe-\d+-[0-9a-f]{14}$/);
-      expect(challenge.prompt).toContain("1 到 355");
-      expect(challenge.prompt).toContain(String(challenge.expected_count));
-    }
-  });
-});
-
 describe("analyzeGlobalOutputs", () => {
   it("rejects outputs without enough numbers", () => {
     expect(() => analyzeGlobalOutputs([{ text: "1,2,3" }], bank)).toThrow(/没有可用回答/);
   });
 
-  it("attributes a synthetic sequence to some model with normalized probabilities", () => {
-    // Deterministic pseudo-random sequence; any closed-set result is fine.
-    let seed = 42;
-    const next = () => (seed = (seed * 1103515245 + 12345) % 2147483648);
-    const outputs = Array.from({ length: 3 }, () => ({
-      expected_count: 300,
-      text: Array.from({ length: 300 }, () => (next() % 355) + 1).join(", "),
-    }));
-    const result = analyzeGlobalOutputs(outputs, bank);
-    expect(result.used_outputs).toBe(3);
-    expect(result.results).toHaveLength(bank.models.length);
-    const total = result.results.reduce((sum, item) => sum + item.probability, 0);
-    expect(total).toBeCloseTo(1, 6);
-    const familyTotal = result.family_probabilities.reduce(
-      (sum, item) => sum + item.probability,
-      0,
-    );
-    expect(familyTotal).toBeCloseTo(1, 6);
-    expect(result.results[0].model).toBe(result.prediction);
-    expect(result.diagnostics).toHaveLength(3);
-    for (const diagnostic of result.diagnostics) {
-      expect(diagnostic.accepted).toBe(true);
-      expect(diagnostic.parsed_numbers).toBe(300);
-    }
+  it("attributes a sample of each bank model's own counts to that model", () => {
+    const misattributed = bank.models.flatMap((model, modelIndex) => {
+      const next = seededRandom(modelIndex + 1);
+      const outputs = Array.from({ length: 3 }, () => ({
+        expected_count: 300,
+        text: sampleFromCounts(model.counts, 300, next).join(", "),
+      }));
+      const result = analyzeGlobalOutputs(outputs, bank);
+      expect(result.used_outputs).toBe(3);
+      const total = result.results.reduce((sum, item) => sum + item.probability, 0);
+      expect(total).toBeCloseTo(1, 6);
+      return result.prediction === model.id ? [] : [`${model.id} -> ${result.prediction}`];
+    });
+    expect(misattributed).toEqual([]);
   });
 
   it("marks short outputs as invalid but still scores valid ones", () => {

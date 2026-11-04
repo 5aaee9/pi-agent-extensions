@@ -132,6 +132,7 @@ participate in native compaction configuration. A session command without
   recent content and shrink, the plugin leaves it to native/manual compaction.
 - Summary generation consumes model tokens. Failures leave context intact and
   are not retried at the same session boundary. A subsequent turn can try again.
+- A failed or aborted turn sends no summary; the next completed turn compacts.
 
 ## Development
 

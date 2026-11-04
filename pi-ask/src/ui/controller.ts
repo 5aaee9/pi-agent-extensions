@@ -334,7 +334,9 @@ function handleNavigationCommand(controller: AskFlowController, command: AskInpu
       }
       clearReviewShortcutPending(controller);
       clearQuestionTypeChangePending(controller);
-      commitState(controller, applyNumberShortcut(controller.state, command.digit));
+      commitState(controller, applyNumberShortcut(controller.state, command.digit), {
+        finish: true,
+      });
       return;
     case "dismiss":
       clearReviewShortcutPending(controller);

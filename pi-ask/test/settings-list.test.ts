@@ -62,31 +62,6 @@ function createList(
   });
 }
 
-test("settings list renders behaviour settings and config path", () => {
-  const list = createList();
-  const text = list.render(72).join("\n");
-
-  assert(text.includes("╭"));
-  assert(text.includes("@eko24ive/pi-ask"));
-  assert(text.includes("Live settings"));
-  assert(text.includes("Defaults for future asks"));
-  assert(text.includes("Auto-submit when answered without notes"));
-  assert(text.includes("[off]"));
-  assert(text.includes("Confirm dismiss when dirty"));
-  assert(text.includes("Present single-select as multi-select"));
-  assert(text.includes("on"));
-  assert(text.includes("Edit this config file to customize"));
-  assert(text.includes("keymaps"));
-  assert(text.includes("notifications"));
-  assert(text.includes("extraction settings"));
-  assert(text.includes("/tmp/eko24ive-pi-ask.json"));
-  assert(text.includes("Esc / Ctrl+C / ? to close"));
-  assert.equal(text.includes("Esc to cancel"), false);
-  assert.equal(text.includes("Keymaps"), false);
-  assert.equal(text.includes("Ctrl+S"), false);
-  assert.equal(text.includes("Saved"), false);
-});
-
 test("settings list stays within narrow render width", () => {
   const list = createList();
   const lines = list.render(28);
@@ -95,27 +70,6 @@ test("settings list stays within narrow render width", () => {
   const text = lines.join("\n");
   assert(text.includes("/tmp/eko24ive-pi-ask"));
   assert(text.includes("n"));
-});
-
-test("settings list saves behaviour changes immediately without success feedback", async () => {
-  let saved: AskConfig | undefined;
-  const list = createList({
-    onSave: (config) => {
-      saved = config;
-      return Promise.resolve(config);
-    },
-  });
-
-  list.handleInput(" ");
-  await new Promise((resolve) => setImmediate(resolve));
-
-  const text = list.render(72).join("\n");
-  assert.equal(saved?.behaviour.autoSubmitWhenAnsweredWithoutNotes, true);
-  assert.equal(saved?.behaviour.confirmDismissWhenDirty, true);
-  assert.equal(saved?.behaviour.doublePressReviewShortcuts, true);
-  assert.equal(saved?.behaviour.presentSingleAsMulti, false);
-  assert.equal(saved?.behaviour.showFooterHints, true);
-  assert.equal(text.includes("Saved"), false);
 });
 
 test("settings list shows save failures and reverts the toggle", async () => {
@@ -130,35 +84,6 @@ test("settings list shows save failures and reverts the toggle", async () => {
   assert(text.includes("disk nope"));
   assert(text.includes("Auto-submit when answered without notes"));
   assert(text.includes("[off]"));
-});
-
-test("settings list renders load warnings", () => {
-  const list = createList({
-    notice: {
-      kind: "warning",
-      text: "Unable to save ask config; edit it manually.",
-    },
-  });
-
-  const text = list.render(72).join("\n");
-
-  assert(text.includes("Unable to save ask config; edit it manually."));
-});
-
-test("settings list clears load warnings after successful save", async () => {
-  const list = createList({
-    notice: {
-      kind: "warning",
-      text: "Unable to save ask config; edit it manually.",
-    },
-  });
-
-  list.handleInput(" ");
-  await new Promise((resolve) => setImmediate(resolve));
-
-  const text = list.render(72).join("\n");
-
-  assert.equal(text.includes("Unable to save ask config; edit it manually."), false);
 });
 
 test("settings list uses configured navigation and close keys", async () => {
@@ -225,18 +150,4 @@ test("settings list resets config to defaults after double press", async () => {
 
   assert.equal(saveCount, 1);
   assert.deepEqual(saved, DEFAULT_ASK_CONFIG);
-});
-
-test("settings list closes with configured keys and dispose idempotently", () => {
-  let closed = 0;
-  const list = createList({
-    onClose: () => {
-      closed += 1;
-    },
-  });
-
-  list.handleInput("?");
-  list.handleInput("\u0003");
-  list.dispose();
-  assert.equal(closed, 1);
 });

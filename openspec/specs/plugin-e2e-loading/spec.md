@@ -22,7 +22,7 @@ CI SHALL discover every workspace package that declares a supported Pi or DSH ma
 
 ### Requirement: Pi packages load through the Pi host
 
-Each Pi package SHALL be loaded with the Pi binary resolved from that package and matching its exact development dependency pin in non-interactive RPC mode, offline, with isolated session and agent directories, and SHALL succeed only when the process exits 0 and returns a successful `get_commands` response.
+Each Pi package SHALL be packed into a tarball and installed with Pi's own install command into an isolated agent directory, leaving no host package resolvable from the install location. It SHALL then be loaded through the installed copy with the published Pi binary resolved from that package and matching its exact development dependency pin, in non-interactive RPC mode, offline, with isolated session and agent directories, and SHALL succeed only when the process exits 0 and returns a successful `get_commands` response.
 
 #### Scenario: A Pi extension registers commands
 
@@ -38,6 +38,16 @@ Each Pi package SHALL be loaded with the Pi binary resolved from that package an
 
 - **WHEN** the resolved Pi version differs from the package's development pin
 - **THEN** the runner fails that package before loading it, reports the expected and installed versions, and asks for dependency installation
+
+#### Scenario: A statically imported module is missing from the tarball
+
+- **WHEN** a Pi package's entry statically imports a module its `files` allowlist does not ship
+- **THEN** the run reports that package as failed with the host's load diagnostics, even though the module exists in the checkout
+
+#### Scenario: A package imports a host path Pi does not map
+
+- **WHEN** a Pi package imports a host module path that only resolves from a workspace `node_modules`
+- **THEN** the run reports that package as failed, because the installed copy has no host package beside it
 
 ### Requirement: DSH packages load from their packed artifacts
 

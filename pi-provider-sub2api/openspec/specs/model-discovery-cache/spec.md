@@ -53,7 +53,12 @@ The extension SHALL register `/sub2api-refresh`. The command SHALL fetch every r
 
 ### Requirement: Expired cache refreshes in the background
 
-A matching cache that is 12 hours old or older, or that has no discovery time, SHALL be registered immediately, using its stored multiplier when present, without waiting for discovery or billing. The extension SHALL then refresh that relay's models and multiplier in the background. A successful background refresh SHALL update the cache time, multiplier, and current registrations. A failed background refresh SHALL keep the previous models, multiplier, and discovery time.
+A matching cache that is 12 hours old or older, or that has no discovery time, SHALL be registered immediately, using its stored multiplier when present, without waiting for discovery or billing. Under Pi's offline mode the refresh does not run, as the `offline-mode` capability requires. The extension SHALL then refresh that relay's models and multiplier in the background. A successful background refresh SHALL update the cache time, multiplier, and current registrations. A failed background refresh SHALL keep the previous models, multiplier, and discovery time.
+
+#### Scenario: Expired startup offline
+
+- **WHEN** a matching cache is 12 hours old or older and Pi runs offline
+- **THEN** its models are registered and no refresh request is sent
 
 #### Scenario: Expired startup
 

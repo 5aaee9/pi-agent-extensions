@@ -155,7 +155,7 @@ export class AskSettingsList {
     const innerWidth = Math.max(24, width - 2);
     const lines = [
       this.topBorder(innerWidth),
-      this.line(center(this.theme.fg("accent", "@eko24ive/pi-ask"), innerWidth), innerWidth),
+      this.line(center(this.theme.fg("accent", "@indexyz/pi-ask"), innerWidth), innerWidth),
       this.line("", innerWidth),
     ];
 
