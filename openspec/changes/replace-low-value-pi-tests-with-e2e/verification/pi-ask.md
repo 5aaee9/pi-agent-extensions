@@ -86,9 +86,7 @@ After the fix all six pass. A throwaway probe also ran `/answer` to an open form
 - **Q2 `@`.** `fd` is the provider's only search path and CI has none, so the scenario puts a small `fd` script on `PATH`. The external tool is stubbed; Pi's editor, the provider, and the spawn are real.
 - **Q3 mutation runs.** Two runs with an empty name pattern ended with exit 9 and ran no test. They were repeated with a pattern, and the rows above come from the repeats.
 
-**New defect, not fixed, no scenario lands for it:**
-
-- With `autoSubmitWhenAnsweredWithoutNotes` on, answering by digit leaves the form open on the review tab: the terminal still showed the review after 20 seconds and no model request arrived. The cause read from the code is that `numberShortcut` calls `commitState` without `finish: true` in `controller.ts`, unlike `confirm`. Enter does auto-submit, and Q4 uses it.
+**New defect, fixed:** with `autoSubmitWhenAnsweredWithoutNotes` on, a digit answer left the form on review and the model waiting; Enter submitted. The number shortcut committed state without `finish: true`. Fixed in the package change `fix-digit-auto-submit` with scenario "answering with a digit auto-submits when the setting is on": it timed out before the fix (`timed out waiting for "ASK_MODEL_FINISHED"`) and does so again when `finish: true` is removed. Q1 still stops on review with the setting off.
 
 **Audit deviations:** none in the counts. DELETE 52, to E2E 23, stays 136, as in the Cleanup table; `vitest run` reports 136 passed in 22 files. The six emptied files are removed. `program-status.test.ts` keeps its five tracker cases and its escaping case, and `ask-flow-status.test.ts`, `pi-coding-agent-legacy`, and `pi-ask/package.json` are unchanged.
 

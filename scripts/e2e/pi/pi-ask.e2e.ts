@@ -177,6 +177,24 @@ scenario(
   },
 );
 
+scenario(
+  "answering with a digit auto-submits when the setting is on",
+  PACKAGES,
+  async ({ world, probeServer, terminal }) => {
+    world.writeAgentFile("pi-ask.json", {
+      schemaVersion: 5,
+      behaviour: { autoSubmitWhenAnsweredWithoutNotes: true },
+    });
+    const server = await probeServer(askingScript(FORM));
+    const form = terminal([...PROBE_ARGS, PROMPT]);
+    await form.waitForText(QUESTION);
+    const mark = form.mark();
+    form.send("1");
+    await form.waitForText(FINISHED, { mark });
+    assert.equal(sentText(server.requests.at(-1), "tool"), "Scope: All packages");
+  },
+);
+
 const RPC_REFUSALS: readonly (readonly [string, string])[] = [
   ["/answer", "/answer requires interactive TUI mode."],
   ["/answer:again", "Ask replay requires interactive TUI mode."],
