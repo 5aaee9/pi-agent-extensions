@@ -39,7 +39,8 @@ report.
 
 Each challenge asks the model to emit ~300 integers between 1 and 355. The raw
 answers are scored locally against the bundled ModelTrace unified fingerprint bank
-(`data/unified_bank.json`, 13 GPT/Claude candidates), which computes:
+(`data/unified_bank.json`, 24 candidate models across 6 families: GPT, Claude,
+Gemini, GLM, Grok, and Kimi), which computes:
 
 ```
 0.75 × nuisance-projected Hellinger centroid similarity

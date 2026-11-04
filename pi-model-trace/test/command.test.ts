@@ -26,7 +26,12 @@ interface RpcEvent {
 }
 
 interface TraceSession {
-  requests: Array<{ model: string; reasoning_effort?: string; tools?: unknown[] }>;
+  requests: Array<{
+    model: string;
+    reasoning_effort?: string;
+    tools?: unknown[];
+    messages: unknown[];
+  }>;
   events: RpcEvent[];
   responses: ServerResponse[];
   send: (command: Record<string, unknown>) => void;
@@ -242,17 +247,14 @@ describe("/model-trace through Pi RPC", () => {
         expect(request.reasoning_effort).toBe("none");
         expect(request.tools ?? []).toHaveLength(0);
       }
-    });
-  }, 30000);
-
-  it("does not let saved thinking defaults override the current session's off level", async () => {
-    await withTrace({ hostOnPath: true }, async (session) => {
-      expect(await runCommand(session)).toContain("有效回答 3/3");
-      expect(session.requests.map((request) => request.reasoning_effort)).toEqual([
-        "none",
-        "none",
-        "none",
-      ]);
+      const counts = session.requests.map((request) =>
+        Number(/(\d+) 个 1 到 355/.exec(JSON.stringify(request.messages))?.[1]),
+      );
+      expect(new Set(counts).size).toBe(3);
+      for (const count of counts) {
+        expect(count).toBeGreaterThanOrEqual(292);
+        expect(count).toBeLessThanOrEqual(332);
+      }
     });
   }, 30000);
 
