@@ -101,6 +101,9 @@ export default function piContinue(pi: ExtensionAPI) {
         },
         { triggerTurn: true },
       );
+      // sendMessage does not return the run it starts, and print and JSON modes
+      // dispose the session when the command returns.
+      await ctx.waitForIdle();
     },
   });
 }

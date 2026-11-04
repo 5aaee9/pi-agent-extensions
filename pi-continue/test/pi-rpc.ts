@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process";
+import { findPackageJSON } from "node:module";
+import { readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -6,8 +8,13 @@ import { fileURLToPath } from "node:url";
 import { SessionManager, type SessionEntry } from "@earendil-works/pi-coding-agent";
 
 const extensionPath = fileURLToPath(new URL("../index.ts", import.meta.url));
-const codingAgentEntry = fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"));
-const piCliPath = join(dirname(codingAgentEntry), "cli.js");
+/** The published bin, whose module resolution is the one users get. */
+const hostManifest = findPackageJSON("@earendil-works/pi-coding-agent", import.meta.url);
+if (hostManifest === undefined) throw new Error("Pi is not installed; run npm install");
+const piCliPath = join(
+  dirname(hostManifest),
+  (JSON.parse(readFileSync(hostManifest, "utf8")) as { bin: { pi: string } }).bin.pi,
+);
 
 export interface RpcMessage {
   readonly type: string;

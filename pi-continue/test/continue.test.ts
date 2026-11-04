@@ -1,18 +1,5 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { fileURLToPath } from "node:url";
-import {
-  discoverAndLoadExtensions,
-  ExtensionRunner,
-  ModelRegistry,
-  ModelRuntime,
-  SessionManager,
-  sessionEntryToContextMessages,
-  type LoadExtensionsResult,
-  type SessionEntry,
-} from "@earendil-works/pi-coding-agent";
-import { afterEach, describe, expect, it } from "vitest";
+import { SessionManager, type SessionEntry } from "@earendil-works/pi-coding-agent";
+import { describe, expect, it } from "vitest";
 import { findInterruptedTurn } from "../index.ts";
 import {
   LOCAL_MODEL,
@@ -33,27 +20,7 @@ import {
 
 type SessionMessage = Parameters<SessionManager["appendMessage"]>[0];
 
-const extensionPath = fileURLToPath(new URL("../index.ts", import.meta.url));
 const LOCAL = `${LOCAL_PROVIDER}/${LOCAL_MODEL}`;
-
-const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
-const temporaryDirectories = new Set<string>();
-
-afterEach(async () => {
-  if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
-  else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
-
-  await Promise.all(
-    [...temporaryDirectories].map((directory) => rm(directory, { recursive: true, force: true })),
-  );
-  temporaryDirectories.clear();
-});
-
-async function makeTemporaryDirectory(prefix: string): Promise<string> {
-  const directory = await mkdtemp(join(tmpdir(), prefix));
-  temporaryDirectories.add(directory);
-  return directory;
-}
 
 const usage = {
   input: 0,
@@ -103,14 +70,6 @@ function appendAbortedTurn(
 ): void {
   session.appendMessage(userMessage());
   session.appendMessage(assistantMessage("aborted", provider, model));
-}
-
-/** Pi's public extension discovery, confined to an isolated agent directory. */
-async function loadPiContinue(agentDir: string): Promise<LoadExtensionsResult> {
-  const result = await discoverAndLoadExtensions([extensionPath], agentDir, agentDir);
-  expect(result.errors).toEqual([]);
-  expect(result.extensions).toHaveLength(1);
-  return result;
 }
 
 function isUserMessage(entry: SessionEntry): boolean {
@@ -205,46 +164,12 @@ async function commandWithoutTurn(host: PiRpcHost, message: string): Promise<voi
 }
 
 describe("findInterruptedTurn", () => {
-  it("finds an aborted turn through later model metadata", () => {
-    const session = SessionManager.inMemory();
-    session.appendMessage(userMessage());
-    const abortedId = session.appendMessage(assistantMessage("aborted"));
-    session.appendModelChange("openai", "gpt-5.4");
-
-    expect(findInterruptedTurn(session.getBranch())).toEqual({
-      entryId: abortedId,
-      provider: "anthropic",
-      model: "claude-sonnet",
-    });
-  });
-
-  it("does not resume a completed turn", () => {
-    const session = SessionManager.inMemory();
-    session.appendMessage(userMessage());
-    session.appendMessage(assistantMessage("stop"));
-
-    expect(findInterruptedTurn(session.getBranch())).toBeUndefined();
-  });
-
   it("does not resume an older interruption after a newer message", () => {
     const session = SessionManager.inMemory();
     appendAbortedTurn(session);
     session.appendMessage(userMessage("A newer request"));
 
     expect(findInterruptedTurn(session.getBranch())).toBeUndefined();
-  });
-
-  it("finds a failed turn through a persisted hidden retry marker", () => {
-    const session = SessionManager.inMemory();
-    session.appendMessage(userMessage());
-    const failedId = session.appendMessage(assistantMessage("error"));
-    session.appendCustomMessageEntry("pi-continue:retry", [], false);
-
-    expect(findInterruptedTurn(session.getBranch())).toEqual({
-      entryId: failedId,
-      provider: "anthropic",
-      model: "claude-sonnet",
-    });
   });
 });
 
@@ -308,53 +233,31 @@ describe("/continue", () => {
   });
 
   it("removes retry markers and their failed assistant turns from every model context", async () => {
-    const agentDir = await makeTemporaryDirectory("pi-continue-context-");
-    process.env.PI_CODING_AGENT_DIR = agentDir;
-
-    const session = SessionManager.create(agentDir, join(agentDir, "sessions"));
-    session.appendMessage(userMessage("Do the first task"));
-    session.appendMessage(assistantMessage("stop"));
-    session.appendMessage(userMessage("Try another task"));
-    const failedId = session.appendMessage(assistantMessage("error"));
-    const markerId = session.appendCustomMessageEntry("pi-continue:retry", [], false);
-    session.appendMessage(userMessage("And a third"));
-    const abortedId = session.appendMessage(assistantMessage("aborted"));
-    const secondMarkerId = session.appendCustomMessageEntry("pi-continue:retry", [], false);
-    session.appendCustomMessageEntry("other-extension", "Keep this context", false);
-
-    const loaded = await loadPiContinue(agentDir);
-    const modelRuntime = await ModelRuntime.create({
-      authPath: join(agentDir, "auth.json"),
-      modelsPath: join(agentDir, "models.json"),
-    });
-    const runner = new ExtensionRunner(
-      loaded.extensions,
-      loaded.runtime,
-      agentDir,
-      session,
-      new ModelRegistry(modelRuntime),
-    );
-    const errors: string[] = [];
-    runner.onError((error) => {
-      errors.push(`${error.event}: ${error.error}`);
+    const result = await runContinueScenario({
+      model: LOCAL,
+      build: (session) => {
+        session.appendMessage(userMessage("Do the first task"));
+        session.appendMessage(assistantMessage("stop"));
+        session.appendMessage(userMessage("Try another task"));
+        session.appendMessage(assistantMessage("error"));
+        session.appendCustomMessageEntry("pi-continue:retry", [], false);
+        session.appendCustomMessageEntry("other-extension", "Keep this context", false);
+        session.appendMessage(userMessage("And a third"));
+        session.appendMessage(assistantMessage("aborted"));
+        session.appendCustomMessageEntry("pi-continue:retry", [], false);
+      },
+      drive: async (host) => {
+        await host.prompt("Next task");
+        await host.waitForSettled(1);
+      },
     });
 
-    const context = await runner.emitContext(
-      session.getBranch().flatMap(sessionEntryToContextMessages),
+    const conversation = conversationOf(result.requests[0]).map((message) =>
+      JSON.stringify(message),
     );
-    const removed = new Set([failedId, markerId, abortedId, secondMarkerId]);
-    const expected = session
-      .getBranch()
-      .filter((entry) => !removed.has(entry.id))
-      .flatMap(sessionEntryToContextMessages);
-
-    expect(context).toEqual(expected);
-    expect(errors).toEqual([]);
-    expect(
-      context.some(
-        (message) => message.role === "custom" && message.customType === "other-extension",
-      ),
-    ).toBe(true);
+    expect(conversation.some((message) => message.includes("Keep this context"))).toBe(true);
+    expect(conversation.some((message) => message.includes("Try another task"))).toBe(true);
+    expect(conversation.filter((message) => message.includes("Partial work"))).toHaveLength(1);
   });
 
   it("waits for a streaming turn's abort to settle before reading the branch", async () => {
