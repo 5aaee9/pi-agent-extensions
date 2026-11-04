@@ -249,3 +249,27 @@ export function startRpc(
     },
   };
 }
+
+function dataList(response: RpcEvent, key: string): readonly JsonRecord[] {
+  const data = response["data"];
+  const list = isRecord(data) ? data[key] : undefined;
+  return Array.isArray(list) ? list.filter((item: unknown) => isRecord(item)) : [];
+}
+
+/** Names of the commands extensions registered, from a `get_commands` response. */
+export function extensionCommands(response: RpcEvent): readonly string[] {
+  return dataList(response, "commands")
+    .filter((command) => command["source"] === "extension")
+    .map((command) => String(command["name"]));
+}
+
+/** `provider/id` of each model, from a `get_available_models` response. */
+export function modelKeys(response: RpcEvent): readonly string[] {
+  return dataList(response, "models").map(
+    (model) => `${String(model["provider"])}/${String(model["id"])}`,
+  );
+}
+
+export function modelsOf(response: RpcEvent): readonly JsonRecord[] {
+  return dataList(response, "models");
+}

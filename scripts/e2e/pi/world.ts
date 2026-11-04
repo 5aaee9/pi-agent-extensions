@@ -2,7 +2,15 @@
 // Pi's own install command into directories nothing else shares. Users get the
 // same shape from `pi install`, with no host package beside the installed copy.
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { findPackageJSON } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
@@ -94,6 +102,8 @@ export interface World {
   readonly env: (extra?: EnvExtra) => NodeJS.ProcessEnv;
   readonly install: (name: string, tarball?: string) => void;
   readonly writeAgentFile: (path: string, content: unknown) => string;
+  /** Merges into `settings.json`, which also records what `pi install` installed. */
+  readonly mergeSettings: (settings: Readonly<Record<string, unknown>>) => void;
   readonly dispose: () => void;
 }
 
@@ -151,10 +161,17 @@ export function createWorld(options: WorldOptions): World {
     env,
     install,
     writeAgentFile(path, content) {
+      if (path === "settings.json")
+        throw new Error("use mergeSettings: settings.json lists the installed packages");
       const target = join(agentDir, path);
       mkdirSync(dirname(target), { recursive: true });
       writeFileSync(target, typeof content === "string" ? content : JSON.stringify(content));
       return target;
+    },
+    mergeSettings(settings) {
+      const target = join(agentDir, "settings.json");
+      const current = existsSync(target) ? readJsonRecord(target) : {};
+      writeFileSync(target, JSON.stringify({ ...current, ...settings }));
     },
     dispose() {
       process.removeListener("exit", remove);

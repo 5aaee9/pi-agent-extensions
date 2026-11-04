@@ -200,3 +200,37 @@ export async function startChatServer(script: ChatScript = () => ({})): Promise<
   );
   return server;
 }
+
+export interface SentMessage {
+  readonly role: string;
+  readonly text: string;
+}
+
+function contentText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((part: unknown) =>
+      isRecord(part) && typeof part["text"] === "string" ? part["text"] : "",
+    )
+    .join("");
+}
+
+/** The conversation a chat request sent, flattened to role and text. */
+export function messagesOf(request: RecordedRequest): readonly SentMessage[] {
+  const { messages } = bodyOf(request);
+  if (!Array.isArray(messages)) return [];
+  return messages
+    .filter((message: unknown) => isRecord(message))
+    .map((message: Readonly<Record<string, unknown>>) => ({
+      role: String(message["role"]),
+      text: contentText(message["content"]),
+    }));
+}
+
+/** Non-system roles in order, to compare what a request's history looks like. */
+export function rolesOf(request: RecordedRequest): readonly string[] {
+  return messagesOf(request)
+    .map((message) => message.role)
+    .filter((role) => role !== "system");
+}

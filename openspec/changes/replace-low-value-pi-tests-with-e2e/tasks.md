@@ -12,15 +12,15 @@ Each package group follows the order in `design.md` D6: defect fixes with their 
 
 ## 2. Cross-package scenarios
 
-- [ ] 2.1 Add the per-package registrations table and X2 in `cross-package.e2e.ts`, with `pi-skill`'s entry naming an effect at the local server rather than a command; verify each package's expectations hold with a local-server config, an unlisted Pi package fails the run by name, and mutations that stop `pi-custom-provider` registering or stop `pi-skill` loading each fail it.
-- [ ] 2.2 Add X3 with all eight packages co-installed (print, JSON, RPC prompt, `set_model`, `new_session`, fork); verify no `extension_error` and bounded exits, and that a mutation adding an uncleared timer to a scratch package fails the print-exit assertion.
+- [x] 2.1 Add the per-package registrations table and X2 in `cross-package.e2e.ts`, with `pi-skill`'s entry naming an effect at the local server rather than a command; verify each package's expectations hold with a local-server config, an unlisted Pi package fails the run by name, and mutations that stop `pi-custom-provider` registering or stop `pi-skill` loading each fail it.
+- [x] 2.2 Add X3 with all eight packages co-installed (print, JSON, RPC prompt, `set_model`, `new_session`, fork); verify no `extension_error` and bounded exits, and that a mutation adding an uncleared timer to a scratch package fails the print-exit assertion.
 
 ## 3. `pi-continue`
 
-- [ ] 3.1 Propose and apply a package change fixing defect 1 with N1 failing first; verify `-p` and `--mode json` each make one model request and exit 0, and record a `patch` intent.
-- [ ] 3.2 Add N2 and N3; verify the retried turn resumes from the tool result, that N3 issues no model request until the in-flight compaction ends, and that a second `/continue` after a failed retry succeeds. Check any N3 failure against upstream #10704 first; record a new defect in the register rather than landing a red scenario.
-- [ ] 3.3 Point `test/pi-rpc.ts` at `bin.pi` and keep the seven real-process cases on it, moving the context-history case's assertion to the request at the local server; verify all seven pass on the bin, and that regressing 173d51d and 05143b3 in a scratch copy fails them.
-- [ ] 3.4 Delete the audit's DELETE cases including `test/extension-load.test.ts`, and the marker case now covered by N3; verify `npm run check --workspace @indexyz/pi-continue` passes and `git diff` touches no published file beyond the fix.
+- [x] 3.1 Propose and apply a package change fixing defect 1 with N1 failing first; verify `-p` and `--mode json` each make one model request and exit 0, and record a `patch` intent.
+- [x] 3.2 Add N2 and N3; verify the retried turn resumes from the tool result, that N3 issues no model request until the in-flight compaction ends, and that a second `/continue` after a failed retry succeeds. Check any N3 failure against upstream #10704 first; record a new defect in the register rather than landing a red scenario.
+- [x] 3.3 Point `test/pi-rpc.ts` at `bin.pi` and keep the seven real-process cases on it, moving the context-history case's assertion to the request at the local server; verify all seven pass on the bin, and that regressing 173d51d and 05143b3 in a scratch copy fails them.
+- [x] 3.4 Delete the audit's DELETE cases including `test/extension-load.test.ts`, and the marker case now covered by N3; verify `npm run check --workspace @indexyz/pi-continue` passes and `git diff` touches no published file beyond the fix.
 
 ## 4. `pi-skill`
 
