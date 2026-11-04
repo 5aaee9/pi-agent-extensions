@@ -46,3 +46,16 @@ The model receives the user message `$$known hi` with both dollar signs and no s
 ## Not verified
 
 `npm run release:gate` needs a commit, and this agent does not commit. `npm run change:status` lists `@indexyz/pi-skill`.
+
+## Queued delivery (owner's decision, after the sections above)
+
+The scenarios were strengthened before the fix and failed on it: the block arrived in its own message and took an extra model turn.
+
+| Scenario            | Regression applied                               | Observed                                                                      |
+| ------------------- | ------------------------------------------------ | ----------------------------------------------------------------------------- |
+| Steered `$known`    | Block sent as a separate queued message          | Fails `assertDeliveredTogether`                                               |
+| Follow-up `$known`  | Block sent as a separate queued message          | Fails `assertDeliveredTogether`                                               |
+| Steered `$known`    | `deliverAs: "nextTurn"`, the first candidate fix | Fails: no request carries the block, which is why that candidate was rejected |
+| Typed in a terminal | Text placed ahead of the block                   | `[skill] known` never renders                                                 |
+
+Finding: while a skill is queued, Pi's preview shows `Steering: <skill name=...`, truncated. Pi's own `/skill:` previews identically, observed in a side-by-side run. It goes away on delivery; the scenario asserts no raw block after that point.

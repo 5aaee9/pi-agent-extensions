@@ -197,6 +197,13 @@ export default function piSkill(pi: ExtensionAPI) {
     }
     if (blocks.length === 0) return;
 
+    // Queued items are delivered one at a time, so a separate message would give
+    // the block a model turn of its own. This is the shape Pi uses for /skill:.
+    if (event.streamingBehavior) {
+      const text = [...blocks.map((block) => block.text), event.text].join("\n\n");
+      return { action: "transform", text };
+    }
+
     for (const block of blocks) {
       const message = {
         customType: SKILL_MESSAGE_TYPE,
@@ -204,11 +211,7 @@ export default function piSkill(pi: ExtensionAPI) {
         display: true,
         details: { name: block.name },
       };
-      if (event.streamingBehavior) {
-        pi.sendMessage(message, { deliverAs: event.streamingBehavior });
-      } else {
-        pi.sendMessage(message);
-      }
+      pi.sendMessage(message);
     }
 
     // Keep the user's original `$skill` references visible while each skill's

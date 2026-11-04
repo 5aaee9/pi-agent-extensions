@@ -99,6 +99,17 @@ async function queueDuringToolTurn(
 const hasSkillBlock = (request: Readonly<RecordedRequest>): boolean =>
   messagesOf(request).some((message) => SKILL_BLOCK.test(message.text));
 
+/** The block and the words it came with reach the model together, block first. */
+function assertDeliveredTogether(requests: readonly RecordedRequest[]): void {
+  const carrying = requests.filter((request) => hasSkillBlock(request));
+  assert.ok(carrying.length > 0, "no request carried the skill block");
+  const message = messagesOf(carrying[0] as RecordedRequest).find((sent) =>
+    SKILL_BLOCK.test(sent.text),
+  );
+  assert.ok(message?.text.endsWith("\n\n$known now"), JSON.stringify(message));
+  assert.equal(blockIn(message), message.text.slice(0, -"\n\n$known now".length));
+}
+
 const afterToolResult = (requests: readonly RecordedRequest[]): RecordedRequest => {
   const request = requests.find((candidate) => rolesOf(candidate).includes("tool"));
   assert.ok(request !== undefined, "no request carried the tool result");
@@ -111,14 +122,51 @@ scenario(
   async (context) => {
     const requests = await queueDuringToolTurn(context, "steer");
     assert.ok(hasSkillBlock(afterToolResult(requests)));
+    assertDeliveredTogether(requests);
+    assert.equal(requests.length, 2, "the block takes no model turn of its own");
   },
 );
 
 scenario("a follow-up $known waits until the running turn has ended", PACKAGES, async (context) => {
   const requests = await queueDuringToolTurn(context, "follow_up");
   assert.ok(!hasSkillBlock(afterToolResult(requests)));
-  assert.ok(requests.some((request) => hasSkillBlock(request)));
+  assertDeliveredTogether(requests);
+  assert.equal(requests.length, 3, "the block takes no model turn of its own");
 });
+
+scenario(
+  "a $known typed while the model is answering renders as a block in a terminal",
+  PACKAGES,
+  async ({ world, probeServer, terminal }) => {
+    world.writeAgentFile(SKILL_PATH, SKILL_FILE);
+    const release = Promise.withResolvers<void>();
+    let first = true;
+    await probeServer((): ChatReply => {
+      if (!first) return { text: "queued reply" };
+      first = false;
+      return {
+        text: "first reply",
+        gate: async (): Promise<void> => {
+          await release.promise;
+        },
+      };
+    });
+    const pi = terminal(["--no-session", ...PROBE_ARGS]);
+    await pi.waitForText("[Extensions]");
+    const typed = pi.mark();
+    pi.send("hello\r");
+    await pi.waitForText("hello", { mark: typed });
+    const queued = pi.mark();
+    pi.send("$known now\r");
+    // Pi previews a queued /skill: the same way, as truncated raw text, until delivery.
+    await pi.waitForText("Steering:", { mark: queued });
+    const delivered = pi.mark();
+    release.resolve();
+    await pi.waitForText("[skill] known", { mark: delivered });
+    await pi.waitForText("queued reply", { mark: delivered });
+    assert.ok(!stripControl(pi.raw().slice(delivered)).includes("<skill name="));
+  },
+);
 
 scenario(
   "typing $ in a terminal offers the skill, and sending it renders a collapsed block",
