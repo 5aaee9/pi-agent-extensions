@@ -51,3 +51,17 @@ A new session SHALL keep the relay's models available.
 
 - **WHEN** the user starts a new session on a relay model
 - **THEN** the model stays selected and its next request reaches the relay with the configured token
+
+### Requirement: Shared runtime shutdown keeps relays another session still holds
+
+Shutting down one extension instance SHALL release only the relays no other live instance still registered on the same model runtime. A relay that remains SHALL still accept a request from the surviving session. A relay only the shutting-down instance registered SHALL be removed.
+
+#### Scenario: Child session shuts down
+
+- **WHEN** a child session has loaded the extension against its parent's model runtime and the child session shuts down
+- **THEN** a request with the parent's selected relay model reaches the relay
+
+#### Scenario: Relay only the child registered
+
+- **WHEN** a child session registered a relay the parent session did not, and the child session shuts down
+- **THEN** that relay's model is gone and the parent's relay still reaches the relay

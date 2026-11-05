@@ -29,6 +29,7 @@
     "index.ts",
     "model-cache.ts",
     "model-metadata.ts",
+    "provider-ownership.ts",
     "quota.ts",
     "relay-stream.ts",
     "request-mode-store.ts",

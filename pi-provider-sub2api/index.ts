@@ -21,6 +21,12 @@ import {
   loadCachedModelMetadata,
   scaleModelCost,
 } from "./model-metadata.ts";
+import {
+  bindProviderClaim,
+  claimProviders,
+  modelRuntimeOf,
+  releaseProviderClaim,
+} from "./provider-ownership.ts";
 import { getBillingUrl, refreshBilling, refreshQuota } from "./quota.ts";
 import { addDaybreakProgram, addServerTools, addServiceTier, streamCodex } from "./relay-stream.ts";
 import { createRequestModeStore } from "./request-mode-store.ts";
@@ -372,6 +378,7 @@ export default async function (pi: ExtensionAPI) {
   for (const { relay, models } of providers) {
     registerRelayProvider(relay, models);
   }
+  const providerClaim = claimProviders(relays.map((relay) => relay.provider));
 
   // xAI entries do not take part in ultra reasoning or request modes.
   const rejectXaiSelection = (ctx: ExtensionContext, command: string) => {
@@ -678,6 +685,7 @@ export default async function (pi: ExtensionAPI) {
   };
 
   pi.on("session_start", (_event, ctx) => {
+    bindProviderClaim(providerClaim, modelRuntimeOf(ctx));
     installUsageFooter(ctx);
     if (ctx.model) {
       refreshActiveQuota(
@@ -723,8 +731,14 @@ export default async function (pi: ExtensionAPI) {
     active = false;
     lifecycleController.abort();
     clearUsageLine(ctx);
-    // Pi's model registry outlives this module graph. Only this generation can remove
-    // what it registered: an unregister during the next load never reaches the registry.
-    for (const relay of relays) pi.unregisterProvider(relay.provider);
+    // The generation flag is still current for this graph: a child loads later, and
+    // /reload shuts this graph down before the replacement factory runs. An
+    // unregister during that next load only filters its own pending queue, so the
+    // outgoing graph has to drop a relay — but only when no other live instance
+    // still registered it on this runtime.
+    const runtime = modelRuntimeOf(ctx);
+    for (const provider of releaseProviderClaim(providerClaim, runtime)) {
+      pi.unregisterProvider(provider);
+    }
   });
 }
