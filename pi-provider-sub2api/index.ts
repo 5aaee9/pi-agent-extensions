@@ -22,6 +22,7 @@ import {
   scaleModelCost,
 } from "./model-metadata.ts";
 import {
+  attachRegistrationClaim,
   bindProviderClaim,
   claimProviders,
   modelRuntimeOf,
@@ -274,6 +275,7 @@ export default async function (pi: ExtensionAPI) {
     providers.map(({ relay, models }) => [relay.provider, models]),
   );
   const registeredPriceMultipliers = new Map<string, number>();
+  let registrationClaim: ReturnType<typeof claimProviders> | undefined;
   const registerXaiProvider = (relay: RelayConfig, models: DiscoveredModel[]) => {
     const priceMultiplier = billingByProvider.get(relay.provider)?.effectiveRateMultiplier ?? 1;
     const registeredModels: ProviderModelConfig[] = models
@@ -299,14 +301,16 @@ export default async function (pi: ExtensionAPI) {
           compat: { supportsLongCacheRetention: false },
         };
       });
-    pi.registerProvider(relay.provider, {
+    const registration = {
       name: relay.provider,
       baseUrl: relay.baseUrl,
       apiKey: escapeConfigLiteral(relay.apiKey),
-      api: "openai-responses",
+      api: "openai-responses" as const,
       streamSimple: streamXai,
       models: registeredModels,
-    });
+    };
+    if (registrationClaim) attachRegistrationClaim(registration, registrationClaim);
+    pi.registerProvider(relay.provider, registration);
     registeredPriceMultipliers.set(relay.provider, priceMultiplier);
   };
   const registerRelayProvider = (relay: RelayConfig, models: DiscoveredModel[]) => {
@@ -364,21 +368,24 @@ export default async function (pi: ExtensionAPI) {
     // Pi merges a re-registration over the previous one, so leaving streamSimple out
     // would keep the Codex handler of a relay whose last Codex model just disappeared.
     if (!usesCodex) pi.unregisterProvider(relay.provider);
-    pi.registerProvider(relay.provider, {
+    const registration = {
       name: relay.provider,
       baseUrl: getApiBaseUrl(relay, defaultApi),
       apiKey: escapeConfigLiteral(relay.apiKey),
       api: defaultApi,
       ...(usesCodex ? { streamSimple: streamCodex } : {}),
       models: registeredModels,
-    });
+    };
+    if (registrationClaim) attachRegistrationClaim(registration, registrationClaim);
+    pi.registerProvider(relay.provider, registration);
     registeredPriceMultipliers.set(relay.provider, priceMultiplier);
   };
 
+  registrationClaim = claimProviders(relays.map((relay) => relay.provider));
   for (const { relay, models } of providers) {
     registerRelayProvider(relay, models);
   }
-  const providerClaim = claimProviders(relays.map((relay) => relay.provider));
+  const providerClaim = registrationClaim;
 
   // xAI entries do not take part in ultra reasoning or request modes.
   const rejectXaiSelection = (ctx: ExtensionContext, command: string) => {

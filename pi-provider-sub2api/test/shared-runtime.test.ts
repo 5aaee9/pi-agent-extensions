@@ -191,13 +191,11 @@ it("keeps the parent's relay after a child session on the shared runtime shuts d
   const runtime = await createRuntime();
   const parent = await openSession(runtime);
   const selected = modelOf(runtime, "sub2api");
-  await parent.bindExtensions({});
   await parent.setModel(selected);
 
   await writeConfig(["sub2api", "extra"]);
   const child = await openSession(runtime);
   const extra = modelOf(runtime, "extra");
-  await child.bindExtensions({});
   expect(runtime.getModel("sub2api", "gpt-test")).toBeDefined();
 
   await child.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
@@ -217,6 +215,33 @@ it("keeps the parent's relay after a child session on the shared runtime shuts d
     errorMessage: "Unknown provider: extra",
   });
   expect(server.completions()).toBe(before + 1);
+});
+
+it("does not let a sessionless load keep a relay after reload removes it", async () => {
+  await writeConfig(["drop"]);
+  const loader = new DefaultResourceLoader({
+    cwd: projectDir,
+    agentDir,
+    additionalExtensionPaths: [extensionPath],
+    noSkills: true,
+    noPromptTemplates: true,
+    noThemes: true,
+    noContextFiles: true,
+  });
+  await loader.reload();
+
+  const runtime = await createRuntime();
+  const session = await openSession(runtime);
+  const drop = modelOf(runtime, "drop");
+  await writeConfig([]);
+  await session.reload();
+
+  expect(runtime.getModel("drop", "gpt-test")).toBeUndefined();
+  const removed = await request(runtime, drop);
+  expect(removed).toMatchObject({
+    stopReason: "error",
+    errorMessage: "Unknown provider: drop",
+  });
 });
 
 it("drops a relay removed from the configuration when the session reloads", async () => {

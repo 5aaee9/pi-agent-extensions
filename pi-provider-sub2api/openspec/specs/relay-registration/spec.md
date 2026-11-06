@@ -65,3 +65,8 @@ Shutting down one extension instance SHALL release only the relays no other live
 
 - **WHEN** a child session registered a relay the parent session did not, and the child session shuts down
 - **THEN** that relay's model is gone and the parent's relay still reaches the relay
+
+#### Scenario: Load without a session
+
+- **WHEN** the extension is loaded and no session starts or shuts down, and a later session reloads without that relay
+- **THEN** the relay is not available for a request
