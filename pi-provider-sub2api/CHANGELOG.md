@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.2
+
+### Patch Changes
+
+- Keep a Sub2API relay usable in the parent session after a child session that shares its models shuts down.
+
 ## 0.5.1
 
 ### Patch Changes
