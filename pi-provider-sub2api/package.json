@@ -35,6 +35,7 @@
     "request-mode-store.ts",
     "request-modes.ts",
     "server-tools.ts",
+    "tool-schema.ts",
     "types.ts",
     "util.ts",
     "xai.ts",

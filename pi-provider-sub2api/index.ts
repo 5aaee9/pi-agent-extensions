@@ -30,6 +30,7 @@ import {
 } from "./provider-ownership.ts";
 import { getBillingUrl, refreshBilling, refreshQuota } from "./quota.ts";
 import { addDaybreakProgram, addServerTools, addServiceTier, streamCodex } from "./relay-stream.ts";
+import { addStringEnumTypes } from "./tool-schema.ts";
 import { createRequestModeStore } from "./request-mode-store.ts";
 import {
   createRequestModeState,
@@ -649,6 +650,10 @@ export default async function (pi: ExtensionAPI) {
 
   pi.on("before_provider_request", (event, ctx) => {
     return addServerTools(event.payload, ctx.model);
+  });
+
+  pi.on("before_provider_request", (event, ctx) => {
+    return addStringEnumTypes(event.payload, ctx.model);
   });
 
   pi.on("before_provider_request", (event, ctx) => {

@@ -393,6 +393,8 @@ Reasoning models use the upstream Codex manifest's `supported_reasoning_levels` 
 
 OpenAI Responses and Chat Completions models use pi's built-in implementations and call `/v1/responses` and `/v1/chat/completions`, respectively.
 
+Every relay request adds `type: "string"` to tool parameters whose `enum` holds only strings and has no type, because Kimi rejects the whole request over such a parameter. The enum already limits the values, so the type changes nothing for other models. Enums of other types, including mixed ones, are sent as they are.
+
 ## Quota reporting
 
 The price multiplier comes from Sub2API's API-key billing endpoint, `GET /v1/sub2api/billing`. It is the `effective_rate_multiplier` applied to pi's built-in per-token prices, including long-context tiers, and it is stored in the same `sub2api-models.json` entry as the model list. While that entry is younger than 12 hours and already has a multiplier, startup and later quota refreshes do not request billing again. A missing cache still waits for billing beside discovery. An expired cache, or a model cache that predates the multiplier, registers immediately and updates prices when the background request finishes. `/sub2api-refresh` fetches a new multiplier immediately. A failed refresh keeps the last multiplier. HTTP 404 and 405 mean the relay has no token-billing contract, so the cached multiplier is 1 and prices stay at pi's built-in rates. Models absent from pi's catalog keep zero estimated prices because this endpoint does not expose an absolute model price table.
