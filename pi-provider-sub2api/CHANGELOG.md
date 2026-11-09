@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.3
+
+### Patch Changes
+
+- Relay requests add `type: "string"` to tool parameters whose `enum` holds only strings and has no type, so Kimi no longer rejects the whole request over them. Other enums and other providers' requests are unchanged. Affected tool definitions change once, which can cost one prompt cache miss after upgrading.
+
 ## 0.5.2
 
 ### Patch Changes

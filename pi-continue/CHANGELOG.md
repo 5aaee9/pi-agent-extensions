@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.0
+
+### Minor Changes
+
+- `F5` and `Alt+R` retry the interrupted or failed turn, the keys omp uses for its retry action.
+
+### Patch Changes
+
+- `/continue`, `F5`, and `Alt+R` now behave identically: during a running turn they report that the agent is busy, instead of restarting the turn when you interrupt it.
+
 ## 0.1.44
 
 ### Patch Changes
