@@ -233,3 +233,42 @@ scenario(
     assert.deepEqual(client.extensionErrors(), []);
   },
 );
+
+// F5 and Alt+R are omp's `app.retry` keys. In a real terminal they must retry the
+// failed turn exactly like the command, because no RPC request can press a key.
+const F5 = "\u001b[15~";
+const ALT_R = "\u001b\u0072";
+const SEEDED = "seeded question";
+
+for (const [key, label] of [
+  [F5, "F5"],
+  [ALT_R, "Alt+R"],
+] as const) {
+  scenario(
+    `${label} retries the failed turn from a real terminal`,
+    PACKAGES,
+    async ({ world, probeServer, print, terminal }) => {
+      let failing = true;
+      const server = await probeServer(() =>
+        failing ? FAILURE : { text: RETRIED },
+      );
+      const session = join(world.root, "shortcut.jsonl");
+      const args = ["--session", session, ...PROBE_ARGS];
+      await print(["-p", ...args, SEEDED]);
+      failing = false;
+      const screen = terminal(args);
+      // The seeded turn renders once the editor is ready to take the key.
+      await screen.waitForText(SEEDED);
+      const before = server.requests.length;
+      screen.send(key);
+      await screen.waitForText(RETRIED);
+      assert.equal(server.requests.length, before + 1);
+      assert.deepEqual(rolesOf(server.requests.at(-1)), ["user"]);
+      // The retried turn completed, so the same key must now start nothing.
+      const afterRetry = screen.mark();
+      screen.send(key);
+      await screen.waitForText("No interrupted or failed turn to continue", { mark: afterRetry });
+      assert.equal(server.requests.length, before + 1);
+    },
+  );
+}
