@@ -232,49 +232,6 @@ describe("/continue", () => {
     expect(result.entries.filter(isUserMessage)).toHaveLength(1);
   });
 
-  it("waits for a streaming turn's abort to settle before reading the branch", async () => {
-    const result = await runContinueScenario({
-      model: LOCAL,
-      build: (session) => {
-        session.appendModelChange(LOCAL_PROVIDER, LOCAL_MODEL);
-      },
-      drive: async (host, server) => {
-        // A real turn is streaming: the model's reply is held.
-        const release = server.holdNext();
-        try {
-          await host.prompt("Do the task");
-          await server.waitForRequests(1);
-          // /continue arrives while the turn still streams; only then is it aborted.
-          const continued = host.prompt("/continue");
-          await host.command({ type: "abort" });
-          await continued;
-          // The aborted turn settles, then the retried one.
-          await host.waitForSettled(2);
-        } finally {
-          release();
-        }
-      },
-    });
-
-    // The command saw the aborted turn the abort produced, not a still-running one.
-    expect(result.notifications).toEqual([
-      { message: `Retrying interrupted or failed work with ${LOCAL}`, type: "info" },
-    ]);
-    expect(result.requests).toHaveLength(2);
-    expect(conversationOf(result.requests[1])).toEqual(ORIGINAL_REQUEST);
-    expect(lastStopReason(result.entries)).toBe("stop");
-    expect(
-      result.entries.some(
-        (entry) =>
-          entry.type === "message" &&
-          entry.message.role === "assistant" &&
-          entry.message.stopReason === "aborted",
-      ),
-    ).toBe(true);
-    expect(retryMarkers(result.entries)).toHaveLength(1);
-    expect(result.entries.filter(isUserMessage)).toHaveLength(1);
-  });
-
   it("rejects model arguments instead of switching models", async () => {
     const result = await runContinueScenario({
       model: LOCAL,

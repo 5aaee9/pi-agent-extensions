@@ -41,25 +41,27 @@ export function findInterruptedTurn(entries: readonly SessionEntry[]): Interrupt
 }
 
 /**
- * Wait for an abort to settle, and report whether the session is free to retry.
+ * Wait for an abort or compaction to finish, and report whether the session is free to retry.
  *
- * A key does not wait behind a run the user has not interrupted: that wait would outlive the
- * press and take the user's later Esc for a turn to retry, restarting what they just stopped.
+ * This does not wait behind a run the user has not interrupted: that wait would outlive the
+ * request and take the user's later Esc for a turn to retry, restarting what they just stopped.
  * The base context a shortcut handler receives has no `waitForIdle()`, so this polls.
  */
-async function settleAbort(ctx: ExtensionContext): Promise<boolean> {
-  if (ctx.isIdle()) return true;
-  if (!ctx.signal?.aborted) return false;
+async function settle(ctx: ExtensionContext): Promise<boolean> {
   while (!ctx.isIdle()) {
-    // A signal that is not aborted belongs to a newer run, started after this key was pressed.
     if (ctx.signal && !ctx.signal.aborted) return false;
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   return true;
 }
 
-/** Retry the interrupted turn. The caller has already waited for the session to be free. */
-function retryInterruptedTurn(pi: ExtensionAPI, ctx: ExtensionContext): void {
+/** Retry the interrupted turn. `/continue` and the shortcuts are this one action. */
+async function continueTurn(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
+  if (!(await settle(ctx))) {
+    ctx.ui.notify("Cannot continue while the agent is busy", "warning");
+    return;
+  }
+
   const interrupted = findInterruptedTurn(ctx.sessionManager.getBranch());
   if (!interrupted) {
     ctx.ui.notify("No interrupted or failed turn to continue", "warning");
@@ -110,9 +112,7 @@ export default function piContinue(pi: ExtensionAPI) {
         ctx.ui.notify("Usage: /continue", "warning");
         return;
       }
-      // An abort can still be settling tool results when the command is submitted.
-      await ctx.waitForIdle();
-      retryInterruptedTurn(pi, ctx);
+      await continueTurn(pi, ctx);
       // sendMessage does not return the run it starts, and print and JSON modes
       // dispose the session when the command returns. Other modes stay responsive.
       if (ctx.mode === "print" || ctx.mode === "json") await ctx.waitForIdle();
@@ -122,10 +122,7 @@ export default function piContinue(pi: ExtensionAPI) {
   for (const shortcut of SHORTCUTS) {
     pi.registerShortcut(shortcut, {
       description: SHORTCUT_DESCRIPTION,
-      handler: async (ctx) => {
-        if (await settleAbort(ctx)) retryInterruptedTurn(pi, ctx);
-        else ctx.ui.notify("Cannot continue while the agent is busy", "warning");
-      },
+      handler: async (ctx) => await continueTurn(pi, ctx),
     });
   }
 }

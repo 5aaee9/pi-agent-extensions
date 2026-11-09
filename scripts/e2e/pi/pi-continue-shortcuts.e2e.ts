@@ -1,8 +1,9 @@
-// The `/continue` shortcuts in a real terminal, because no RPC request can press a key.
+// `/continue` and its shortcuts in a real terminal, because no RPC request can press a key.
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
+import type { Terminal } from "./pty.ts";
 import { scenario } from "./scenario.ts";
 import type { ChatReply, RecordedRequest } from "./servers.ts";
 import { rolesOf } from "./servers.ts";
@@ -56,40 +57,7 @@ for (const [key, label] of [
   );
 }
 
-// A key left waiting behind a running turn would treat the user's Esc as a turn to retry.
-scenario(
-  "a shortcut during a running turn does nothing, so interrupting that turn stays interrupted",
-  PACKAGES,
-  async ({ probeServer, terminal }) => {
-    const { promise: held, resolve: holdStarted } = Promise.withResolvers<void>();
-    const { promise: release, resolve: releaseHeld } = Promise.withResolvers<void>();
-    let reply: ChatReply = {
-      text: "held answer",
-      gate: async (): Promise<void> => {
-        holdStarted();
-        await release;
-      },
-    };
-    const server = await probeServer(() => reply);
-    const screen = terminal([...PROBE_ARGS, "hello"]);
-    await held;
-    const pressed = screen.mark();
-    screen.send(F5);
-    await screen.waitForText(BUSY_NOTICE, { mark: pressed });
-    reply = { text: RETRIED };
-    screen.send(ESCAPE);
-    await screen.waitForText("Operation aborted", { mark: pressed });
-    releaseHeld();
-    await delay(HOLD_MS);
-    assert.equal(server.requests.length, 1, "Esc must not restart the turn");
-    screen.send(F5);
-    await screen.waitForText(RETRIED);
-    assert.equal(server.requests.length, 2);
-    assert.deepEqual(lastRoles(server.requests), ["user"]);
-  },
-);
-
-// The tool ignores its abort signal, which holds the aborted run open while the key arrives.
+// The tool ignores its abort signal, which holds the aborted run open while the retry arrives.
 const STUBBORN_TOOL_EXTENSION = `
 export default function (pi) {
   pi.registerTool({
@@ -105,23 +73,75 @@ export default function (pi) {
 }
 `;
 
-scenario(
-  "a shortcut pressed while an abort is settling retries once the abort has settled",
-  PACKAGES,
-  async ({ world, probeServer, terminal }) => {
-    const fixture = world.writeAgentFile("fixtures/stubborn-tool.ts", STUBBORN_TOOL_EXTENSION);
-    let reply: ChatReply = { toolCall: { name: "stubborn_tool", arguments: "{}" } };
-    const server = await probeServer(() => reply);
-    const screen = terminal(["-e", fixture, ...PROBE_ARGS, "run the tool"]);
-    await screen.waitForText("stubborn_tool");
-    await delay(HOLD_MS);
-    reply = { text: RETRIED };
-    const before = server.requests.length;
-    screen.send(ESCAPE);
-    await delay(HOLD_MS);
-    screen.send(F5);
-    await screen.waitForText(RETRIED);
-    assert.equal(server.requests.length, before + 1);
-    assert.ok(!screen.text().includes(BUSY_NOTICE), screen.text());
-  },
-);
+// The key and the command are one action, so each of these holds for both.
+for (const [label, trigger] of [
+  [
+    "F5",
+    (screen: Terminal): void => {
+      screen.send(F5);
+    },
+  ],
+  [
+    "/continue",
+    async (screen: Terminal): Promise<void> => {
+      screen.send("/continue");
+      // Lets the editor's autocomplete settle, so Enter submits the command.
+      await delay(HOLD_MS);
+      screen.send("\r");
+    },
+  ],
+] as const) {
+  // A retry left waiting behind a running turn would treat the user's Esc as a turn to retry.
+  scenario(
+    `${label} during a running turn does nothing, so interrupting that turn stays interrupted`,
+    PACKAGES,
+    async ({ probeServer, terminal }) => {
+      const { promise: held, resolve: holdStarted } = Promise.withResolvers<void>();
+      const { promise: release, resolve: releaseHeld } = Promise.withResolvers<void>();
+      let reply: ChatReply = {
+        text: "held answer",
+        gate: async (): Promise<void> => {
+          holdStarted();
+          await release;
+        },
+      };
+      const server = await probeServer(() => reply);
+      const screen = terminal([...PROBE_ARGS, "hello"]);
+      await held;
+      const pressed = screen.mark();
+      await trigger(screen);
+      await screen.waitForText(BUSY_NOTICE, { mark: pressed });
+      reply = { text: RETRIED };
+      screen.send(ESCAPE);
+      await screen.waitForText("Operation aborted", { mark: pressed });
+      releaseHeld();
+      await delay(HOLD_MS);
+      assert.equal(server.requests.length, 1, "Esc must not restart the turn");
+      await trigger(screen);
+      await screen.waitForText(RETRIED);
+      assert.equal(server.requests.length, 2);
+      assert.deepEqual(lastRoles(server.requests), ["user"]);
+    },
+  );
+
+  scenario(
+    `${label} while an abort is settling retries once the abort has settled`,
+    PACKAGES,
+    async ({ world, probeServer, terminal }) => {
+      const fixture = world.writeAgentFile("fixtures/stubborn-tool.ts", STUBBORN_TOOL_EXTENSION);
+      let reply: ChatReply = { toolCall: { name: "stubborn_tool", arguments: "{}" } };
+      const server = await probeServer(() => reply);
+      const screen = terminal(["-e", fixture, ...PROBE_ARGS, "run the tool"]);
+      await screen.waitForText("stubborn_tool");
+      await delay(HOLD_MS);
+      reply = { text: RETRIED };
+      const before = server.requests.length;
+      screen.send(ESCAPE);
+      await delay(HOLD_MS);
+      await trigger(screen);
+      await screen.waitForText(RETRIED);
+      assert.equal(server.requests.length, before + 1);
+      assert.ok(!screen.text().includes(BUSY_NOTICE), screen.text());
+    },
+  );
+}
