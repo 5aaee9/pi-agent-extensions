@@ -30,6 +30,8 @@ The same retry is bound to `F5` and `Alt+R`, the keys omp (oh-my-pi) uses for it
 action. Pi assigns neither key to a built-in action; both come from this extension and run the
 command's retry path, so they need no `/continue` prefix.
 
+A key only retries a turn that has already stopped: pressed while the agent is busy, it reports that and does nothing, so interrupting the running turn afterwards stays interrupted. Pressed while an interrupt is still settling, it waits for that and then retries.
+
 `/continue` takes no arguments. In particular, no `--model provider/model` option is needed: pi retries the turn using whichever model is selected when the command executes. It does not append a synthetic user prompt.
 
 The command waits for the run to settle, verifies that the current branch ends in an aborted or failed assistant turn, and directly retries from the preceding user message or tool result. A hidden control message starts the turn but is removed, together with the failed assistant response, from every model context. This is a request-level retry rather than a token-level continuation of partial assistant output. Model and thinking-level changes recorded after the interruption or failure do not hide that turn. This includes provider errors such as HTTP 429 rate limits. If no model is selected, `/continue` reports an error and starts no turn.
