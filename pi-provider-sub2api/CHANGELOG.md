@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.0
+
+### Minor Changes
+
+- Add optional promptReplacements so a relay can replace literal text in a matching model's instructions. Other models, other providers, and the rest of the request stay unchanged.
+
 ## 0.5.3
 
 ### Patch Changes
