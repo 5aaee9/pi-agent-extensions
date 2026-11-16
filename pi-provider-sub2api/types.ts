@@ -61,6 +61,12 @@ export interface RequestModes {
   daybreak?: DaybreakMode;
 }
 
+export interface PromptReplacement {
+  models: readonly string[];
+  from: string;
+  to: string;
+}
+
 export type ServerToolDefinition = Record<string, unknown>;
 
 export interface RelayServerTools {
@@ -90,6 +96,7 @@ export interface RelayConfig {
   serverTools?: RelayServerTools;
   requestModes: RequestModes;
   modelRequestModes: Map<string, RequestModes>;
+  promptReplacements: readonly PromptReplacement[];
   responsesUrl: string;
   codexResponsesUrl: string;
   codexAuthToken: string;

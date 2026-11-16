@@ -206,6 +206,43 @@ Without an argument it writes the selected model's current effective modes to `m
 
 A save rereads `sub2api.json`, changes only the target object, and atomically replaces the file (the target of a symlink) while keeping its permissions; credential expressions such as `${VAR}` and `!command` are written back literally and never executed by a save. The file is rewritten as JSON with two-space indentation, so custom formatting is not preserved. Saves within one extension instance run one at a time; saves from two instances (for example across `/reload`) or two Pi processes at the same moment are last-writer-wins. A missing or invalid file or provider fails the save without writing and leaves unsaved toggles in effect.
 
+### Prompt replacements
+
+`promptReplacements` rewrites literal text in the `instructions` string of a model request. Each rule belongs to the provider entry that declares it. Omit the field, or set it to `[]`, and that provider's requests stay as they are.
+
+```json
+{
+  "sub2api": {
+    "baseURL": "https://relay.example.com/v1",
+    "token": "${SUB2API_TOKEN}",
+    "api": "openai-codex-responses",
+    "promptReplacements": [
+      {
+        "models": ["gemini-*", "claude-*"],
+        "from": "You are a coding assistant running inside pi, a coding agent harness. Help users inspect files, run commands, and modify code.",
+        "to": "You are a helpful, knowledgeable, and direct AI assistant."
+      }
+    ]
+  }
+}
+```
+
+`sub2api` here is the provider name, the same kind of key as `my-relay` above. A rule has three fields:
+
+| Field    | Meaning                                                                                            |
+| -------- | -------------------------------------------------------------------------------------------------- |
+| `models` | One or more model IDs or patterns. The rule matches when any pattern matches the current model ID. |
+| `from`   | The exact text to find. The match is literal, including punctuation.                               |
+| `to`     | The replacement. An empty string removes every occurrence of `from`.                               |
+
+A pattern matches the whole model ID. `*` matches any sequence of characters, including none, and every other character matches itself, so `gemini-*` matches `gemini-2.5-pro` and leaves `gemini` and `my-gemini-2.5-pro` alone. `gpt-5.4` matches that ID only. `*` alone matches every model of this provider. Matching is case-sensitive. A pattern follows the `compress_model` limits: 1–256 characters, no surrounding whitespace, and no control characters.
+
+Rules run in the order they are written. Each rule sees the text produced by the rules before it. A rule whose pattern does not match this model is skipped. When `from` is not in `instructions`, that rule is skipped and the request continues; this is not an error. Every occurrence of `from` is replaced. The rest of `instructions` and every other field, including tools and the conversation, stay as they were. The same model ID on another provider uses only that provider's rules.
+
+Pi's `openai-codex-responses` adapter sends the system prompt in `instructions`, which is the field these rules edit. `openai-responses`, `openai-completions`, and `anthropic-messages` place that prompt in other fields, so a rule does not change those requests. Native Codex compaction builds its own request and is separate from this hook.
+
+Other keys on a rule are ignored. A value that is not an array, a rule that is not an object, an empty `models` list, an invalid pattern, an empty or non-string `from`, or a non-string `to` fails configuration loading with an error that names the provider and the field. Reload after editing the file.
+
 ### Codex compaction model
 
 Set `compress_model` on a provider in `sub2api.json` to use a different model for native Codex compaction:
