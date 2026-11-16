@@ -1,6 +1,7 @@
 # prompt-replacements Specification
 
 ## Purpose
+
 Lets a relay replace chosen text in a model's outgoing instructions without changing the rest of the prompt or the request.
 
 ## Requirements
