@@ -30,6 +30,7 @@ import {
 } from "./provider-ownership.ts";
 import { getBillingUrl, refreshBilling, refreshQuota } from "./quota.ts";
 import { addDaybreakProgram, addServerTools, addServiceTier, streamCodex } from "./relay-stream.ts";
+import { applyPromptReplacements } from "./prompt-replacements.ts";
 import { addStringEnumTypes } from "./tool-schema.ts";
 import { createRequestModeStore } from "./request-mode-store.ts";
 import {
@@ -662,6 +663,10 @@ export default async function (pi: ExtensionAPI) {
     if (serviceTier) payload = addServiceTier(payload, ctx.model, serviceTier) ?? payload;
     if (daybreak) payload = addDaybreakProgram(payload, ctx.model, daybreak) ?? payload;
     return payload === event.payload ? undefined : payload;
+  });
+
+  pi.on("before_provider_request", (event, ctx) => {
+    return applyPromptReplacements(event.payload, ctx.model);
   });
 
   const syncRelayProviderPricing = (relay: RelayConfig) => {

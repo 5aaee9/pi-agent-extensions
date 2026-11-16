@@ -4,6 +4,7 @@ import { promisify } from "node:util";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
+import { parsePromptReplacements } from "./prompt-replacements.ts";
 import { parseServerTools, validateServerToolsForApi } from "./server-tools.ts";
 import {
   CONFIG_FILENAME,
@@ -216,6 +217,7 @@ export function parseRelayConfig(provider: string, value: unknown): RelayConfig 
     serverTools?: unknown;
     requestModes?: unknown;
     modelRequestModes?: unknown;
+    promptReplacements?: unknown;
   };
   if (typeof entry.baseURL !== "string" || !entry.baseURL.trim()) {
     throw new Error(`provider ${provider} is missing baseURL`);
@@ -261,6 +263,7 @@ export function parseRelayConfig(provider: string, value: unknown): RelayConfig 
       ? {}
       : parseRequestModes(provider, "requestModes", entry.requestModes);
   const modelRequestModes = parseModelRequestModes(provider, entry.modelRequestModes);
+  const promptReplacements = parsePromptReplacements(provider, entry.promptReplacements);
 
   const apiKey = resolveToken(provider, entry.token);
   let urls: ReturnType<typeof normalizeBaseUrls>;
@@ -286,6 +289,7 @@ export function parseRelayConfig(provider: string, value: unknown): RelayConfig 
     serverTools,
     requestModes,
     modelRequestModes,
+    promptReplacements,
     responsesUrl: `${baseUrl}/responses`,
     codexResponsesUrl: `${baseUrl}/codex/responses`,
     codexAuthToken: createCodexAuthToken(accountId),
