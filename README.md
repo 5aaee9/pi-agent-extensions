@@ -4,7 +4,7 @@ A collection of extensions for the [pi coding agent](https://github.com/earendil
 
 ## Packages
 
-All eight Pi packages are verified against Pi 1.5.0. `pi-ask` also exercises its OSC status fallback on Pi 1.4.0.
+All nine Pi packages are verified against Pi 1.5.0. `pi-ask` also exercises its OSC status fallback on Pi 1.4.0.
 
 | Package                                                                                     | Description                                                                                                                                                                                |
 | ------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -16,6 +16,7 @@ All eight Pi packages are verified against Pi 1.5.0. `pi-ask` also exercises its
 | [`@indexyz/pi-autocompact`](./pi-autocompact)                                               | Context compaction thresholds via `/autocompact 300k` or `80%`, with per-model defaults and provider and global caps.                                                                      |
 | [`@indexyz/pi-idle-compression`](./pi-idle-compression)                                     | Compact a session's context automatically after it has been idle (default 50 minutes), configurable globally, per provider, and per model.                                                 |
 | [`@indexyz/pi-ask`](./pi-ask)                                                               | Structured clarification questions with replay, recovery, and native OSC status detection with a fallback.                                                                                 |
+| [`@indexyz/pi-todo`](./pi-todo)                                                             | Todo tool, `/todos` command, live task overlay, and compact backward-compatible session persistence.                                                                                       |
 | [`@indexyz/dsh-autocompact`](./dsh-autocompact)                                             | The same thresholds for dsh: a `/autocompact` command, a Settings section, and a composer status entry.                                                                                    |
 | [`@indexyz/dsh-custom-provider-reasoning-efforts`](./dsh-custom-provider-reasoning-efforts) | Declare `reasoningEfforts` and `input` modalities for hand-written dsh provider routes the pi-ai catalog does not describe.                                                                |
 | [`@indexyz/dsh-thread-summary`](./dsh-thread-summary)                                       | Generate a concise session title from the first user prompt with a configurable summary model.                                                                                             |
@@ -32,6 +33,7 @@ pi install npm:@indexyz/pi-model-trace
 pi install npm:@indexyz/pi-autocompact
 pi install npm:@indexyz/pi-idle-compression
 pi install npm:@indexyz/pi-ask
+pi install npm:@indexyz/pi-todo
 ```
 
 A `dsh-<topic>/` package is installed into a dsh profile instead, and its command line, configuration, and behavior are documented in its own README:

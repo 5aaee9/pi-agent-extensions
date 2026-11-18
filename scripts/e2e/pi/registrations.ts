@@ -33,6 +33,7 @@ export const REGISTRATIONS: Readonly<Record<string, Registration>> = {
   "pi-continue": { commands: ["continue"], models: [], online: false },
   "pi-idle-compression": { commands: ["idle-compression"], models: [], online: false },
   "pi-model-trace": { commands: ["model-trace"], models: [], online: false },
+  "pi-todo": { commands: ["todos"], models: [], online: false },
   "pi-custom-provider": {
     commands: ["refresh-custom-provider-models"],
     models: ["local-openai/served-model"],
