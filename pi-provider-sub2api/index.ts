@@ -671,7 +671,7 @@ export default async function (pi: ExtensionAPI) {
   });
 
   // After replacements, so a rule still sees the original system role. This
-  // only renames that role on GPT-6.2 and later; it does not write instructions.
+  // renames that role on every Codex Responses model and does not write instructions.
   pi.on("before_provider_request", (event, ctx) => {
     return preserveCodexDeveloperPrompt(event.payload, ctx.model);
   });

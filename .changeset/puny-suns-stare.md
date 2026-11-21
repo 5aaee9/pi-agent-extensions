@@ -2,4 +2,4 @@
 "@indexyz/pi-provider-sub2api": patch
 ---
 
-Keep a GPT-6.2 Codex system prompt in the developer message so a relay does not copy Pi's own prompt into uncached instructions.
+Send Codex Responses prompts as developer messages, matching the Codex client, so a relay does not copy Pi's own prompt into top-level instructions.

@@ -1,10 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 
 import { parseRelayConfig } from "../config.ts";
-import {
-  preserveCodexDeveloperPrompt,
-  usesUncachedCodexInstructions,
-} from "../codex-developer-role.ts";
+import { preserveCodexDeveloperPrompt } from "../codex-developer-role.ts";
 import { applyPromptReplacements } from "../prompt-replacements.ts";
 import { relaysByProvider } from "../types.ts";
 
@@ -56,27 +53,37 @@ afterEach(() => {
   relaysByProvider.clear();
 });
 
-describe("GPT-6.2 instruction billing", () => {
+describe("preserveCodexDeveloperPrompt", () => {
   it.each([
-    "gpt-6.2",
     "gpt-6.2-sol",
-    "openai/GPT-6.2-Astra",
-    "gpt-6.2-sol-ultra",
-    "gpt-6.10",
-    "gpt-7",
-  ])("treats %s as uncached top-level instructions", (modelId) => {
-    expect(usesUncachedCodexInstructions(modelId)).toBe(true);
+    "openai/gpt-6.1-sol",
+    "gpt-6.1-terra",
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.1-codex",
+    "codex-mini",
+  ])("renames a system prompt for Codex model %s without writing instructions", (modelId) => {
+    const payload = request(modelId);
+    const result = preserveCodexDeveloperPrompt(payload, {
+      id: modelId,
+      api: "openai-codex-responses",
+    });
+    const lead = Array.isArray(result?.input) ? result.input[0] : undefined;
+    expect(lead).toMatchObject({ role: "developer", content: CLIENT });
+    expect(result).not.toHaveProperty("instructions");
+    const forwarded = unfixedOrdinaryOAuth(result ?? payload, GATEWAY_DEFAULT);
+    expect(forwarded.instructions).toBe(GATEWAY_DEFAULT);
+    expect(String(forwarded.instructions)).not.toContain(CLIENT);
   });
 
-  it.each(["gpt-5.4", "gpt-6", "gpt-6.1-sol", "claude-sonnet", "codex-mini"])(
-    "leaves %s out",
-    (modelId) => {
-      expect(usesUncachedCodexInstructions(modelId)).toBe(false);
+  it.each(["openai-responses", "openai-completions", "anthropic-messages"])(
+    "leaves the %s API unchanged",
+    (api) => {
+      const payload = request("gpt-6.1-sol");
+      expect(preserveCodexDeveloperPrompt(payload, { id: "gpt-6.1-sol", api })).toBeUndefined();
     },
   );
-});
 
-describe("preserveCodexDeveloperPrompt", () => {
   it("keeps Pi's system prompt in input and does not write instructions", () => {
     const payload = request("gpt-6.2-sol");
     const result = preserveCodexDeveloperPrompt(payload, sol);
@@ -145,20 +152,7 @@ describe("preserveCodexDeveloperPrompt", () => {
     expect(preserveCodexDeveloperPrompt(payload, sol)).toBeUndefined();
   });
 
-  it("leaves older models, other APIs, and mismatched payloads alone", () => {
-    const older = request("gpt-5.4");
-    expect(
-      preserveCodexDeveloperPrompt(older, { id: "gpt-5.4", api: "openai-codex-responses" }),
-    ).toBeUndefined();
-    expect(
-      preserveCodexDeveloperPrompt(request("gpt-6.1-sol"), {
-        id: "gpt-6.1-sol",
-        api: "openai-codex-responses",
-      }),
-    ).toBeUndefined();
-    expect(
-      preserveCodexDeveloperPrompt(request("gpt-6.2-sol"), { ...sol, api: "openai-responses" }),
-    ).toBeUndefined();
+  it("leaves a payload for another model unchanged", () => {
     expect(preserveCodexDeveloperPrompt(request("other"), sol)).toBeUndefined();
     expect(preserveCodexDeveloperPrompt({ model: sol.id }, sol)).toBeUndefined();
   });

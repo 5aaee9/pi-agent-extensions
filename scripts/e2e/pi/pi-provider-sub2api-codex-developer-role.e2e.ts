@@ -20,7 +20,12 @@ import { compact } from "./pi-provider-sub2api-compaction-support.ts";
 
 const IDENTITY =
   "You are a coding assistant running inside pi, a coding agent harness. Help users inspect files, run commands, and modify code.";
-const MANIFEST = manifestOf([{ slug: "gpt-6.2-sol" }, { slug: "gpt-5.4" }]);
+const MANIFEST = manifestOf([
+  { slug: "gpt-6.2-sol" },
+  { slug: "gpt-6.1-sol" },
+  { slug: "gpt-5.4" },
+  { slug: "codex-mini" },
+]);
 
 function turnBody(request: RecordedRequest | undefined): JsonRecord {
   assert.ok(request !== undefined, "a request reached the server");
@@ -56,13 +61,19 @@ scenario(
     );
     assert.ok(Array.isArray(body["tools"]));
 
-    await client.send({ type: "set_model", provider: "relay", modelId: "gpt-5.4" });
-    await client.prompt("older");
-    const older = turnBody(relay.turns().at(-1));
-    const olderInput = inputOf(relay.turns().at(-1));
-    assert.equal("instructions" in older, false);
-    assert.equal(itemAt(olderInput, 0)["role"], "system");
-    assert.ok(String(itemAt(olderInput, 0)["content"]).includes(IDENTITY));
+    const expectDeveloperPrompt = async (modelId: string): Promise<void> => {
+      await client.send({ type: "set_model", provider: "relay", modelId });
+      await client.prompt(modelId);
+      const older = turnBody(relay.turns().at(-1));
+      const olderInput = inputOf(relay.turns().at(-1));
+      assert.equal("instructions" in older, false);
+      assert.equal(older["model"], modelId);
+      assert.equal(itemAt(olderInput, 0)["role"], "developer");
+      assert.ok(String(itemAt(olderInput, 0)["content"]).includes(IDENTITY));
+    };
+    await expectDeveloperPrompt("gpt-6.1-sol");
+    await expectDeveloperPrompt("gpt-5.4");
+    await expectDeveloperPrompt("codex-mini");
     assert.deepEqual(client.extensionErrors(), []);
   },
 );

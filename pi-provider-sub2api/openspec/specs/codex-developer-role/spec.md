@@ -2,36 +2,32 @@
 
 ## Purpose
 
-Keep Pi's own GPT-6.2 Codex prompt in `input` when Pi would otherwise send it as `system`, without writing top-level `instructions` or copying a gateway prompt.
+Keep Pi's Codex prompt in `input` as a developer message, matching the official Codex client, without writing top-level `instructions` or copying a gateway prompt.
 
 ## Requirements
 
-### Requirement: A covered model ID is GPT-6.2 or newer
+### Requirement: Codex Responses requests keep system text in input
 
-The extension MUST treat a Codex model as covered only when its canonical ID is `gpt-` with a major version above 6, or major version 6 with a minor version of at least 2. Canonicalization MUST trim the ID, keep the segment after the last `/`, ignore case, and treat `_` and whitespace as `-`. A model without a minor version counts as minor version 0.
+On every `openai-codex-responses` model, the extension MUST change every `system` item's role to `developer` before the request is sent. The item's content and its position relative to other existing items MUST stay the same. A request that contains no `system` item MUST be left unchanged. Applying the rename twice MUST NOT change the request again.
 
-#### Scenario: A later alias
-
-- **WHEN** the model ID is `openai/GPT-6.2-Sol` or `gpt-7`
-- **THEN** the model is covered
-
-#### Scenario: An older alias
-
-- **WHEN** the model ID is `gpt-6` or `gpt-6.1-sol`
-- **THEN** the model is not covered
-
-### Requirement: Covered Codex requests keep system text in input
-
-On a covered `openai-codex-responses` model, the extension MUST change every `system` item's role to `developer` before the request is sent. The item's content and its position relative to other existing items MUST stay the same. A request that contains no `system` item MUST be left unchanged. Applying the rename twice MUST NOT change the request again.
-
-#### Scenario: Pi sent a system prompt
+#### Scenario: GPT-6.2
 
 - **WHEN** a `gpt-6.2-sol` Codex request starts with a system message and has no `instructions` field
 - **THEN** that message's role is `developer`, its content is unchanged, and the request still has no `instructions` field
 
+#### Scenario: GPT-6.1 and older Codex models
+
+- **WHEN** the Codex model is `gpt-6.1-sol`, `gpt-5.4`, or `codex-mini` and the prompt role is `system`
+- **THEN** the role becomes `developer` and `instructions` is not added
+
+#### Scenario: A vendor prefix
+
+- **WHEN** the Codex model ID is `openai/gpt-6.1-sol` and the prompt role is `system`
+- **THEN** the role becomes `developer` and the model ID is unchanged
+
 #### Scenario: Pi already sent developer
 
-- **WHEN** a covered request's prompt is already a developer message
+- **WHEN** a Codex request's prompt is already a developer message
 - **THEN** the request is unchanged
 
 ### Requirement: Instructions are not rewritten
@@ -40,27 +36,22 @@ The extension MUST NOT add, remove, or rewrite `instructions`. The same role ren
 
 #### Scenario: An explicit instruction
 
-- **WHEN** a covered request has a system message and `instructions` set to `Focus on this turn.`
+- **WHEN** a Codex request has a system message and `instructions` set to `Focus on this turn.`
 - **THEN** the message's role is `developer` and `instructions` remains `Focus on this turn.`
 
 #### Scenario: Compaction
 
-- **WHEN** native compaction runs on `gpt-6.2-sol` and its first input item is a system message
+- **WHEN** native compaction runs on `gpt-6.1-sol` and its first input item is a system message
 - **THEN** that item's role is `developer`, `compaction_trigger` remains last, and the request has no `instructions` field
 
-### Requirement: Other requests stay as Pi sent them
+### Requirement: Other APIs stay as Pi sent them
 
-The extension MUST leave a request unchanged when the model is older than GPT-6.2, the API is not Codex Responses, or the payload does not belong to the current model. There is no configuration switch. A `cacheCodexInstructions` key MUST be ignored.
+The extension MUST leave `openai-responses`, `openai-completions`, and `anthropic-messages` requests unchanged. There is no configuration switch. A `cacheCodexInstructions` key MUST be ignored.
 
-#### Scenario: An older Codex model
+#### Scenario: The OpenAI Responses API
 
-- **WHEN** the model ID is `gpt-5.4` or `gpt-6.1-sol` and the prompt role is `system`
-- **THEN** the role stays `system` and `instructions` is not added
-
-#### Scenario: Another API
-
-- **WHEN** the model uses the OpenAI Responses API
-- **THEN** a system message stays a system message
+- **WHEN** the model uses the OpenAI Responses API and the prompt role is `system`
+- **THEN** the role stays `system`
 
 #### Scenario: A leftover key
 

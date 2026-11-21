@@ -239,17 +239,17 @@ A pattern matches the whole model ID. `*` matches any sequence of characters, in
 
 Rules run in the order they are written. Each rule sees the text produced by the rules before it. A rule whose pattern does not match this model is skipped. When `from` is not in the system prompt, that rule is skipped and the request continues; this is not an error. Every occurrence of `from` is replaced. The surrounding prompt text, every later input item, and other fields such as tools, stay as they were. The same model ID on another provider uses only that provider's rules.
 
-On Pi 1.6.0 or newer, rules edit only the string content of the leading `developer` or `system` message in `input` on `openai-codex-responses` models. Other APIs (`openai-responses`, `openai-completions`, and `anthropic-messages`) are unchanged. Native Codex compaction builds its own request and is separate from this hook. A GPT-6.2 role rename, below, runs after these rules.
+On Pi 1.6.0 or newer, rules edit only the string content of the leading `developer` or `system` message in `input` on `openai-codex-responses` models. Other APIs (`openai-responses`, `openai-completions`, and `anthropic-messages`) are unchanged. Native Codex compaction builds its own request and is separate from this hook. The Codex developer-role rename, below, runs after these rules.
 
 Other keys on a rule are ignored. A value that is not an array, a rule that is not an object, an empty `models` list, an invalid pattern, an empty or non-string `from`, or a non-string `to` fails configuration loading with an error that names the provider and the field. Reload after editing the file.
 
-### GPT-6.2 developer role
+### Codex developer role
 
-Pi 1.6.0 does not send a top-level `instructions` field on Codex Responses requests. The system prompt is the first `input` message. When the model is marked as reasoning, that role is already `developer`. When it is not, Pi sends `system`.
+Pi 1.6.0 does not send a top-level `instructions` field. The system prompt is the first `input` message. A reasoning model already uses `developer`. A model Pi does not mark as reasoning uses `system`.
 
-GPT-6.2 and later append top-level `instructions` after `input` and bill them as uncached input. An unfixed Sub2API Codex OAuth gateway copies `system` messages into that field and drops them from `input`. For `openai-codex-responses` models whose ID is GPT-6.2 or newer (`gpt-6.2`, `gpt-6.2-sol`, `gpt-6.3`, `gpt-7`, and the same IDs with a vendor prefix such as `openai/`), this extension renames each `system` item to `developer` before the request is sent. Native compaction uses the same rename. The text, the order, and every other field stay as they were. A request that already uses `developer` is unchanged. An `instructions` value that is already present is not added, removed, or rewritten. Older models, including GPT-6.1, and other APIs are unchanged.
+The current official Codex client does the same for every model: its Responses request has no `instructions` field, and the base prompt is a `developer` item in `input`. An unfixed Sub2API Codex OAuth gateway copies `system` messages into top-level `instructions` and drops them from `input`. On every `openai-codex-responses` model, including GPT-6.1, GPT-5, and `codex-*`, this extension renames each `system` item to `developer` before the request is sent. Native compaction uses the same rename. The text, the order, and every other field stay as they were. A request that already uses `developer` is unchanged. An `instructions` value that is already present is not added, removed, or rewritten. `openai-responses`, `openai-completions`, and `anthropic-messages` are unchanged.
 
-This does not stop the gateway from inserting its own Codex default when `instructions` is missing. That default can still be billed uncached. The extension does not carry a copy of the gateway prompt, and there is no setting for this rename. A `cacheCodexInstructions` key in `sub2api.json` is ignored.
+This is the Codex wire shape, not a cache-billing change. GPT-6.2 and later bill top-level `instructions` as uncached input, so keeping Pi's own prompt out of that field avoids that extra charge for Pi's text. GPT-6.1 and earlier can still cache `instructions`. Either way, a missing `instructions` field can still receive the gateway's own default. This extension does not carry a copy of that prompt, and there is no setting for the rename. A `cacheCodexInstructions` key in `sub2api.json` is ignored.
 
 ### Codex compaction model
 
