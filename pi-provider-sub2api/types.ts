@@ -97,8 +97,6 @@ export interface RelayConfig {
   requestModes: RequestModes;
   modelRequestModes: Map<string, RequestModes>;
   promptReplacements: readonly PromptReplacement[];
-  // When true, covered GPT-6.2 Codex requests keep the pinned default in input.
-  cacheCodexInstructions: boolean;
   responsesUrl: string;
   codexResponsesUrl: string;
   codexAuthToken: string;

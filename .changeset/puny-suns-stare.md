@@ -1,5 +1,5 @@
 ---
-"@indexyz/pi-provider-sub2api": minor
+"@indexyz/pi-provider-sub2api": patch
 ---
 
-Keep GPT-6.2 Codex defaults in the cacheable developer prompt when a relay still injects them as uncached instructions.
+Keep a GPT-6.2 Codex system prompt in the developer message so a relay does not copy Pi's own prompt into uncached instructions.

@@ -195,14 +195,6 @@ function validateXaiEntry(
   }
 }
 
-function parseCacheCodexInstructions(provider: string, value: unknown) {
-  if (value === undefined) return false;
-  if (typeof value !== "boolean") {
-    throw new Error(`provider ${provider} cacheCodexInstructions must be a boolean`);
-  }
-  return value;
-}
-
 export function parseRelayConfig(provider: string, value: unknown): RelayConfig {
   if (
     !provider.trim() ||
@@ -226,7 +218,6 @@ export function parseRelayConfig(provider: string, value: unknown): RelayConfig 
     requestModes?: unknown;
     modelRequestModes?: unknown;
     promptReplacements?: unknown;
-    cacheCodexInstructions?: unknown;
   };
   if (typeof entry.baseURL !== "string" || !entry.baseURL.trim()) {
     throw new Error(`provider ${provider} is missing baseURL`);
@@ -273,10 +264,6 @@ export function parseRelayConfig(provider: string, value: unknown): RelayConfig 
       : parseRequestModes(provider, "requestModes", entry.requestModes);
   const modelRequestModes = parseModelRequestModes(provider, entry.modelRequestModes);
   const promptReplacements = parsePromptReplacements(provider, entry.promptReplacements);
-  const cacheCodexInstructions = parseCacheCodexInstructions(
-    provider,
-    entry.cacheCodexInstructions,
-  );
 
   const apiKey = resolveToken(provider, entry.token);
   let urls: ReturnType<typeof normalizeBaseUrls>;
@@ -303,7 +290,6 @@ export function parseRelayConfig(provider: string, value: unknown): RelayConfig 
     requestModes,
     modelRequestModes,
     promptReplacements,
-    cacheCodexInstructions,
     responsesUrl: `${baseUrl}/responses`,
     codexResponsesUrl: `${baseUrl}/codex/responses`,
     codexAuthToken: createCodexAuthToken(accountId),

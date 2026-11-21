@@ -30,7 +30,7 @@ import {
 } from "./provider-ownership.ts";
 import { getBillingUrl, refreshBilling, refreshQuota } from "./quota.ts";
 import { addDaybreakProgram, addServerTools, addServiceTier, streamCodex } from "./relay-stream.ts";
-import { applyCodexInstructionCache } from "./codex-instruction-cache.ts";
+import { preserveCodexDeveloperPrompt } from "./codex-developer-role.ts";
 import { applyPromptReplacements } from "./prompt-replacements.ts";
 import { addStringEnumTypes } from "./tool-schema.ts";
 import { createRequestModeStore } from "./request-mode-store.ts";
@@ -670,10 +670,10 @@ export default async function (pi: ExtensionAPI) {
     return applyPromptReplacements(event.payload, ctx.model);
   });
 
-  // After replacements, so a rule still edits Pi's own leading prompt. This
-  // handler may then put the pinned Codex default ahead of that prompt.
+  // After replacements, so a rule still sees the original system role. This
+  // only renames that role on GPT-6.2 and later; it does not write instructions.
   pi.on("before_provider_request", (event, ctx) => {
-    return applyCodexInstructionCache(event.payload, ctx.model);
+    return preserveCodexDeveloperPrompt(event.payload, ctx.model);
   });
 
   const syncRelayProviderPricing = (relay: RelayConfig) => {

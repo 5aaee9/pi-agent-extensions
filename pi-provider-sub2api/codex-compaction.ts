@@ -9,7 +9,7 @@ import {
   type SessionBeforeCompactEvent,
   type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
-import { cacheCodexInstructions } from "./codex-instruction-cache.ts";
+import { preserveCodexDeveloperPrompt } from "./codex-developer-role.ts";
 import { isSafeModelId } from "./util.ts";
 
 // Pi's extension loader aliases the public pi-ai package root to its compat entrypoint.
@@ -114,7 +114,6 @@ export interface CodexCompactionRelay {
   apiKey: string;
   compressServiceTier?: "fast" | "ultrafast" | null;
   compressModel?: string | null;
-  cacheCodexInstructions?: boolean;
 }
 
 type JsonObject = Record<string, unknown>;
@@ -640,11 +639,10 @@ async function compactRemotely(params: {
     stream: true,
     store: false,
   };
-  const cachedCompaction = cacheCodexInstructions(
-    compactionRequest,
-    { id: params.model.id, api: "openai-codex-responses" },
-    params.relay.cacheCodexInstructions === true,
-  );
+  const cachedCompaction = preserveCodexDeveloperPrompt(compactionRequest, {
+    id: params.model.id,
+    api: "openai-codex-responses",
+  });
   const response = await fetch(normalizeUrl(params.relay.responsesUrl), {
     method: "POST",
     headers: {

@@ -1,5 +1,7 @@
 # Proposal
 
+Superseded before merge. The plugin does not vendor gateway templates or set `instructions`. The current behavior is `openspec/specs/codex-developer-role/spec.md`.
+
 ## Why
 
 GPT-6.2 bills Responses `instructions` as uncached input appended after `input`. Sub2API v0.2.24 still fills a blank `instructions` field with a multi-thousand-token Codex default on ordinary Codex OAuth, including when Pi already sent a leading developer message. That default then misses the prompt cache on every turn. The gateway change that would move it into `input` is not merged.
