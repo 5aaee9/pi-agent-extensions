@@ -357,6 +357,7 @@ function serializeMessages(
   pi: ExtensionAPI,
   model: Model<any>,
   entries: readonly SessionEntry[],
+  replay?: { currentEffort?: string },
 ) {
   const allTools = toTools(pi);
   const activeNames = new Set(pi.getActiveTools());
@@ -374,32 +375,49 @@ function serializeMessages(
   const messages = entries.flatMap((entry) => rt.sessionEntryToContextMessages(entry));
   // Mirror the host Codex adapter's serializer options so the replay prefix matches
   // the input items it sends.
-  return structuredClone(
-    rt.convertResponsesMessages(
-      model,
-      rt.normalizeContext({
-        systemPrompt: "",
-        messages: rt.convertToLlm(messages),
-        tools: activeTools,
-      }),
-      CODEX_TOOL_CALL_PROVIDERS,
-      {
-        includeSystemPrompt: false,
-        grammarToolInputProperties: rt.createGrammarToolInputProperties(
-          activeTools,
-          supportsGrammarTools,
-        ),
-        supportsMidConvoSystemMessages: compat?.supportsMidConvoSystemMessages ?? false,
-        supportsAdditionalTools: compat?.supportsAdditionalTools ?? false,
-        supportsToolSearch: compat?.supportsToolSearch ?? false,
-        toolOptions: {
-          strict: null,
-          supportsStrictMode: compat?.supportsStrictMode ?? true,
-          supportsOpenAIGrammarTools: supportsGrammarTools,
-        },
+  const llmMessages = rt.convertToLlm(messages);
+  // A compact request has its own current prompt; fold transcript updates
+  // there even if live turns keep them in place. Replay must match the turn.
+  const midConvo = replay !== undefined && compat?.supportsMidConvoSystemMessages === true;
+  const context =
+    midConvo && llmMessages[0]?.role === "system"
+      ? rt.normalizeContext({ messages: llmMessages })
+      : rt.normalizeContext({ systemPrompt: "", messages: llmMessages, tools: activeTools });
+  const items = structuredClone(
+    rt.convertResponsesMessages(model, context, CODEX_TOOL_CALL_PROVIDERS, {
+      grammarToolInputProperties: rt.createGrammarToolInputProperties(
+        activeTools,
+        supportsGrammarTools,
+      ),
+      supportsMidConvoSystemMessages: midConvo,
+      configurationUpdateEffort: replay?.currentEffort,
+      supportsAdditionalTools: compat?.supportsAdditionalTools ?? false,
+      supportsToolSearch: compat?.supportsToolSearch ?? false,
+      toolOptions: {
+        strict: null,
+        supportsStrictMode: compat?.supportsStrictMode ?? true,
+        supportsOpenAIGrammarTools: supportsGrammarTools,
       },
-    ),
+    }),
   ) as unknown as ResponseItem[];
+  // Enabling effort serialization also appends the live effort after the
+  // converted history. It belongs to the tail, not the checkpoint prefix.
+  if (replay?.currentEffort !== undefined) items.pop();
+  if (replay) {
+    // The compaction entry emits its summary as the first user message. Keep
+    // Pi's entire live prologue (prompt and any tool declarations) before it.
+    const summaryIndex = items.findIndex((item) => item.role === "user");
+    return summaryIndex < 0 ? [] : items.slice(summaryIndex);
+  }
+  // Pi folds transcript system updates into the lead by default. It belongs to the live
+  // request, not the history we retain or match for replay.
+  const lead = items[0];
+  return lead &&
+    (lead.type === undefined || lead.type === "message") &&
+    (lead.role === "developer" || lead.role === "system") &&
+    context.messages.some((message) => message.role === "system")
+    ? items.slice(1)
+    : items;
 }
 
 function buildCompactionInput(
@@ -608,7 +626,7 @@ async function compactRemotely(params: {
   relay: CodexCompactionRelay;
   model: Model<any>;
   input: ResponseItem[];
-  instructions: string;
+  lead?: ReturnType<PrivateRuntime["convertResponsesMessages"]>[number];
   serviceTier?: string;
   signal: AbortSignal;
 }) {
@@ -623,8 +641,11 @@ async function compactRemotely(params: {
     },
     body: JSON.stringify({
       model: params.model.id,
-      input: [...params.input, { type: "compaction_trigger" }],
-      instructions: params.instructions,
+      input: [
+        ...(params.lead ? [params.lead] : []),
+        ...params.input,
+        { type: "compaction_trigger" },
+      ],
       service_tier: params.serviceTier,
       stream: true,
       store: false,
@@ -651,13 +672,6 @@ async function compactRemotely(params: {
     createdAt: parsed.createdAt,
     usage: parseCompactionUsage(params.model, parsed.usage),
   };
-}
-
-function appendCustomInstructions(systemPrompt: string, customInstructions?: string) {
-  const instructions = customInstructions?.trim();
-  return instructions
-    ? `${systemPrompt}\n\nAdditional guidance for this compaction request:\n${instructions}`
-    : systemPrompt;
 }
 
 function valuesEqual(left: unknown, right: unknown): boolean {
@@ -715,8 +729,15 @@ function rewriteProviderPayload(
   );
   if (firstKeptIndex < 0) return undefined;
 
-  const prefixEntries = [entry, ...branch.slice(firstKeptIndex, index)];
-  const expectedPrefix = serializeMessages(rt, pi, model, prefixEntries);
+  const prefixEntries = rt.buildContextEntries(branch.slice(0, index + 1), entry.id);
+  const last = payload.input.at(-1);
+  const effort =
+    isJsonObject(last) && last.type === "configuration_update" && isJsonObject(last.reasoning)
+      ? last.reasoning.effort
+      : undefined;
+  const expectedPrefix = serializeMessages(rt, pi, model, prefixEntries, {
+    currentEffort: typeof effort === "string" ? effort : undefined,
+  });
   const prefixIndex = findUniqueSequence(payload.input, expectedPrefix);
   if (prefixIndex === undefined) return undefined;
   const tailIndex = prefixIndex + expectedPrefix.length;
@@ -879,14 +900,18 @@ export function registerCodexCompaction(
               id: compressModelId,
               cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
             });
+      // Use the conversation model's role and Pi's Unicode normalization,
+      // even if the compaction itself is billed to a different model.
+      const [lead] = rt.convertResponsesMessages(
+        model,
+        rt.normalizeContext({ systemPrompt: ctx.getSystemPrompt(), messages: [] }),
+        CODEX_TOOL_CALL_PROVIDERS,
+      );
       const compacted = await compactRemotely({
         relay,
         model: compressModel,
         input: built.input,
-        instructions: appendCustomInstructions(
-          ctx.getSystemPrompt(),
-          command ? undefined : event.customInstructions,
-        ),
+        lead,
         serviceTier:
           command?.serviceTier ??
           (relay.compressServiceTier === "fast"
@@ -894,6 +919,9 @@ export function registerCodexCompaction(
             : (relay.compressServiceTier ?? getConversationServiceTier(model))),
         signal: event.signal,
       });
+      if (ctx.hasUI && !command && event.customInstructions?.trim()) {
+        ctx.ui.notify("Native compaction ignores custom instructions.", "info");
+      }
       return {
         compaction: {
           summary: NATIVE_COMPACTION_SUMMARY,

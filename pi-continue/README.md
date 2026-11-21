@@ -40,7 +40,7 @@ The command verifies that the current branch ends in an aborted or failed assist
 
 ## Development
 
-Verified against Pi 1.5.0.
+Verified against Pi 1.6.0.
 
 ```bash
 npm install

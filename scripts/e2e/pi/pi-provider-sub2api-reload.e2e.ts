@@ -31,7 +31,7 @@ const bearers = (requests: readonly RecordedRequest[]): readonly (string | undef
   ...new Set(requests.map((request) => headerOf(request, "authorization"))),
 ];
 
-/** What only Pi's Codex adapter sends: a compressed body with top-level instructions. */
+/** What only Pi's Codex adapter sends: a zstd-compressed request body. */
 const usedCodexAdapter = (request: RecordedRequest | undefined): boolean =>
   headerOf(request, "content-encoding") === "zstd";
 

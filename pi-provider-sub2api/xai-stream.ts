@@ -78,7 +78,7 @@ export function streamXai(
   options: SimpleStreamOptions = {},
 ): AssistantMessageEventStream {
   if (!XAI_RESPONSES_API) {
-    throw new Error("Pi's OpenAI Responses adapter is unavailable; xAI entries require Pi 1.4.0+");
+    throw new Error("Pi's OpenAI Responses adapter is unavailable; xAI entries require Pi 1.6.0+");
   }
   const { onPayload } = options;
   return XAI_RESPONSES_API.streamSimple(model, context, {

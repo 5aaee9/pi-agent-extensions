@@ -1,6 +1,6 @@
 # @indexyz/pi-todo
 
-A repository-owned fork of [`@juicesharp/rpiv-todo` 2.15.0](https://github.com/juicesharp/rpiv-mono/tree/main/packages/rpiv-todo), verified with Pi 1.5.0. It adds a `todo` tool, a
+A repository-owned fork of [`@juicesharp/rpiv-todo` 2.15.0](https://github.com/juicesharp/rpiv-mono/tree/main/packages/rpiv-todo), verified with Pi 1.6.0. It adds a `todo` tool, a
 `/todos` command, and a live task panel above the editor. Task state survives
 `/reload`, compaction, and detached sessions, while new session records store
 compact action records instead of repeating the complete task list on every

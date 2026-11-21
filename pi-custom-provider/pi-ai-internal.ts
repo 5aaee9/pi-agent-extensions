@@ -1,6 +1,6 @@
 // ---------------------------------------------------------------------------
 // Adapted internals from @earendil-works/pi-ai (`dist/api/simple-options.js`,
-// `dist/api/transform-messages.js`, and `dist/utils/estimate.js`), aligned with 1.5.0.
+// `dist/api/transform-messages.js`, and `dist/utils/estimate.js`), aligned with 1.6.0.
 //
 // Pi's extension module mapping exposes selected public entrypoints,
 // including transcript helpers, but the `api/*` submodules cannot be
@@ -155,6 +155,8 @@ export function estimateContextTokens(context: TranscriptContext | Message[]): {
 // ---------------------------------------------------------------------------
 
 const CONTEXT_SAFETY_TOKENS = 4096;
+const CONTEXT_SAFETY_RATIO = 0.15;
+const MIN_OUTPUT_WITH_RATIO_MARGIN = 32768;
 const MIN_MAX_TOKENS = 1;
 
 export function clampMaxTokensToContext(
@@ -163,9 +165,16 @@ export function clampMaxTokensToContext(
   maxTokens: number,
 ): number {
   if (model.contextWindow <= 0) return Math.max(MIN_MAX_TOKENS, maxTokens);
-  const available =
-    model.contextWindow - estimateContextTokens(context).tokens - CONTEXT_SAFETY_TOKENS;
-  return Math.min(maxTokens, Math.max(MIN_MAX_TOKENS, available));
+  const input = estimateContextTokens(context).tokens;
+  const margin = Math.max(CONTEXT_SAFETY_TOKENS, Math.ceil(input * CONTEXT_SAFETY_RATIO));
+  let room = model.contextWindow - input - margin;
+  if (room < MIN_OUTPUT_WITH_RATIO_MARGIN) {
+    room = Math.min(
+      MIN_OUTPUT_WITH_RATIO_MARGIN,
+      model.contextWindow - input - CONTEXT_SAFETY_TOKENS,
+    );
+  }
+  return Math.min(maxTokens, Math.max(MIN_MAX_TOKENS, room));
 }
 
 function resolveSamplingParams(
@@ -200,6 +209,7 @@ export function buildBaseOptions(
     transport: options?.transport,
     cacheRetention: options?.cacheRetention,
     sessionId: options?.sessionId,
+    disableContinuation: options?.disableContinuation,
     headers: options?.headers,
     identity: options?.identity,
     onPayload: options?.onPayload,

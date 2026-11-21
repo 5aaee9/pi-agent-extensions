@@ -42,7 +42,7 @@ Read a doc completely and follow its cross-references before using an API from i
 grep -rn "interface ExtensionAPI" --include="*.d.ts" node_modules/@earendil-works/pi-coding-agent/dist/
 ```
 
-`dist/index.d.ts` re-exports the public types from modules under `dist/` (extension types are in `dist/core/extensions/types.d.ts` in 1.5.0); search for the symbol rather than reading the files top to bottom. Event payloads and return types are declared next to the event name.
+`dist/index.d.ts` re-exports the public types from modules under `dist/` (extension types are in `dist/core/extensions/types.d.ts` in 1.6.0); search for the symbol rather than reading the files top to bottom. Event payloads and return types are declared next to the event name.
 
 ## Contracts that are easy to get wrong
 

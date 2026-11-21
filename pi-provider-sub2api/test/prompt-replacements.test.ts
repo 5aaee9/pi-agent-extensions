@@ -104,10 +104,19 @@ describe("prompt replacement configuration", () => {
 
 describe("prompt replacement application", () => {
   const tools = [{ type: "function", name: "read" }];
-  const input = [{ role: "user", content: "hello" }];
-
-  function request(modelId: string, instructions: string) {
-    return { model: modelId, instructions, tools, input, temperature: 0 };
+  const tail = [
+    { role: "user", content: IDENTITY },
+    { role: "developer", content: IDENTITY },
+  ];
+  const codex = { provider: "relay", api: "openai-codex-responses" };
+  function request(modelId: string, content: string, role = "developer") {
+    return {
+      model: modelId,
+      input: [{ type: "message", role, content }, ...tail],
+      tools,
+      instructions: IDENTITY,
+      temperature: 0,
+    };
   }
 
   it("replaces a matching family and leaves the surrounding prompt and payload", () => {
@@ -116,14 +125,17 @@ describe("prompt replacement application", () => {
       "gemini-2.5-pro",
       `before\n${IDENTITY}\nafter\n\n<rules>\n- Be concise in your responses\n</rules>`,
     );
-    const result = applyPromptReplacements(payload, { provider: "relay", id: "gemini-2.5-pro" });
-    expect(result).toEqual({
-      ...payload,
-      instructions: payload.instructions.replace(IDENTITY, NEUTRAL),
-    });
+    const result = applyPromptReplacements(payload, { ...codex, id: "gemini-2.5-pro" });
+    expect(result).toEqual(
+      request(payload.model, payload.input[0]!.content.replace(IDENTITY, NEUTRAL)),
+    );
     expect(result?.tools).toBe(tools);
-    expect(result?.input).toBe(input);
-    expect(payload.instructions).toContain(IDENTITY);
+    const input = result?.input;
+    expect(input).not.toBe(payload.input);
+    if (!Array.isArray(input)) throw new Error("missing rewritten input");
+    expect(input[1]).toBe(tail[0]);
+    expect(input[2]).toBe(tail[1]);
+    expect(payload.input[0]!.content).toContain(IDENTITY);
   });
 
   it.each([
@@ -137,8 +149,8 @@ describe("prompt replacement application", () => {
   ])("wildcard match for %s yields %s", (modelId, instructions) => {
     install("relay", { promptReplacements: RULES });
     const payload = request(modelId, IDENTITY);
-    const result = applyPromptReplacements(payload, { provider: "relay", id: modelId });
-    expect(result ?? payload).toEqual({ ...payload, instructions });
+    const result = applyPromptReplacements(payload, { ...codex, id: modelId });
+    expect(result ?? payload).toEqual(request(modelId, instructions));
     expect(result === undefined).toBe(instructions === IDENTITY);
   });
 
@@ -149,37 +161,38 @@ describe("prompt replacement application", () => {
         { models: ["a+b*"], from: "AA", to: "CC" },
       ],
     });
-    expect(
-      applyPromptReplacements(request("gpt-5.4", "AA"), { provider: "relay", id: "gpt-5.4" })
-        ?.instructions,
-    ).toBe("BB");
+    expect(applyPromptReplacements(request("gpt-5.4", "AA"), { ...codex, id: "gpt-5.4" })).toEqual(
+      request("gpt-5.4", "BB"),
+    );
     expect(
       applyPromptReplacements(request("gpt-5.4-mini", "AA"), {
-        provider: "relay",
+        ...codex,
         id: "gpt-5.4-mini",
       }),
     ).toBeUndefined();
     expect(
-      applyPromptReplacements(request("gpt-5X4", "AA"), { provider: "relay", id: "gpt-5X4" }),
+      applyPromptReplacements(request("gpt-5X4", "AA"), { ...codex, id: "gpt-5X4" }),
     ).toBeUndefined();
     expect(
-      applyPromptReplacements(request("a+b-extra", "AA"), { provider: "relay", id: "a+b-extra" })
-        ?.instructions,
-    ).toBe("CC");
+      applyPromptReplacements(request("a+b-extra", "AA"), { ...codex, id: "a+b-extra" }),
+    ).toEqual(request("a+b-extra", "CC"));
     expect(
-      applyPromptReplacements(request("aaab", "AA"), { provider: "relay", id: "aaab" }),
+      applyPromptReplacements(request("aaab", "AA"), { ...codex, id: "aaab" }),
     ).toBeUndefined();
   });
 
   it("applies a star to every model of that provider only", () => {
     install("relay", { promptReplacements: [{ models: ["*"], from: "AA", to: "BB" }] });
     install("plain");
+    expect(applyPromptReplacements(request("gpt-5.4", "AA"), { ...codex, id: "gpt-5.4" })).toEqual(
+      request("gpt-5.4", "BB"),
+    );
     expect(
-      applyPromptReplacements(request("gpt-5.4", "AA"), { provider: "relay", id: "gpt-5.4" })
-        ?.instructions,
-    ).toBe("BB");
-    expect(
-      applyPromptReplacements(request("gpt-5.4", "AA"), { provider: "plain", id: "gpt-5.4" }),
+      applyPromptReplacements(request("gpt-5.4", "AA"), {
+        ...codex,
+        provider: "plain",
+        id: "gpt-5.4",
+      }),
     ).toBeUndefined();
   });
 
@@ -192,10 +205,10 @@ describe("prompt replacement application", () => {
       ],
     });
     const result = applyPromptReplacements(request("gemini-2.5-pro", "AA AA"), {
-      provider: "relay",
+      ...codex,
       id: "gemini-2.5-pro",
     });
-    expect(result?.instructions).toBe("CC CC");
+    expect(result).toEqual(request("gemini-2.5-pro", "CC CC"));
   });
 
   it("skips a missing phrase without failing and still runs a later rule", () => {
@@ -207,40 +220,38 @@ describe("prompt replacement application", () => {
     });
     const payload = request("gemini-2.5-pro", "keep AA");
     expect(() =>
-      applyPromptReplacements(payload, { provider: "relay", id: "gemini-2.5-pro" }),
+      applyPromptReplacements(payload, { ...codex, id: "gemini-2.5-pro" }),
     ).not.toThrow();
-    expect(
-      applyPromptReplacements(payload, { provider: "relay", id: "gemini-2.5-pro" })?.instructions,
-    ).toBe("keep BB");
+    expect(applyPromptReplacements(payload, { ...codex, id: "gemini-2.5-pro" })).toEqual(
+      request("gemini-2.5-pro", "keep BB"),
+    );
   });
 
   it("leaves the request when from is absent", () => {
     install("relay", { promptReplacements: RULES });
     const payload = request("gemini-2.5-pro", "tools, rules, and the project stay");
-    expect(
-      applyPromptReplacements(payload, { provider: "relay", id: "gemini-2.5-pro" }),
-    ).toBeUndefined();
-    expect(payload.instructions).toBe("tools, rules, and the project stay");
+    expect(applyPromptReplacements(payload, { ...codex, id: "gemini-2.5-pro" })).toBeUndefined();
+    expect(payload.input[0]!.content).toBe("tools, rules, and the project stay");
   });
 
   it("does not feed a replacement back into the same rule", () => {
     install("relay", { promptReplacements: [{ models: ["*"], from: "A", to: "AA" }] });
     expect(
       applyPromptReplacements(request("gemini-2.5-pro", "A"), {
-        provider: "relay",
+        ...codex,
         id: "gemini-2.5-pro",
-      })?.instructions,
-    ).toBe("AA");
+      }),
+    ).toEqual(request("gemini-2.5-pro", "AA"));
   });
 
   it("removes every occurrence when to is empty", () => {
     install("relay", { promptReplacements: [{ models: ["*"], from: "AA", to: "" }] });
     expect(
       applyPromptReplacements(request("gemini-2.5-pro", "AA and AA"), {
-        provider: "relay",
+        ...codex,
         id: "gemini-2.5-pro",
-      })?.instructions,
-    ).toBe(" and ");
+      }),
+    ).toEqual(request("gemini-2.5-pro", " and "));
   });
 
   it.each([
@@ -250,28 +261,40 @@ describe("prompt replacement application", () => {
     install("relay", extra);
     install("plain");
     const payload = request("gemini-2.5-pro", IDENTITY);
-    expect(applyPromptReplacements(payload, { provider, id: "gemini-2.5-pro" })).toBeUndefined();
-    expect(payload.instructions).toBe(IDENTITY);
+    expect(
+      applyPromptReplacements(payload, { ...codex, provider, id: "gemini-2.5-pro" }),
+    ).toBeUndefined();
+    expect(payload.input[0]!.content).toBe(IDENTITY);
   });
 
   it("ignores a payload built for a different model", () => {
     install("relay", { promptReplacements: RULES });
     const payload = request("other-model", IDENTITY);
-    expect(
-      applyPromptReplacements(payload, { provider: "relay", id: "gemini-2.5-pro" }),
-    ).toBeUndefined();
+    expect(applyPromptReplacements(payload, { ...codex, id: "gemini-2.5-pro" })).toBeUndefined();
   });
 
   it.each([
-    ["missing", { model: "gemini-2.5-pro", tools }],
-    ["an array", { model: "gemini-2.5-pro", instructions: [IDENTITY], tools }],
-    ["an object", { model: "gemini-2.5-pro", instructions: { text: IDENTITY }, tools }],
-  ])("leaves %s instructions unchanged", (_label, payload) => {
+    { instructions: IDENTITY },
+    { input: [] },
+    { input: [tail[0]] },
+    { input: [{ role: "developer", content: [IDENTITY] }] },
+    { input: [{ type: "other", role: "system", content: IDENTITY }] },
+  ])("does not rewrite a payload without a leading system prompt: %j", (fields) => {
     install("relay", { promptReplacements: RULES });
+    const id = "gemini-2.5-pro";
+    expect(applyPromptReplacements({ model: id, ...fields }, { ...codex, id })).toBeUndefined();
+  });
+
+  it("rewrites a system-role lead on Codex only", () => {
+    install("relay", { promptReplacements: RULES });
+    const id = "gemini-2.5-pro";
+    const payload = request(id, IDENTITY, "system");
+    expect(applyPromptReplacements(payload, { ...codex, id })).toEqual(
+      request(id, NEUTRAL, "system"),
+    );
     expect(
-      applyPromptReplacements(payload, { provider: "relay", id: "gemini-2.5-pro" }),
+      applyPromptReplacements(payload, { ...codex, id, api: "openai-responses" }),
     ).toBeUndefined();
-    expect(payload).not.toHaveProperty("instructions", NEUTRAL);
   });
 
   it("does nothing without a current model or for a provider that is not a relay", () => {
@@ -279,7 +302,7 @@ describe("prompt replacement application", () => {
     const payload = request("gemini-2.5-pro", IDENTITY);
     expect(applyPromptReplacements(payload, undefined)).toBeUndefined();
     expect(
-      applyPromptReplacements(payload, { provider: "openai", id: "gemini-2.5-pro" }),
+      applyPromptReplacements(payload, { ...codex, provider: "openai", id: "gemini-2.5-pro" }),
     ).toBeUndefined();
   });
 });
