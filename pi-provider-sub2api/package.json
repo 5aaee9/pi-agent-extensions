@@ -23,6 +23,7 @@
   "files": [
     "codex-api.ts",
     "codex-compaction.ts",
+    "codex-developer-role.ts",
     "config.ts",
     "discovery.ts",
     "footer.ts",

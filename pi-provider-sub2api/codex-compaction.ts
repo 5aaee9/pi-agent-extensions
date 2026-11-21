@@ -9,6 +9,7 @@ import {
   type SessionBeforeCompactEvent,
   type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
+import { preserveCodexDeveloperPrompt } from "./codex-developer-role.ts";
 import { isSafeModelId } from "./util.ts";
 
 // Pi's extension loader aliases the public pi-ai package root to its compat entrypoint.
@@ -631,6 +632,17 @@ async function compactRemotely(params: {
   signal: AbortSignal;
 }) {
   const signal = AbortSignal.any([params.signal, AbortSignal.timeout(COMPACTION_TIMEOUT_MS)]);
+  const compactionRequest = {
+    model: params.model.id,
+    input: [...(params.lead ? [params.lead] : []), ...params.input, { type: "compaction_trigger" }],
+    service_tier: params.serviceTier,
+    stream: true,
+    store: false,
+  };
+  const cachedCompaction = preserveCodexDeveloperPrompt(compactionRequest, {
+    id: params.model.id,
+    api: "openai-codex-responses",
+  });
   const response = await fetch(normalizeUrl(params.relay.responsesUrl), {
     method: "POST",
     headers: {
@@ -639,17 +651,7 @@ async function compactRemotely(params: {
       "Content-Type": "application/json",
       "x-codex-beta-features": "remote_compaction_v2",
     },
-    body: JSON.stringify({
-      model: params.model.id,
-      input: [
-        ...(params.lead ? [params.lead] : []),
-        ...params.input,
-        { type: "compaction_trigger" },
-      ],
-      service_tier: params.serviceTier,
-      stream: true,
-      store: false,
-    }),
+    body: JSON.stringify(cachedCompaction ?? compactionRequest),
     redirect: "error",
     signal,
   });

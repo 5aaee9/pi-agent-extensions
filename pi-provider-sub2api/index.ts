@@ -30,6 +30,7 @@ import {
 } from "./provider-ownership.ts";
 import { getBillingUrl, refreshBilling, refreshQuota } from "./quota.ts";
 import { addDaybreakProgram, addServerTools, addServiceTier, streamCodex } from "./relay-stream.ts";
+import { preserveCodexDeveloperPrompt } from "./codex-developer-role.ts";
 import { applyPromptReplacements } from "./prompt-replacements.ts";
 import { addStringEnumTypes } from "./tool-schema.ts";
 import { createRequestModeStore } from "./request-mode-store.ts";
@@ -667,6 +668,12 @@ export default async function (pi: ExtensionAPI) {
 
   pi.on("before_provider_request", (event, ctx) => {
     return applyPromptReplacements(event.payload, ctx.model);
+  });
+
+  // After replacements, so a rule still sees the original system role. This
+  // renames that role on every Codex Responses model and does not write instructions.
+  pi.on("before_provider_request", (event, ctx) => {
+    return preserveCodexDeveloperPrompt(event.payload, ctx.model);
   });
 
   const syncRelayProviderPricing = (relay: RelayConfig) => {

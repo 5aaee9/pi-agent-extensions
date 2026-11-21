@@ -68,14 +68,15 @@ scenario(
 
     await client.send({ type: "set_model", provider: "relay", modelId: "gpt-5.4" });
     await client.prompt("gpt");
-    const gpt = promptOf(relay.turns().at(-1), "system");
+    // Codex Responses sends this non-reasoning prompt as developer, not system.
+    const gpt = promptOf(relay.turns().at(-1), "developer");
     assert.ok(gpt.includes(IDENTITY));
     assert.equal(gpt.includes(NEUTRAL), false);
     assert.ok(gpt.includes(KEPT));
 
     await client.send({ type: "set_model", provider: "relay", modelId: "claude-sonnet-4-5" });
     await client.prompt("claude");
-    const claude = promptOf(relay.turns().at(-1), "system");
+    const claude = promptOf(relay.turns().at(-1), "developer");
     assert.ok(claude.includes(NEUTRAL));
     assert.equal(claude.includes(IDENTITY), false);
     assert.ok(claude.includes(KEPT));
