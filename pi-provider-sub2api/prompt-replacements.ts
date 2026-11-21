@@ -57,25 +57,35 @@ function ruleMatches(rule: PromptReplacement, modelId: string) {
 }
 
 // Returns undefined when the payload should stay the object the caller already
-// holds. A replacement is a new object with only `instructions` changed.
+// holds. Only the leading system prompt belongs to the rule.
 export function applyPromptReplacements(
   payload: unknown,
-  model: { provider: string; id: string } | undefined,
+  model: { provider: string; id: string; api: string } | undefined,
 ): Record<string, unknown> | undefined {
-  if (!model) return undefined;
+  if (model?.api !== "openai-codex-responses") return undefined;
   const rules = relaysByProvider.get(model.provider)?.promptReplacements;
   if (!rules || rules.length === 0) return undefined;
 
   const request = asRecord(payload);
-  if (!request || request.model !== model.id || typeof request.instructions !== "string") {
+  if (!request || request.model !== model.id || !Array.isArray(request.input)) {
     return undefined;
   }
 
-  let instructions = request.instructions;
+  const lead = asRecord(request.input[0]);
+  if (
+    !lead ||
+    (lead.type !== undefined && lead.type !== "message") ||
+    (lead.role !== "developer" && lead.role !== "system") ||
+    typeof lead.content !== "string"
+  )
+    return undefined;
+  let content = lead.content;
   for (const rule of rules) {
     if (rule.from.length === 0 || !ruleMatches(rule, model.id)) continue;
-    if (!instructions.includes(rule.from)) continue;
-    instructions = instructions.split(rule.from).join(rule.to);
+    if (!content.includes(rule.from)) continue;
+    content = content.split(rule.from).join(rule.to);
   }
-  return instructions === request.instructions ? undefined : { ...request, instructions };
+  return content === lead.content
+    ? undefined
+    : { ...request, input: [{ ...lead, content }, ...request.input.slice(1)] };
 }

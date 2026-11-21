@@ -70,7 +70,7 @@ Run these from the repository root unless a step says otherwise. Read `docs/pi/R
     "prepack": "npm run check"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "1.5.0",
+    "@earendil-works/pi-coding-agent": "1.6.0",
     "@types/node": "^24.0.0",
     "typescript": "^7.0.2",
     "vitest": "^4.1.10"
@@ -87,7 +87,7 @@ Run these from the repository root unless a step says otherwise. Read `docs/pi/R
 }
 ```
 
-List every shipped file in `files`: each `.ts` module the extension imports, `README.md`, `CHANGELOG.md`, `LICENSE`, and any data file. Add `@earendil-works/pi-ai` or `@earendil-works/pi-tui` to both `peerDependencies` (`"*"`) and `devDependencies` (the same exact version as `pi-coding-agent`) when the code imports them. Pin the Pi version the package needs; `1.5.0` is the current shared verification baseline. Do not add `private`.
+List every shipped file in `files`: each `.ts` module the extension imports, `README.md`, `CHANGELOG.md`, `LICENSE`, and any data file. Add `@earendil-works/pi-ai` or `@earendil-works/pi-tui` to both `peerDependencies` (`"*"`) and `devDependencies` (the same exact version as `pi-coding-agent`) when the code imports them. Pin the Pi version the package needs; `1.6.0` is the current shared verification baseline. Do not add `private`.
 
 ### `pi-<topic>/tsconfig.json`
 

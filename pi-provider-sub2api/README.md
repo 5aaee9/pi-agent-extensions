@@ -4,7 +4,7 @@ A [pi](https://github.com/earendil-works/pi-mono) provider extension for Sub2API
 
 ## Requirements
 
-- Pi 1.4.0 or newer
+- Pi 1.6.0 or newer. Prompt replacements no longer apply on earlier versions.
 - Node.js 22.19 or newer
 - A Sub2API-compatible relay exposing `GET /backend-api/codex/models` for explicitly configured Codex providers, or `GET /v1/models` for other providers (including [xAI entries](#xai-grok-entries)), plus at least one supported generation endpoint
 
@@ -121,7 +121,7 @@ An xAI entry rejects settings that do not apply to it, naming the provider and f
 - `serverTools` may be omitted or contain only empty groups; hosted tools are outside this entry type.
 - `requestModes` and `modelRequestModes` are validated and kept in the file, but stay inactive for every model of the entry.
 
-xAI entries require Pi 1.4.0 or newer. On a host without Pi's public OpenAI Responses adapter, xAI entries are disabled with an error on stderr while other entries keep working.
+xAI entries require Pi 1.6.0 or newer. On a host without Pi's public OpenAI Responses adapter, xAI entries are disabled with an error on stderr while other entries keep working.
 
 #### Models and metadata
 
@@ -140,7 +140,7 @@ Each field resolves on its own. Pi's xAI catalogs match the exact registered ID 
 
 Remote limit aliases are the ones listed under [Quota reporting](#quota-reporting); an invalid alias falls through to the next one. The remote effort list is read from `reasoningEfforts[].value`; when that field is missing or not an array, from `supported_reasoning_levels` or `supportedReasoningLevels` (strings or `{ "effort": ... }` objects). Values are trimmed, lowercased, and deduplicated; `none`, `low`, `medium`, `high`, and `xhigh` are recognized and anything else is ignored. A present list is authoritative even when empty or unrecognized; so is a cached or bundled thinking map, which leaves only `off` when it enables no effort. Pi exposes exactly the matching levels; `none` becomes Pi's `off`, and `minimal` and `max` are never offered. The relay's `reasoningEffort` and `default` markers are informational; Pi keeps your session's level and clamps it as usual when you switch models.
 
-With Pi 1.4.0, `grok-4.6` and `grok-4.7` advertised without limits get the bundled 500,000-token context and output limits, text and image input, and catalog prices. For IDs absent from both catalogs, including prefixed or differently cased spellings of known models, fields the relay does not supply fall back to 200,000/16,384 tokens, text-only input, and zero estimated prices. These are conservative estimates, not the service's capacity: they can cap long sessions and hide image input, and a zero price means "unknown", not free. Reasoning support the relay does not advertise is not guessed from names, so a model such as `grok-4.20-0309-reasoning` without metadata is registered without reasoning controls or encrypted-reasoning replay.
+With Pi 1.6.0, `grok-4.6` and `grok-4.7` advertised without limits get the bundled 500,000-token context and output limits, text and image input, and catalog prices. For IDs absent from both catalogs, including prefixed or differently cased spellings of known models, fields the relay does not supply fall back to 200,000/16,384 tokens, text-only input, and zero estimated prices. These are conservative estimates, not the service's capacity: they can cap long sessions and hide image input, and a zero price means "unknown", not free. Reasoning support the relay does not advertise is not guessed from names, so a model such as `grok-4.20-0309-reasoning` without metadata is registered without reasoning controls or encrypted-reasoning replay.
 
 A model that reasons but has no selectable effort (for example `supportsReasoningEffort: false` on `grok-4.7`, or `true` without a list on an unknown ID) shows only `off`. For these models `off` means "no override": the request omits `reasoning` and the backend reasons at its default level. It does not disable reasoning.
 
@@ -208,7 +208,7 @@ A save rereads `sub2api.json`, changes only the target object, and atomically re
 
 ### Prompt replacements
 
-`promptReplacements` rewrites literal text in the `instructions` string of a model request. Each rule belongs to the provider entry that declares it. Omit the field, or set it to `[]`, and that provider's requests stay as they are.
+`promptReplacements` rewrites literal text in the system prompt of a Codex Responses request. Each rule belongs to the provider entry that declares it. Omit the field, or set it to `[]`, and that provider's requests stay as they are.
 
 ```json
 {
@@ -237,9 +237,9 @@ A save rereads `sub2api.json`, changes only the target object, and atomically re
 
 A pattern matches the whole model ID. `*` matches any sequence of characters, including none, and every other character matches itself, so `gemini-*` matches `gemini-2.5-pro` and leaves `gemini` and `my-gemini-2.5-pro` alone. `gpt-5.4` matches that ID only. `*` alone matches every model of this provider. Matching is case-sensitive. A pattern follows the `compress_model` limits: 1–256 characters, no surrounding whitespace, and no control characters.
 
-Rules run in the order they are written. Each rule sees the text produced by the rules before it. A rule whose pattern does not match this model is skipped. When `from` is not in `instructions`, that rule is skipped and the request continues; this is not an error. Every occurrence of `from` is replaced. The rest of `instructions` and every other field, including tools and the conversation, stay as they were. The same model ID on another provider uses only that provider's rules.
+Rules run in the order they are written. Each rule sees the text produced by the rules before it. A rule whose pattern does not match this model is skipped. When `from` is not in the system prompt, that rule is skipped and the request continues; this is not an error. Every occurrence of `from` is replaced. The surrounding prompt text, every later input item, and other fields such as tools, stay as they were. The same model ID on another provider uses only that provider's rules.
 
-Pi's `openai-codex-responses` adapter sends the system prompt in `instructions`, which is the field these rules edit. `openai-responses`, `openai-completions`, and `anthropic-messages` place that prompt in other fields, so a rule does not change those requests. Native Codex compaction builds its own request and is separate from this hook.
+On Pi 1.6.0 or newer, rules edit only the string content of the leading `developer` or `system` message in `input` on `openai-codex-responses` models. Other APIs (`openai-responses`, `openai-completions`, and `anthropic-messages`) are unchanged. Native Codex compaction builds its own request and is separate from this hook.
 
 Other keys on a rule are ignored. A value that is not an array, a rule that is not an object, an empty `models` list, an invalid pattern, an empty or non-string `from`, or a non-string `to` fails configuration loading with an error that names the provider and the field. Reload after editing the file.
 
@@ -414,9 +414,9 @@ Sub2API Grok groups should use an [xAI entry](#xai-grok-entries) instead, which 
 
 Anthropic models are registered directly with pi's built-in Anthropic Messages implementation and a model-level base URL without `/v1`. Claude 4.6+ models receive `compat.forceAdaptiveThinking`.
 
-Codex models use pi's Codex Responses adapter so requests keep the Codex shape (instructions, `store: false`, encrypted reasoning, forced SSE). Sub2API relays do not expose ChatGPT's `/v1/codex/responses` passthrough route, so at the request boundary the extension rewrites the request URL to the relay's standard `/v1/responses` endpoint, drops the generated `chatgpt-account-id` header, and replaces only the fake JWT bearer credential with the relay token.
+Codex models use pi's Codex Responses adapter so requests keep the Codex shape (system prompt first in `input`, `store: false`, encrypted reasoning, forced SSE). Sub2API relays do not expose ChatGPT's `/v1/codex/responses` passthrough route, so at the request boundary the extension rewrites the request URL to the relay's standard `/v1/responses` endpoint, drops the generated `chatgpt-account-id` header, and replaces only the fake JWT bearer credential with the relay token.
 
-Codex models also use OpenAI's Remote Compaction V2 protocol when pi runs `/compact`, threshold compaction, or overflow recovery. The extension serializes pi's active session into Responses input items, appends a `compaction_trigger`, and streams `POST /v1/responses` with `x-codex-beta-features: remote_compaction_v2` and the real relay bearer token. It retains the newest replayable user messages locally within budgets of 64,000 estimated tokens and 16 MiB, collects exactly one encrypted `compaction` output item from `response.output_item.done`, waits for `response.completed`, and persists that native window in the compaction entry's `details`. Before later Codex Responses calls, it replaces pi's textual summary replay plus its pre-compaction kept window with the stored native window, followed by the live post-compaction tail. Repeated compactions compact the previous native window together with the new tail instead of nesting textual checkpoint markers.
+Codex models also use OpenAI's Remote Compaction V2 protocol when pi runs `/compact`, threshold compaction, or overflow recovery. As in Codex, `input` starts with the current system prompt (when nonempty), continues with the conversation, and ends with `compaction_trigger`; there is no top-level `instructions`. Native compaction ignores custom instructions (`/compact <text>`) and shows a notice when text is supplied. The extension streams `POST /v1/responses` with `x-codex-beta-features: remote_compaction_v2` and the real relay bearer token. It retains the newest replayable messages locally within budgets of 64,000 estimated tokens and 16 MiB, collects exactly one encrypted `compaction` output item from `response.output_item.done`, waits for `response.completed`, and persists that native window in the compaction entry's `details`. Before later Codex Responses calls, it replaces pi's textual summary replay plus its pre-compaction kept window with the stored native window, followed by the live post-compaction tail. Repeated compactions compact the previous native window together with the new tail instead of nesting textual checkpoint markers. New checkpoints exclude the system prompt, so replay preserves the current turn’s prompt even after a tool change. If a checkpoint written by 0.6.0 on Pi 1.6.0 retained a stale copy of the system prompt, it is carried forward until the retention budget evicts it or a new session starts.
 
 If the first native compact request fails, pi's normal textual compaction remains the fallback. Once an opaque native checkpoint is active, a failed repeated compaction is cancelled rather than replacing the only replayable checkpoint with a summary of its local marker. Native checkpoints are bound to the provider, model, API, and normalized relay Responses URL; switching any of those leaves the opaque state untouched rather than forwarding it to a different endpoint. Existing version-1 checkpoints created through the retired standalone endpoint remain replayable and are upgraded when they are compacted again.
 
@@ -460,6 +460,7 @@ Additional behavior:
 - For automatically routed and non-Codex providers, `GET /v1/models` remains the authoritative model inventory. When an OpenAI model is missing token limits or reasoning-effort capabilities, the extension best-effort merges metadata for the same model ID from Sub2API's `GET /backend-api/codex/models` manifest; manifest-only models are not registered in this mode. The `gpt-5.6` inventory alias uses `gpt-5.6-sol` metadata.
 - Remote model metadata accepts `context_window`, `contextWindow`, `context_length`, `max_context_tokens`, `max_input_tokens`, `limit.context`, and `limits.context` for context size. Output limits accept `max_tokens`, `maxTokens`, `max_output_tokens`, `max_completion_tokens`, `limit.output`, and `limits.output`; the first valid positive integer is used, so an invalid earlier alias does not hide a valid later one. Supported thinking efforts are read from `supported_reasoning_levels` or `supportedReasoningLevels`, accepting both Codex object entries such as `{ "effort": "ultra" }` and string values.
 - Missing context windows are filled from pi's catalog for the selected API (`anthropic`, `openai-codex`, or `openai`). Missing OpenAI output limits also use the catalog; Anthropic output limits retain relay-safe defaults (16,384 tokens, or 8,192 for Haiku 4.5), capped to the context window, unless the relay explicitly provides a valid output limit. Catalog context windows describe model capacity, not a guarantee that every relay account supports it; Claude context windows are not inferred from Sub2API's generated Codex manifest. When the host SDK supports it, the extension restores Pi's locally cached runtime catalog offline to pick up newly added models and updated limits/prices, then falls back to the bundled static catalog. This does not refresh catalogs over the network or add models absent from the relay inventory. Missing/unreadable caches and older hosts keep the static fallback. Only fields still unavailable after remote and catalog lookup fall back to a 200,000-token context window and a model-family-specific output limit.
+- By default, Pi 1.6.0 sends `max_output_tokens` on Codex turns. It starts with the registered output limit (relay, then catalog, otherwise 16,384 or 8,192 for Haiku 4.5, capped to the context window), clamps it per turn to the remaining context room, and floors it at 16.
 - Each Codex remote compaction attempt has a five-minute timeout. Attempts reject redirects, cap the SSE response at 32 MiB, and retain at most 64,000 estimated message tokens or 16 MiB of replay messages so native checkpoints remain bounded.
 - Network interception is request-scoped; process-wide transports are never patched.
 
@@ -487,7 +488,7 @@ Use HTTPS for remote relays. Plain HTTP is accepted for trusted local developmen
 
 ## Development
 
-Verified against Pi 1.5.0.
+Verified against Pi 1.6.0.
 
 From the repository root:
 

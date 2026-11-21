@@ -8,12 +8,12 @@ Connect a Sub2API Grok group through a separately authenticated xAI entry with d
 
 ### Requirement: Supported Pi baseline
 
-The package SHALL require Pi 1.4.0 or newer and SHALL use exactly Pi 1.4.0 for baseline implementation and acceptance. Earlier Pi versions SHALL be outside the support contract. User-facing requirements SHALL state this minimum.
+The package SHALL require Pi 1.6.0 or newer and SHALL use exactly Pi 1.6.0 for baseline implementation and acceptance. Earlier Pi versions SHALL be outside the support contract. User-facing requirements SHALL state this minimum.
 
 #### Scenario: Baseline acceptance
 
 - **WHEN** the feature is verified for release
-- **THEN** host loading and the xAI conversation checks run on Pi 1.4.0
+- **THEN** host loading and the xAI conversation checks run on Pi 1.6.0
 - **AND** checks on newer hosts do not replace that baseline
 
 ### Requirement: Explicit xAI entry
@@ -91,7 +91,7 @@ Valid remote limits and modalities SHALL take precedence over exact-ID cached xA
 #### Scenario: Bundled Grok capabilities
 
 - **WHEN** the relay advertises `grok-4.6` or `grok-4.7` without limits/modalities and no usable cached values exist
-- **THEN** the registered model uses the Pi 1.4.0 bundled xAI limits, text/image input, and catalog rates for fields not supplied remotely
+- **THEN** the registered model uses the host's bundled xAI limits, text/image input, and catalog rates for fields not supplied remotely
 - **AND** generic metadata defaults do not replace available bundled fields
 
 #### Scenario: Model absent from catalogs

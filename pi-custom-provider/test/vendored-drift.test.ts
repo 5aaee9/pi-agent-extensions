@@ -228,6 +228,7 @@ const optionFixtures: ReadonlyArray<{
       signal: new AbortController().signal,
       apiKey: "key",
       transport: "sse",
+      disableContinuation: true,
       cacheRetention: "short",
       sessionId: "session",
       headers: { "x-a": "b" },
@@ -299,6 +300,14 @@ describe("vendored pi-ai internals match the pinned host", () => {
     const copy = target ?? model;
     expect(buildBaseOptions(copy, longHistory, options)).toStrictEqual(
       hostBuildBaseOptions(copy, longHistory, options),
+    );
+  });
+
+  it("keeps the host ratio margin for a large input", () => {
+    const target = { ...model, contextWindow: 200_000 };
+    const history = context([user("x".repeat(140_000))]);
+    expect(clampMaxTokensToContext(target, history, 160_000)).toBe(
+      hostClampMaxTokens(target, history, 160_000),
     );
   });
 

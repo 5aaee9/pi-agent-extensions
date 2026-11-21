@@ -110,7 +110,7 @@ export default async function (pi: ExtensionAPI) {
     relays = relays.filter((relay) => {
       if (!relay.xai) return true;
       console.error(
-        `[sub2api:${relay.provider}] api "xai" requires Pi's OpenAI Responses adapter (Pi 1.4.0 or newer); this entry is disabled`,
+        `[sub2api:${relay.provider}] api "xai" requires Pi's OpenAI Responses adapter (Pi 1.6.0 or newer); this entry is disabled`,
       );
       return false;
     });

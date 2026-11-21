@@ -14,7 +14,7 @@ For a repository checkout, after `npm install`:
 pi -e ./pi-ask/index.ts
 ```
 
-Tested against Pi 1.5.0, with OSC fallback tests on Pi 1.4.0. Releases use tags `@indexyz/pi-ask@<version>`.
+Tested against Pi 1.6.0, with OSC fallback tests on Pi 1.4.0. Releases use tags `@indexyz/pi-ask@<version>`.
 
 ## Usage
 

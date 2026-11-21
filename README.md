@@ -4,7 +4,7 @@ A collection of extensions for the [pi coding agent](https://github.com/earendil
 
 ## Packages
 
-All nine Pi packages are verified against Pi 1.5.0. `pi-ask` also exercises its OSC status fallback on Pi 1.4.0.
+All nine Pi packages are verified against Pi 1.6.0. `pi-ask` also exercises its OSC status fallback on Pi 1.4.0.
 
 | Package                                                                                     | Description                                                                                                                                                                                |
 | ------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |

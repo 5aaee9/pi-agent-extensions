@@ -60,7 +60,7 @@ autocomplete popup listing every loaded skill with its description, just like
 
 ## Development
 
-Verified against Pi 1.5.0.
+Verified against Pi 1.6.0.
 
 ```bash
 npm install
