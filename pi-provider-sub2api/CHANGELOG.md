@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.0
+
+### Minor Changes
+
+- **Breaking:** Upgrade to Pi 1.6.0 or newer. Prompt replacements now edit the leading Codex system prompt and no longer apply on older hosts.
+- Native compaction sends the current system prompt once and keeps it out of new checkpoints. Later turns can replay history with a different system prompt. A checkpoint written by 0.6.0 on Pi 1.6.0 may still contain a stale prompt until it falls outside the retention budget or you start a new session.
+- Native compaction ignores custom guidance passed to `/compact <text>` and displays a notice.
+
 ## 0.6.0
 
 ### Minor Changes

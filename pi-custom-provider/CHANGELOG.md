@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.2
+
+### Patch Changes
+
+- Ollama output-token limits now respect Pi 1.6.0’s input safety margin. Its base stream options also forward `disableContinuation`.
+
 ## 0.3.1
 
 ### Patch Changes
