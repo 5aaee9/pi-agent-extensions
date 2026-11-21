@@ -1,6 +1,9 @@
 // GPT-6.2 Codex requests can opt into keeping the pinned default in input.
 // The local relay only records the body; it does not bill tokens.
+// Read the template file directly. Importing the package module would pull it
+// into the root typecheck, which does not use the package tsconfig.
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import type { JsonRecord } from "../../release/json.ts";
 import { scenario } from "./scenario.ts";
@@ -15,10 +18,13 @@ import {
   modelArgs,
 } from "./pi-provider-sub2api-support.ts";
 import { compact } from "./pi-provider-sub2api-compaction-support.ts";
-import {
-  CODEX_TURN_INSTRUCTIONS,
-  GPT62_SOL_INSTRUCTIONS,
-} from "../../../pi-provider-sub2api/codex-instruction-cache.ts";
+
+const CODEX_TURN_INSTRUCTIONS =
+  "Apply the developer instructions at the beginning of this input to the current request.";
+const GPT62_SOL_INSTRUCTIONS = readFileSync(
+  new URL("../../../pi-provider-sub2api/data/codex-gpt62-sol-instructions.txt", import.meta.url),
+  "utf8",
+);
 
 const IDENTITY =
   "You are a coding assistant running inside pi, a coding agent harness. Help users inspect files, run commands, and modify code.";
