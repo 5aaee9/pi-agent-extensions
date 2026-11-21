@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.1
+
+### Patch Changes
+
+- Send Codex Responses prompts as developer messages, matching the Codex client, so a relay does not copy Pi's own prompt into top-level instructions.
+
 ## 0.7.0
 
 ### Minor Changes
