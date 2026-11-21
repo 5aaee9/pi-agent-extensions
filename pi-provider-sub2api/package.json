@@ -23,6 +23,9 @@
   "files": [
     "codex-api.ts",
     "codex-compaction.ts",
+    "codex-instruction-cache.ts",
+    "data/codex-gpt62-astra-instructions.txt",
+    "data/codex-gpt62-sol-instructions.txt",
     "config.ts",
     "discovery.ts",
     "footer.ts",

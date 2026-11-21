@@ -239,7 +239,30 @@ A pattern matches the whole model ID. `*` matches any sequence of characters, in
 
 Rules run in the order they are written. Each rule sees the text produced by the rules before it. A rule whose pattern does not match this model is skipped. When `from` is not in the system prompt, that rule is skipped and the request continues; this is not an error. Every occurrence of `from` is replaced. The surrounding prompt text, every later input item, and other fields such as tools, stay as they were. The same model ID on another provider uses only that provider's rules.
 
-On Pi 1.6.0 or newer, rules edit only the string content of the leading `developer` or `system` message in `input` on `openai-codex-responses` models. Other APIs (`openai-responses`, `openai-completions`, and `anthropic-messages`) are unchanged. Native Codex compaction builds its own request and is separate from this hook.
+On Pi 1.6.0 or newer, rules edit only the string content of the leading `developer` or `system` message in `input` on `openai-codex-responses` models. Other APIs (`openai-responses`, `openai-completions`, and `anthropic-messages`) are unchanged. Native Codex compaction builds its own request and is separate from this hook. Rules run before `cacheCodexInstructions`. When that option prepends a Codex default, the replaced prompt is the next `developer` or `system` item.
+
+### GPT-6.2 Codex instruction cache
+
+`cacheCodexInstructions` is off unless a provider entry sets it to `true`. It applies only to that entry's `openai-codex-responses` requests whose model ID is `gpt-6.2-sol` or `gpt-6.2-astra`, including the effort and compact suffixes `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, and `openai-compact`. Matching ignores case, `_`, repeated hyphens, and a vendor prefix such as `openai/`. Other models, other APIs, and providers that omit the field are sent unchanged.
+
+```json
+{
+  "codex-relay": {
+    "baseURL": "https://relay.example.com/v1",
+    "token": "${SUB2API_TOKEN}",
+    "api": "openai-codex-responses",
+    "cacheCodexInstructions": true
+  }
+}
+```
+
+Set it back to `false`, or remove the field, to restore the previous request. Reload after editing the file. A non-boolean value fails configuration loading with an error that names the provider and the field.
+
+On a covered request with missing, non-string, or blank `instructions`, the extension inserts the pinned Sub2API v0.2.24 Codex default for that model as the first `developer` message and sets top-level `instructions` to `Apply the developer instructions at the beginning of this input to the current request.` Existing `input` items keep their order. `system` items on that request become `developer` in place, so an unfixed gateway does not copy them into top-level `instructions`. The same rewrite is applied to native Codex compaction for a covered compaction model. Running the rewrite again does not insert a second copy.
+
+A non-blank `instructions` string is kept verbatim and the pinned default is not added. That includes a short instruction you set yourself. Older models such as GPT-5 and GPT-6.1, unrecognized GPT-6.2 spellings such as `gpt-6.2-sol-ultra`, and `openai-responses` requests are left alone.
+
+This matches the ordinary Codex OAuth behavior of Sub2API v0.2.24 (`5c2982a81b46e2142d0143d2f83c1ce9c4da1d24`): a blank `instructions` field is otherwise replaced with that default at the top level, and GPT-6.2 bills top-level `instructions` as uncached input. The pinned text is the gateway template after trimming, not a live measurement of token usage. The short top-level sentence is still uncached. Passthrough and API-key accounts do not inject this default for these model IDs; enabling the option adds it anyway. The extension cannot see account type or account model mapping, so a mapping that changes Sol into a different family will keep the request model's template instead of the mapped one. After a gateway builds the default into the developer prefix itself, turn this option off so the gateway's current text is used. [Sub2API #8985](https://github.com/Wei-Shaw/sub2api/pull/8985) proposes that gateway change and was still open when this option was added.
 
 Other keys on a rule are ignored. A value that is not an array, a rule that is not an object, an empty `models` list, an invalid pattern, an empty or non-string `from`, or a non-string `to` fails configuration loading with an error that names the provider and the field. Reload after editing the file.
 
