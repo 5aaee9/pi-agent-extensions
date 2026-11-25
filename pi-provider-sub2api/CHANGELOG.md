@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.2
+
+### Patch Changes
+
+- Use Pi’s Anthropic model catalog for missing relay output limits so Claude models such as Fable 5.2 get their advertised output budget.
+
 ## 0.7.1
 
 ### Patch Changes
