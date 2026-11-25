@@ -57,7 +57,7 @@ function seedCodexAndClaude(context: Scenario, knownOpenai: string, knownAnthrop
       storeModel("anthropic", ANTHROPIC, {
         id: knownAnthropic,
         contextWindow: 600_000,
-        maxTokens: 128_000,
+        maxTokens: 73_000,
         cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
       }),
     ],
@@ -79,7 +79,7 @@ function seedCodexAndClaude(context: Scenario, knownOpenai: string, knownAnthrop
 }
 
 scenario(
-  "offline, Pi's cached catalog supplies limits and prices, without overriding the relay or Anthropic's cap",
+  "offline, Pi's cached catalog supplies limits and prices, without overriding relay limits",
   OFFLINE_WORLD,
   async (context) => {
     const { world } = context;
@@ -91,7 +91,7 @@ scenario(
     const builtin = await listAll(probe);
     await probe.close();
     const knownOpenai = String(builtinWithLargeOutput(builtin, "openai")["id"]);
-    const knownAnthropic = String(builtinWithLargeOutput(builtin, "anthropic")["id"]);
+    const knownAnthropic = "claude-fable-5-2";
     seedCodexAndClaude(context, knownOpenai, knownAnthropic);
     const storePath = join(world.agentDir, "models-store.json");
     const storeBefore = readFileSync(storePath, "utf8");
@@ -104,7 +104,7 @@ scenario(
     assert.deepEqual(costOf(onCodex("gpt-6-e2e-cached")), STORE_COST);
     assert.deepEqual(costOf(onCodex(knownOpenai)), STORE_COST);
     const claude = mustFindModel(models, "claude", knownAnthropic);
-    assert.deepEqual(limitsOf(claude), [600_000, DEFAULT_OUTPUT]);
+    assert.deepEqual(limitsOf(claude), [600_000, 73_000]);
     assert.equal(costOf(claude)["input"], 5);
     assert.equal(readFileSync(storePath, "utf8"), storeBefore);
   },

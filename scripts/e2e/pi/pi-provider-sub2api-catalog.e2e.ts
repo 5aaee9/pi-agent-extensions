@@ -57,9 +57,10 @@ async function builtinIds(context: Scenario): Promise<BuiltinIds> {
 function assertAnthropic(models: readonly JsonRecord[], id: string): void {
   const builtin = mustFindModel(models, "anthropic", id);
   const claude = mustFindModel(models, "claude", id);
-  assert.deepEqual(limitsOf(claude), [builtin["contextWindow"], DEFAULT_OUTPUT]);
+  assert.deepEqual(limitsOf(claude), limitsOf(builtin));
   assert.notEqual(builtin["maxTokens"], DEFAULT_OUTPUT, "the catalog cap must differ to mean much");
   assert.deepEqual(costOf(claude), costOf(builtin));
+  assert.equal(mustFindModel(models, "limited", id)["maxTokens"], 8192);
   const haiku = mustFindModel(models, "claude", "claude-haiku-4-5-e2e");
   assert.deepEqual(limitsOf(haiku), [DEFAULT_CONTEXT, 8192]);
   const unknown = mustFindModel(models, "claude", "claude-e2e-unknown");
@@ -87,13 +88,14 @@ function assertXai(models: readonly JsonRecord[], id: string): void {
 }
 
 scenario(
-  "offline, models the relay gives no metadata for follow the built-in catalog, except Anthropic's output cap",
+  "offline, models the relay gives no metadata for follow the built-in catalog",
   OFFLINE_WORLD,
   async (context) => {
     const { world } = context;
     const relay = { baseURL: UNROUTABLE, token: "tok" };
     world.writeAgentFile("sub2api.json", {
       claude: { ...relay, api: ANTHROPIC },
+      limited: { ...relay, api: ANTHROPIC },
       plain: { ...relay, api: RESPONSES },
       billed: { ...relay, api: RESPONSES },
       small: { ...relay, api: RESPONSES },
@@ -106,6 +108,7 @@ scenario(
         named("claude-haiku-4-5-e2e"),
         named("claude-e2e-unknown"),
       ]),
+      limited: entry(ANTHROPIC, [named(ids.anthropic, { maxTokens: 8192 })]),
       plain: entry(RESPONSES, [named(ids.openai)]),
       billed: { ...entry(RESPONSES, [named(ids.openai)]), priceMultiplier: 0.5 },
       small: entry(RESPONSES, [named(ids.openai, { contextWindow: 1000 })]),

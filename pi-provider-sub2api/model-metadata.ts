@@ -1,4 +1,3 @@
-import { access } from "node:fs/promises";
 import { join } from "node:path";
 
 import type { ModelCost } from "@earendil-works/pi-ai";
@@ -100,7 +99,6 @@ export async function loadCachedModelMetadata(): Promise<ModelMetadataCatalogs |
   try {
     const agentDir = getAgentDir();
     const modelsStorePath = join(agentDir, "models-store.json");
-    await access(modelsStorePath);
     const [{ ModelRuntime }, { InMemoryCredentialStore }] = await Promise.all([
       import("@earendil-works/pi-coding-agent"),
       import("@earendil-works/pi-ai"),
@@ -139,7 +137,7 @@ export async function loadCachedModelMetadata(): Promise<ModelMetadataCatalogs |
       ]),
     );
   } catch {
-    // Missing/unreadable caches and hosts without ModelRuntime keep the static
+    // Unreadable catalogs and hosts without ModelRuntime keep the static
     // catalog fallback. Metadata restoration failures must not prevent discovery.
     return undefined;
   }
